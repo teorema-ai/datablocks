@@ -1,0 +1,5 @@
+fsspec==2023.1.0
+gunzip==0.1.10
+jupyterlab_limit_output==1.0.0
+python-consul==1.1.0
+regex==2022.10.31
