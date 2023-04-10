@@ -298,6 +298,21 @@ class Tagger:
         tag = Tagger.static_label_object(str, self.tag_args, self.tag_kwargs, self.tag_defaults, arg)
         return tag
 
+    def label_args_kwargs(self, ltype, strict_args_kwargs, *args, **kwargs):
+        tag = Tagger._static_label_args_kwargs(ltype, self.tag_args, self.tag_kwargs, self.tag_defaults, strict_args_kwargs, *args, **kwargs)
+        return tag
+
+    def tag_args_kwargs(self, *args, **kwargs):
+        _tag = Tagger._static_label_args_kwargs(tag, self.tag_args, self.tag_kwargs, self.tag_defaults, *args, **kwargs)
+        return _tag
+
+    def repr_args_kwargs(self, *args, **kwargs):
+        tag = Tagger._static_label_args_kwargs(repr, self.tag_args, self.tag_kwargs, self.tag_defaults, *args, **kwargs)
+        return tag
+
+    def str_args_kwargs(self, *args, **kwargs):
+        tag = Tagger._static_label_args_kwargs(str, self.tag_args, self.tag_kwargs, self.tag_defaults,  *args, **kwargs)
+        return tag
     @staticmethod
     def static_label_func_args_kwargs(func, ltype, tag_args, tag_kwargs, tag_defaults, *args, **kwargs):
         return Tagger._static_label_func_args_kwargs(func, False, ltype, tag_args, tag_kwargs, tag_defaults, *args, **kwargs)

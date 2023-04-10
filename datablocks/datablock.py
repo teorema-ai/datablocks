@@ -1241,7 +1241,6 @@ class READER(Request):
             return f"READER:{self.tagstr}"
     
     def __getattr__(self, attr):
-        #request = object.__getattribute__(self, 'request')
         request = self.request
         return getattr(self.request, attr)
     
@@ -1249,19 +1248,121 @@ class READER(Request):
         return int(hashlib.sha1(self.argstr.encode()).hexdigest(), 16)
     
 
-# TODO:
-def PROVIDER(datablock, **scope):
-    # return request that amounts to building datablock and then reading it with **build_scope
-    pass
+class DB:
+    class Request(Request):
+        def __init__(self, request, labels):
+            self.request = request
+            self.labels = labels
+        
+        def __getattribute__(self, __name: str):
+            request = object.__getattribute__(self, 'request')
+            _ = request.__getattribute__(__name)
+            return _
+        
+        def __tag__(self):
+            labels = object.__getattribute__(self, 'labels')
+            tag = labels['tag']
+            return tag
+        
+        def __repr__(self):
+            labels = object.__getattribute__(self, 'labels')
+            repr = labels['repr']
+            return repr
 
+    def __init__(cls_or_clstr, alias=None, *, use_native_storage=False, **init_kwargs):
+        """
+        Wrapper around
+        def define(cls, *, module=__name__, topics, version, use_local_storage=False):  
+        """
+        pdb.set_trace()
+        if isinstance(cls_or_clstr, str):
+            clstr = cls_or_clstr
+            clstrparts = clstr.split('.')
+            if len(clstrparts) == 1:
+                module_name = __name__
+                clsname = clstrpargs[0]
+            else:
+                module_name = '.'.join(clstrparts[:-1])
+                clsname = clstrparts[-1]
+            mod = importlib.import_module(module_name)
+            cls = getattr(mod, clsname)
+        else:
+            cls = cls_or_clstr
+            module_name = cls.__module__
+            clstr = f"{module_name}.{cls.__name__}"
+        if hasattr(cls, 'topics'):
+            topics = cls.topics
+        else:
+            topics = [DEFAULT_TOPIC]
+        if hasattr(cls, 'version'):
+            version = cls.version
+        else:
+            version = DEFAULT_VERSION
+        self.alias = alias
+        self.clstr = clstr
+        self.init_kwargs = init_kwargs
+        # TODO: could simply save _repr and _tag instead of init_kwargs, alias and clstr
+        datablock_class = Datablock.define(cls,
+                                            module_name=module_name, 
+                                            version=version, 
+                                            topics=topics, 
+                                            use_local_storage=not use_native_storage,
+                                            )
+        self._obj = datablock_class(self.alias, **self.init_kwargs)
+        
 
-def READ(*args, **kwargs):
-    request = READER(*args, **kwargs)
-    _ = request.compute()
-    return _
+        records = self._obj.records()
+        if len(records) == 0:
+            raise ValueError(f"No records for datablock {obj} of classname {classname}: version: {self._obj.version}")
+        if alias is None:
+            rec = records.iloc[-1]
+        else:
+            rec = records[records.alias == alias].iloc[-1]
+        # TODO: fix serialization of version to record to exlude `repr`
+        if rec['version'] != repr(obj.version) and rec['version'] != obj.version:
+            raise ValueError(f"Version mismatch for datablock {obj} of classname {classname}: version: {obj.version} and record with alias {alias}: {rec['version']}")
+        self._scope = _eval(rec['scope'])
+        
+    def __repr__(self):
+        _ = Tagger().repr_func(DATABLOCK, self.clstr, use_native_storage=self.use_native_storage, **self.init_kwargs)
+        return _
+    
+    def __tag__(self):
+        _ = Tagger().tag_func(DATABLOCK, self.clstr, **self.init_kwargs)
+        return _
 
+    def __hash__(self):
+        _repr = repr(self)
+        _ =  int(hashlib.sha1(_repr.encode()).hexdigest(), 16)
+        return _
+    
+    def __getattr__(self, attrname):
+        if attrname == 'reader':
+            def reader(topic):
+                _request = self._obj.read_databook_request(topic, **self._scope)
+                tagger = Tagger(tag_args=True, tag_kwargs=True, tag_defaults=False)
+                _selftag = self.__tag__()
+                _functag = f"{_selftag}.reader"
+                _argstag = tagger.tag_args_kwargs(topic)
+                _tag = f"{_functag}({_argstag})"
+                _selfrepr = self.__repr__()
+                _funcrepr = f"{_selfrepr}.reader"
+                _repr = f"{_funcrepr}({_argstag})"
+                request = Request(request, labels=dict(tag=_tag, repr=_repr))
+                return request
+            return reader
+        elif attrname == 'intent':
+            def intent():
+                _ = self._obj.intent(**self._scope)
+                return _
+            return extent
+        elif attrname == 'intent':
+            def extent():
+                _ = self._obj.extent(**self._scope)
+                return _
+            return extent
+        else:
+            attr = getattr(self._obj, attrname)
+            return attr
 
-def PRINT(*args, **kwargs):
-    request = READER(*args, **kwargs)
-    _ = request.compute()
-    print(_)
+        
