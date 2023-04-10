@@ -87,7 +87,6 @@ class Dataspace:
                  *,
                  storage_options={}):
         self.__setstate__((url, storage_options))
-        self._temporary = None
 
     def __delete__(self):
         if isinstance(self._temporary, tempfile.TemporaryDirectory):
@@ -147,7 +146,7 @@ class Dataspace:
 
     def __setstate__(self, state):
         self.url, self.storage_options = state
-        self._temporary = False
+        self._temporary = None
         p = self.url.find('://')
         if p != -1:
             protocol = self.url[:p]
@@ -194,7 +193,7 @@ class Dataspace:
         sub_filesystem_info = copy.deepcopy(filesystem_info)
         sub_filesystem_info['path'] = self.join(filesystem_info['path'], *args)
         subspace = Dataspace.from_filesystem_info(sub_filesystem_info)
-        subspace._temporary = (self._temporary is not None)
+        subspace._temporary = None if self._temporary is None else True
         return subspace
 
     def ensure(self, path=None):

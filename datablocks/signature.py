@@ -279,7 +279,6 @@ class Tagger:
         elif isinstance(arg, str):
             label = repr(arg)
         else:
-            
             label = ltype(arg)
         return label
 
@@ -387,20 +386,20 @@ class Tagger:
 
     def tag_element(self, e):
         if isinstance(e, dict):
-            te = tag_dict(**e)
+            te = self.tag_dict(e)
         elif isinstance(e, list):
-            te = tag_list(*e)
+            te = self.tag_list(e)
         elif hasattr(e, '__tag__'):
             te = e.__tag__()
         else:
             te = e
         return te
 
-    def tag_dict(self, **scope):
+    def tag_dict(self, scope):
         tscope = {k: self.tag_element(v) for k, v in scope.items()}
         return tscope
             
-    def tag_list(self, *lst):
+    def tag_list(self, lst):
         tlst = [self.tag_element(e) for e in lst]
         return tlst
 

@@ -203,6 +203,7 @@ class Logging:
         def __call__(self, *args, **kwargs):
             """
             Rebinds must be allowed upon entry because the pool graph may (re)evaluate args/kwargs at the last minute.
+            FIX: reconcile logger vs _logging_; reconcile logging and _logging_
             """
             #_logging_ = logging.getLogger(__name__)
             #_logging_ = logging.getLogger()
@@ -216,7 +217,7 @@ class Logging:
                                     self.request_repr)
             request_logger = None
             request_str = str(request)
-            _logging_.info(f">>>>>>>> {self.id}: BEGAN executing request called {request_str}")
+            _logging_.debug(f">>>>>>>> {self.id}: BEGAN executing request called {request_str}")
 
             #logger = logging.getLogger(log_file)
             # cannot add handler to a named logger since functions
@@ -232,12 +233,12 @@ class Logging:
             logstream = logcontext.__enter__()
             if logstream is not None:
                 if self.pool.redirect_stdout:
-                    _logging_.info(f"Redirecting stdout to {self.logpath} in {str(self.logspace)}")
+                    _logging_.debug(f"Redirecting stdout to {self.logpath} in {str(self.logspace)}")
                     _stdout = sys.stdout
                     sys.stdout = logstream
-                    _logging_.info(f"Redirected stdout to {self.logpath} in {str(self.logspace)}")
+                    _logging_.debug(f"Redirected stdout to {self.logpath} in {str(self.logspace)}")
                 else:
-                    _logging_.info(f"Adding logger handler recording to {self.logpath} in {str(self.logspace)}")
+                    _logging_.debug(f"Adding logger handler recording to {self.logpath} in {str(self.logspace)}")
                     _handlers = logger.handlers
                     logger.handers = []
                     handler = logging.StreamHandler(logstream)
@@ -250,7 +251,7 @@ class Logging:
                         request_logger = request.func.__globals__['logger']
                         request.func.__globals__['logger'] = logger
                     logger.addHandler(handler)
-            logger.info(f"START: Executing request called {request_str} with task id {self.id}")
+            logger.debug(f"START: Executing request called {request_str} with task id {self.id}")
             exc = None
             try:
                 if self.request.lifecycle_callback is not None:
@@ -277,12 +278,12 @@ class Logging:
                 logger.error(f"\n{tb}{exc_type}: {exc_value}")
                 exc = exc_value
             finally:
-                logger.info(f"STOP: Executing request called {request_str} with task id {self.id}")
+                logger.debug(f"STOP: Executing request called {request_str} with task id {self.id}")
                 if logstream is not None:
                     if self.pool.redirect_stdout:
-                        _logging_.info(f"Restoring stdout from {self.logpath} in {self.logspace}")
+                        _logging_.debug(f"Restoring stdout from {self.logpath} in {self.logspace}")
                         sys.stdout = _stdout
-                        _logging_.info(f"Restored stdout from {self.logpath} in {self.logspace}")
+                        _logging_.debug(f"Restored stdout from {self.logpath} in {self.logspace}")
                     else:
                         if hasattr(request.func, '__globals__'):
                             request.func.__globals__['logger'] = request_logger
@@ -290,9 +291,9 @@ class Logging:
                         for h in _handlers:
                             logger.addHandler(h)
                         logcontext.__exit__(None, None, None)
-                        _logging_.info(f"Removed logger handler recording to {self.logpath} in {self.logspace}")
+                        _logging_.debug(f"Removed logger handler recording to {self.logpath} in {self.logspace}")
                     logger.setLevel(_log_level)
-                    _logging_.info(f"<<<<<<<< {self.id}: ENDED executing request called {request_str}")
+                    _logging_.debug(f"<<<<<<<< {self.id}: ENDED executing request called {request_str}")
             if exc is not None:
                 raise exc
             return report
@@ -730,7 +731,7 @@ class Logging:
 
         _task_trace = dict(task_key=task.key, task_id=task.id, task_logspace=task.logspace, task_logname=task.logname)
         if task_trace != _task_trace:
-            logging.warning(f"Ignoring mismatched task_trace settings: {task_trace}")
+            logging.debug(f"Ignoring mismatch: task_trace <-- {task_trace} !!!!!!!!!!========= {_task_trace} --> _task_trace")
 
         delayed = self._delay_request(request.with_throw(self.throw))
         future = self._submit_delayed(delayed)

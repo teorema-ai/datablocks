@@ -15,7 +15,7 @@ logging.basicConfig(level=DATABLOCKS_LOG_LEVEL)
 #print(f"logging: logger: effectiveLevel: {logging.getLogger().getEffectiveLevel()}")
 # DEBUG
 from datablocks.eval.request import Request
-from datablocks.datablock import READ, PRINT, DATABLOCK
+from datablocks.datablock import READER, READ, PRINT, DATABLOCK, PROVIDER
 
 '''
 #def regex_kv_pairs(text, item_sep=r"\s", value_sep="="):
@@ -160,6 +160,7 @@ def exec(argstr=None):
     else:
         _ = r
     """
+    print(f"exec: {s}")
     _ = _eval(s)
     return _    
 
