@@ -196,63 +196,66 @@ class Tagger:
 
     @staticmethod
     def _static_label_func_args_kwargs(func, method, ltype, tag_args, tag_kwargs, tag_defaults, strict_args_kwargs, *args, **kwargs):
-        iargs_, kargs_, kvargs_ = func_iargs_kargs_kwargs(func, method, tag_defaults, *args, **kwargs)
-        args_ = list(iargs_.values())
-        kwargs_ = kvargs_
-        if hasattr(func, 'signature'):
-            signature = func.signature
+        if not isinstance(func, str):
+            iargs_, kargs_, kvargs_ = func_iargs_kargs_kwargs(func, method, tag_defaults, *args, **kwargs)
+            args_ = list(iargs_.values())
+            kwargs_ = kvargs_
+            if hasattr(func, 'signature'):
+                signature = func.signature
+            else:
+                signature = inspect.signature(func)
+            parameters = signature.parameters
+            aparams = [k for k, p in parameters.items()
+                    if p.kind == inspect.Parameter.POSITIONAL_ONLY or
+                        p.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD]
+            if method:
+                aparams = aparams[1:]
+            kwparams = [k for k, p in parameters.items()
+                        if p.kind == inspect.Parameter.KEYWORD_ONLY]
+            if tag_defaults:
+                _aparams = aparams
+                _args = args_
+                _kwparams = kwparams
+                _kwargs = kwargs_
+            else:
+                _aparams = aparams[:len(args_)]
+                _args = args_
+                kwdefaults = func.__kwdefaults__ if hasattr(func, '__kwdefaults__') else \
+                                    func.__call__.__kwdefaults__ if hasattr(func, '__call__') and hasattr(func.__call__,
+                                                                                        '__kwdefaults__') else \
+                                    None
+                def default_kwarg(k):
+                    return kwdefaults is not None and\
+                                k in kwdefaults and\
+                                            (k not in kwargs_ or \
+                                            kwargs_[k] == kwdefaults[k])
+                _kwparams = [k for k in kwparams if not default_kwarg(k)]
+                _kwargs = {k: v for k, v in kwargs_.items() if not default_kwarg(k)}
+            have_var_positional = inspect.Parameter.VAR_POSITIONAL in (p.kind for p in parameters.values())
+            if strict_args_kwargs:
+                if len(_args) < len(_aparams):
+                    raise ValueError(f"Positional arguments {_args} are insufficient "
+                                                f"for positional parameters {aparams} for function {Tagger.func_tag(func)}")
+                if len(_args) > len(_aparams) and not have_var_positional:
+                    raise ValueError(f"Positional arguments {_args} are excessive "
+                                                f"for the number of parameters {aparams} for function {Tagger.func_tag(func)}")
+                have_var_keyword = inspect.Parameter.VAR_KEYWORD in (p.kind for p in parameters.values())
+                if len(_kwargs) < len(_kwparams):
+                    raise ValueError(f"Keyword arguments {_kwargs} are insufficient "
+                                                f"for keyword parameters {kwparams} for function {Tagger.func_tag(func)}")
+                if len(_kwargs) > len(_kwparams) and not have_var_keyword:
+                    raise ValueError(f"Keyword arguments {_kwargs} are excessive "
+                                    f"for keyword parameters {kwparams}")
+            targs, tkwargs = (), {}
+            if tag_args and tag_kwargs:
+                targs, tkwargs = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, *_args, **_kwargs)
+            else:
+                if tag_args:
+                    targs, _ = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, *_args)
+                if tag_kwargs:
+                    _, tkwargs = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, **_kwargs)
         else:
-            signature = inspect.signature(func)
-        parameters = signature.parameters
-        aparams = [k for k, p in parameters.items()
-                   if p.kind == inspect.Parameter.POSITIONAL_ONLY or
-                      p.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD]
-        if method:
-            aparams = aparams[1:]
-        kwparams = [k for k, p in parameters.items()
-                    if p.kind == inspect.Parameter.KEYWORD_ONLY]
-        if tag_defaults:
-            _aparams = aparams
-            _args = args_
-            _kwparams = kwparams
-            _kwargs = kwargs_
-        else:
-            _aparams = aparams[:len(args_)]
-            _args = args_
-            kwdefaults = func.__kwdefaults__ if hasattr(func, '__kwdefaults__') else \
-                                 func.__call__.__kwdefaults__ if hasattr(func, '__call__') and hasattr(func.__call__,
-                                                                                      '__kwdefaults__') else \
-                                 None
-            def default_kwarg(k):
-                return kwdefaults is not None and\
-                            k in kwdefaults and\
-                                          (k not in kwargs_ or \
-                                           kwargs_[k] == kwdefaults[k])
-            _kwparams = [k for k in kwparams if not default_kwarg(k)]
-            _kwargs = {k: v for k, v in kwargs_.items() if not default_kwarg(k)}
-        have_var_positional = inspect.Parameter.VAR_POSITIONAL in (p.kind for p in parameters.values())
-        if strict_args_kwargs:
-            if len(_args) < len(_aparams):
-                raise ValueError(f"Positional arguments {_args} are insufficient "
-                                             f"for positional parameters {aparams} for function {Tagger.func_tag(func)}")
-            if len(_args) > len(_aparams) and not have_var_positional:
-                raise ValueError(f"Positional arguments {_args} are excessive "
-                                             f"for the number of parameters {aparams} for function {Tagger.func_tag(func)}")
-            have_var_keyword = inspect.Parameter.VAR_KEYWORD in (p.kind for p in parameters.values())
-            if len(_kwargs) < len(_kwparams):
-                raise ValueError(f"Keyword arguments {_kwargs} are insufficient "
-                                             f"for keyword parameters {kwparams} for function {Tagger.func_tag(func)}")
-            if len(_kwargs) > len(_kwparams) and not have_var_keyword:
-                raise ValueError(f"Keyword arguments {_kwargs} are excessive "
-                                 f"for keyword parameters {kwparams}")
-        targs, tkwargs = (), {}
-        if tag_args and tag_kwargs:
-            targs, tkwargs = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, *_args, **_kwargs)
-        else:
-            if tag_args:
-                targs, _ = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, *_args)
-            if tag_kwargs:
-                _, tkwargs = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, **_kwargs)
+            targs, tkwargs = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, *args, **kwargs)
         atag = ''
         if len(targs) > 0:
             atag = ", ".join(targs)
@@ -313,6 +316,7 @@ class Tagger:
     def str_args_kwargs(self, *args, **kwargs):
         tag = Tagger._static_label_args_kwargs(str, self.tag_args, self.tag_kwargs, self.tag_defaults,  *args, **kwargs)
         return tag
+    
     @staticmethod
     def static_label_func_args_kwargs(func, ltype, tag_args, tag_kwargs, tag_defaults, *args, **kwargs):
         return Tagger._static_label_func_args_kwargs(func, False, ltype, tag_args, tag_kwargs, tag_defaults, *args, **kwargs)
@@ -379,7 +383,10 @@ class Tagger:
         return tag
 
     def label_func(self, func,  ltype, strict_args_kwargs, *args, **kwargs):
-        ftag = Tagger.static_label_object(ltype, self.tag_args, self.tag_kwargs, self.tag_defaults, func)
+        if not isinstance(func, str):
+            ftag = Tagger.static_label_object(ltype, self.tag_args, self.tag_kwargs, self.tag_defaults, func)
+        else:
+            ftag = func
         atag = self.label_func_args_kwargs(func, ltype, strict_args_kwargs, *args, **kwargs)
         tag = f"{ftag}({atag})"
         return tag

@@ -240,7 +240,7 @@ class Scoped:
                     batch_list.append(batch)
         return batch_list
 
-DEFAULT_TOPIC = 'data'
+DEFAULT_TOPIC = None
 DEFAULT_VERSION = '0.0.1'
 
 class Datablock(Anchored, Scoped):
@@ -346,8 +346,8 @@ class Datablock(Anchored, Scoped):
                 _dataspace = self.versionspace
                 
             storage_options = _dataspace.storage_options
-            if len(self.topics) == 1:
-                topic = self.topics[0]
+            if not hasattr(self.obj, 'topics'):
+                topic = None
                 _shardspace = self._shardspace_(_dataspace, topic, **tagshardscope)
                 self.obj.build(_shardspace.root, storage_options, **shardscope)
                 if self.use_local_storage:
@@ -986,7 +986,7 @@ class Datablock(Anchored, Scoped):
     def _build_batch_(self, tagbatchscope, **batchscope):
         raise NotImplementedError()
 
-    def read(self, topic, **blockscope):
+    def read(self, topic=None, **blockscope):
         _blockscope = self._blockscope_(**blockscope)
         request = self.read_databook_request(topic, **_blockscope)
         response = request.evaluate()
@@ -1255,8 +1255,11 @@ class DB:
             self.labels = labels
         
         def __getattribute__(self, __name: str):
-            request = object.__getattribute__(self, 'request')
-            _ = request.__getattribute__(__name)
+            if __name == '__tag__':
+                _ = object.__getattribute__(self, '__tag__')
+            else:
+                request = object.__getattribute__(self, 'request')
+                _ = request.__getattribute__(__name)
             return _
         
         def __tag__(self):
@@ -1269,12 +1272,11 @@ class DB:
             repr = labels['repr']
             return repr
 
-    def __init__(cls_or_clstr, alias=None, *, use_native_storage=False, **init_kwargs):
+    def __init__(self, cls_or_clstr, alias=None, *, use_native_storage=False, **init_kwargs):
         """
         Wrapper around
         def define(cls, *, module=__name__, topics, version, use_local_storage=False):  
         """
-        pdb.set_trace()
         if isinstance(cls_or_clstr, str):
             clstr = cls_or_clstr
             clstrparts = clstr.split('.')
@@ -1298,9 +1300,12 @@ class DB:
             version = cls.version
         else:
             version = DEFAULT_VERSION
-        self.alias = alias
-        self.clstr = clstr
-        self.init_kwargs = init_kwargs
+        self._repr = Tagger().repr_func(DB, clstr, alias, use_native_storage=use_native_storage, **init_kwargs)
+        if alias is not None:
+            self._tag = Tagger(tag_defaults=False).tag_func(DB, clstr, alias, **init_kwargs)
+        else:
+            self._tag = Tagger(tag_defaults=False).tag_func(DB, clstr, **init_kwargs)
+
         # TODO: could simply save _repr and _tag instead of init_kwargs, alias and clstr
         datablock_class = Datablock.define(cls,
                                             module_name=module_name, 
@@ -1308,27 +1313,53 @@ class DB:
                                             topics=topics, 
                                             use_local_storage=not use_native_storage,
                                             )
-        self._obj = datablock_class(self.alias, **self.init_kwargs)
+        self._alias = alias
+        self._cls = clstr
+        self._obj = datablock_class(alias, **init_kwargs)
         
+    @property
+    def classname(self):
+        return object.__getattribute__(self, '_cls')
 
-        records = self._obj.records()
-        if len(records) == 0:
-            raise ValueError(f"No records for datablock {obj} of classname {classname}: version: {self._obj.version}")
-        if alias is None:
-            rec = records.iloc[-1]
-        else:
-            rec = records[records.alias == alias].iloc[-1]
-        # TODO: fix serialization of version to record to exlude `repr`
-        if rec['version'] != repr(obj.version) and rec['version'] != obj.version:
-            raise ValueError(f"Version mismatch for datablock {obj} of classname {classname}: version: {obj.version} and record with alias {alias}: {rec['version']}")
-        self._scope = _eval(rec['scope'])
+    @property
+    def obj(self):
+        return object.__getattribute__(self, '_obj')
+    
+    @property
+    def alias(self):
+        return object.__getattribute__(self, '_alias')
+    
+    @property
+    def scope(self):
+        try:
+            _scope = object.__getattribute__(self, '_scope')
+            return _scope
+        except:
+            pass
+        alias = object.__getattribute__(self, 'alias')
+        try:
+            records = self._obj.records()
+            if len(records) == 0:
+                raise ValueError(f"No records for datablock {self._obj} of version: {self._obj.version}")
+            if alias is None:
+                rec = records.iloc[-1]
+            else:
+                rec = records[records.alias == alias].iloc[-1]
+            # TODO: fix serialization of version to record to exlude `repr`
+            if rec['version'] != repr(self._obj.version) and rec['version'] != self._obj.version:
+                raise ValueError(f"Version mismatch for datablock {self._obj} of version: {self._obj.version} and record with alias {alias}: {rec['version']}")
+            _scope = _eval(rec['scope'])
+        except:
+            _scope = None
+        self._scope = _scope
+        return _scope
         
     def __repr__(self):
-        _ = Tagger().repr_func(DATABLOCK, self.clstr, use_native_storage=self.use_native_storage, **self.init_kwargs)
+        _ = object.__getattribute__(self, '_repr')
         return _
     
     def __tag__(self):
-        _ = Tagger().tag_func(DATABLOCK, self.clstr, **self.init_kwargs)
+        _ = object.__getattribute__(self, '_tag')
         return _
 
     def __hash__(self):
@@ -1336,31 +1367,68 @@ class DB:
         _ =  int(hashlib.sha1(_repr.encode()).hexdigest(), 16)
         return _
     
+    # TODO: make all name attrs into methods, only the `else-clause` dispatches to self._obj, the rest can be found in __dict__, obviating the need for __getattr__.
     def __getattr__(self, attrname):
         if attrname == 'reader':
-            def reader(topic):
-                _request = self._obj.read_databook_request(topic, **self._scope)
+            if self.scope is None:
+                raise ValueError(f"{self} has not been built yet")
+            def reader(topic=None):
+                _request = self._obj.read_databook_request(topic, **self.scope)
                 tagger = Tagger(tag_args=True, tag_kwargs=True, tag_defaults=False)
-                _selftag = self.__tag__()
-                _functag = f"{_selftag}.reader"
-                _argstag = tagger.tag_args_kwargs(topic)
-                _tag = f"{_functag}({_argstag})"
-                _selfrepr = self.__repr__()
-                _funcrepr = f"{_selfrepr}.reader"
-                _repr = f"{_funcrepr}({_argstag})"
-                request = Request(request, labels=dict(tag=_tag, repr=_repr))
+                _funcrepr = f"{self.__tag__()}.reader"
+                if topic is None:
+                    _repr = tagger.repr_func(_funcrepr)
+                else:
+                    _repr = tagger.repr_func(_funcrepr, topic)
+                _tag = f"{self.classname}"
+                if self.alias is not None:
+                    _tag += f":{self.alias}"
+                    if topic is not None:
+                        _tag += f":{topic}"
+                else:
+                    if topic is not None:
+                        _tag += f"::{topic}"
+                request = self.Request(_request, labels=dict(tag=_tag, repr=_repr))
                 return request
             return reader
+        elif attrname == 'read':
+            if self.scope is None:
+                raise ValueError(f"{self} has not been built yet")
+            def read(topic=None):
+                _ = self._obj.read(topic, **self.scope)
+                return _
+            return read
         elif attrname == 'intent':
+            if self.scope is None:
+                raise ValueError(f"{self} has not been built yet")
             def intent():
-                _ = self._obj.intent(**self._scope)
+                _ = self._obj.intent(**self.scope)
                 return _
-            return extent
-        elif attrname == 'intent':
+            return intent
+        elif attrname == 'extent':
+            if self.scope is None:
+                raise ValueError(f"{self} has not been built yet")
             def extent():
-                _ = self._obj.extent(**self._scope)
+                _ = self._obj.extent(**self.scope)
                 return _
             return extent
+        elif attrname == 'extent_metric':
+            if self.scope is None:
+                raise ValueError(f"{self} has not been built yet")
+            def extent_metric():
+                _ = self._obj.extent_metric(**self.scope)
+                return _
+            return extent_metric
+        elif attrname == 'UNSAFE_clear':
+            if self.scope is None:
+                raise ValueError(f"{self} has not been built yet")
+            def UNSAFE_clear():
+                _ = self._obj.UNSAFE_clear(**self.scope)
+                return _
+            return UNSAFE_clear
+        elif attrname == '__tag__':
+            _ = _ = object.__getattribute__(self, '__tag__')
+            return _
         else:
             attr = getattr(self._obj, attrname)
             return attr
