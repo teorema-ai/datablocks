@@ -30,7 +30,7 @@ import pandas as pd
 import ray
 import ray.util
 
-from .. import signature as tag
+from .. import signature
 from ..dataspace import DATABLOCKS_DATALAKE
 from .request import Task, Request, Response
 
@@ -66,10 +66,10 @@ class ConstFuture:
         self._traceback = traceback
 
     def __str__(self):
-        return tag.Tagger.str_ctor(self.__class__,
+        return signature.Tagger().str_ctor(self.__class__,
                                       self._result)
     def __repr__(self):
-        return tag.Tagger().repr_ctor(self.__class__,
+        return signature.Tagger().repr_ctor(self.__class__,
                                          self._result,
                                          exception=self._exception,
                                          traceback=self._traceback)
@@ -132,9 +132,9 @@ class Logging:
             self.request = request
             self.logname = logname
             self.func = request.func
-            self.signature = tag.func_signature(self.func)
-            self.__defaults__ = tag.func_defaults(self.func)
-            self.__kwdefaults__ = tag.func_kwdefaults(self.func)
+            self.signature = signature.func_signature(self.func)
+            self.__defaults__ = signature.func_defaults(self.func)
+            self.__kwdefaults__ = signature.func_kwdefaults(self.func)
 
             # TODO: do we need request? It is not being evaluated directly, but reconstituted using its func,
             # TODO: - which contains all of the request/functor specificity. Input evaluation is being done using
@@ -149,7 +149,7 @@ class Logging:
             ## TODO: - `tag` seems to be "more unique" -- one per invocation, hence, one per task
             ## TODO: - determines logname together with date 'now' and self.pool.timeus()
             self.id = pool.task_id(self.key)
-            self.request_tag = tag.tag(request)# TODO: --> str(request)?
+            self.request_tag = signature.tag(request)# TODO: --> str(request)?
             self.request_repr = repr(request) # needed for logging when request itself might not be available (but why?)
             self.__iargs_kargs_kwargs__ = request.iargs_kargs_kwargs()
             if self.pool.log_to_file:
@@ -163,7 +163,7 @@ class Logging:
                 self.logname = f"task-{badge}-{self.id:042d}.log"
 
         def __repr__(self):
-            _ = tag.Tagger().repr_ctor(self.__class__, self.pool, self.request)
+            _ = signature.Tagger().repr_ctor(self.__class__, self.pool, self.request)
             return _
 
         def __setstate__(self, state):
@@ -174,7 +174,7 @@ class Logging:
 
         def __delete__(self):
             if self.request.lifecycle_callback is not None and hasattr(self, '_request'):
-                self.request.lifecycle_callback(Task.Lifecycle.ERROR, self._request, None)
+                self.request.lifecycle_callback(Task.Lifecycle.ERROR, self._request, response=None)
 
         def clone(self):
             # TODO: reuse self.key and self.id so that no calls to self.pool.key() etc.
@@ -255,13 +255,11 @@ class Logging:
             exc = None
             try:
                 if self.request.lifecycle_callback is not None:
-                    self.request.lifecycle_callback(Task.Lifecycle.BEGIN, request, None)
+                    self.request.lifecycle_callback(Task.Lifecycle.BEGIN, request, response=None)
                 response = request.with_throw(self.pool.throw).evaluate(task_key=self.key,
                                                                         task_id=self.id,
                                                                         task_logspace=self.logspace,
                                                                         task_logname=self.logname)
-                if self.request.lifecycle_callback is not None:
-                    self.request.lifecycle_callback(Task.Lifecycle.END, request, response)
                 #_ = response.result()     # TODO: REMOVE?
                 #__ = response.exception() # TODO?: REMOVE?
                 report = response.report()
@@ -304,7 +302,7 @@ class Logging:
             self.report = report
 
         def __repr__(self):
-            return tag.Tagger().repr_ctor(self.__class__,
+            return signature.Tagger().repr_ctor(self.__class__,
                                              self.report,
                                              exception=self._exception,
                                              traceback=self._traceback)
@@ -389,19 +387,26 @@ class Logging:
             self._future_result = None
             self._result = None
             self._done = False
-            future.add_done_callback(self._done_callback)
-            if done_callback is not None:
-                self.done_callbacks.append(done_callback)
-            if self.future.done():
-                done_callback(self)
             self.key = task_key
             self.id = task_id
             self.logspace = task_logspace
             self.logname = task_logname
 
+            # TODO: clearly separate Future done callbacks and Response (promise) done callbacks.
+            future.add_done_callback(self._done_callback)
+            if self._lifecycle_done_callback:
+                self.done_callbacks.append(self._lifecycle_done_callback)
+                if self.future.done():
+                    self._lifecycle_done_callback()
+            if done_callback is not None:
+                self.done_callbacks.append(done_callback)
+                if self.future.done():
+                    done_callback(self)
+            
+
 
         def __str__(self):
-            tag = tag.Tagger().str_ctor(self.__class__,
+            tag = signature.Tagger().str_ctor(self.__class__,
                                            pool=self.pool,
                                            request=self.request,
                                            future=self.future)
@@ -463,6 +468,7 @@ class Logging:
                     r = logfile.read(size)
             return r
 
+        # TODO: clearly separate Future _done_callback and the Response (promise) done callback
         @staticmethod
         def _done_callback(future):
             promise = future.promise
@@ -470,7 +476,16 @@ class Logging:
             promise._done = True
             promise.done_time = done_time
             for c in promise.done_callbacks:
-                c(future.promise)
+                c(promise)
+
+        def _lifecycle_done_callback(self):
+            response = self
+            request = response.request
+            stage = Task.Lifecycle.END
+            if request.lifecycle_callback is not None:
+                _ = request.lifecycle_callback(stage, request, response)
+                return _
+
 
     class Request(Request):
         def __init__(self, pool, request):
@@ -480,11 +495,11 @@ class Logging:
             super().__init__(self.task, *request.args, **request.kwargs)
 
         def __tag__(self):
-            _ = tag.tag(self.request)
+            _ = signature.tag(self.request)
             return _
 
         def __repr__(self):
-            _ = tag.Tagger().repr_ctor(self.__class__, self.pool, self.request)
+            _ = signature.Tagger().repr_ctor(self.__class__, self.pool, self.request)
             return _
 
         def __str__(self):
@@ -614,18 +629,18 @@ class Logging:
             self.log_to_file == other.log_to_file and \
             self.redirect_stdout == other.redirect_stdout
 
-    def _tag_(self):
-        tag = f"{tag.Tagger().ctor_name(self.__class__)}({self.name}, " +\
+    def __tag__(self):
+        _ = f"{signature.Tagger().ctor_name(self.__class__)}({self.name}, " +\
                                                             f"dataspace={self.dataspace})"
-        return tag
+        return _
 
     def __str__(self):
-        s = f"{tag.Tagger().ctor_name(self.__class__)}({self.name+', ' if self.name else ''}" + \
+        s = f"{signature.Tagger().ctor_name(self.__class__)}({self.name+', ' if self.name else ''}" + \
               f"dataspace={self.dataspace})"
         return s
 
     def __repr__(self):
-        repr = f"{tag.Tagger().ctor_name(self.__class__)}({self.name}, " + \
+        repr = f"{signature.Tagger().ctor_name(self.__class__)}({self.name}, " + \
                f"dataspace={self.dataspace}, " + \
                f"priority={self.priority}, " + \
                f"return_none={self.return_none}, " + \
@@ -719,6 +734,7 @@ class Logging:
 
     def evaluate(self, request, **task_trace):
         # FIX: task_trace must match those imposed by task (key, id, logspace, logname)
+        # TODO: pass in Task itself?
         assert isinstance(request, self.__class__.Request)
         task = request.task.clone()
         """
@@ -734,8 +750,8 @@ class Logging:
             logging.debug(f"Ignoring mismatch: task_trace <-- {task_trace} !!!!!!!!!!========= {_task_trace} --> _task_trace")
 
         delayed = self._delay_request(request.with_throw(self.throw))
-        future = self._submit_delayed(delayed)
         start_time = datetime.datetime.now()
+        future = self._submit_delayed(delayed)
         logger.debug(f"Submitted delayed request based on task "
                      f"with id {task.id} "
                      f"to evaluate request {request} at {start_time}"
@@ -933,7 +949,7 @@ class Ray(Logging):
         self.ray_working_dir_config = ray_working_dir_config
 
     def __repr__(self):
-        repr = f"{tag.Tagger.ctor_name(self.__class__)}({self.name}, " + \
+        repr = f"{signature.Tagger.ctor_name(self.__class__)}({self.name}, " + \
                f"dataspace={self.dataspace}, " + \
                f"ray_kwargs={self.ray_kwargs}, " + \
                f"ray_working_dir_config={self.ray_working_dir_config}, " + \
@@ -969,7 +985,7 @@ class Ray(Logging):
         return arequest
 
     def repr(self, request):
-        pool_key = tag.Tagger(tag_defaults=False) \
+        pool_key = signature.Tagger(tag_defaults=False) \
             .repr_ctor(self.__class__,
                        self.name,
                        dataspace=self.dataspace,
@@ -1202,7 +1218,7 @@ class HTTP(Logging):
                self.auth == other.auth
 
     def __repr__(self):
-        repr = f"{tag.Tagger.ctor_name(self.__class__)}({self.name}, " + \
+        repr = f"{signature.Tagger.ctor_name(self.__class__)}({self.name}, " + \
                f"dataspace = {self.dataspace}, " + \
                f"url = {self.url}, " + \
                f"auth = {self.auth}, " + \
@@ -1218,7 +1234,7 @@ class HTTP(Logging):
         return repr
 
     def repr(self, request):
-        pool_key = tag.Tagger(tag_defaults=False) \
+        pool_key = signature.Tagger(tag_defaults=False) \
             .repr_ctor(self.__class__, self.name, dataspace=self.dataspace, url=self.url)
         key = f"{pool_key}[[{request.tag}]]"
         return key
@@ -1235,6 +1251,7 @@ class HTTP(Logging):
 
 
 DATABLOCKS_LOGGING_POOL = Logging(dataspace=DATABLOCKS_DATALAKE)
+DATABLOCKS_LOGGING_REDIRECT_POOL = Logging(dataspace=DATABLOCKS_DATALAKE, redirect_stdout=True)
 
 
 def print_all_promises(tasks):

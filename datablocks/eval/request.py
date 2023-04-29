@@ -8,17 +8,19 @@ import logging
 import time
 
 from .. import utils
-from .. import signature as tag
+from .. import signature
 from ..utils import REPLACE, REMOVE, DEPRECATED, ALIAS, truncate_str
+
+_eval = __builtins__['eval']
 
 logger = logging.getLogger(__name__)
 
 
 class Task:
     class Lifecycle(enum.IntEnum):
+        ERROR = -1
         BEGIN = 0
         END = 1
-        ERROR = 2
 
     def __call__(self, *args, **kwargs):
         pass
@@ -103,7 +105,7 @@ class RPC:
         if self._str is not None:
             _str = self._str
         else:
-            tagger = tag.Tagger(tag_defaults=False)
+            tagger = signature.Tagger(tag_defaults=False)
             ctor_args_strs = [tagger.str_object(arg) for arg in self.ctor_args]
             ctor_kwargs_strs = {key: tagger.str_object(arg) for key, arg in self.ctor_kwargs.items()}
             _str = tagger.str_ctor(RPC,
@@ -117,7 +119,7 @@ class RPC:
         return str
 
     def __repr__(self):
-        _repr = tag.Tagger().repr_ctor(RPC,
+        _repr = signature.Tagger().repr_ctor(RPC,
                                          self.ctor_url,
                                          args=self.ctor_args,
                                          kwargs=self.ctor_kwargs)
@@ -181,6 +183,9 @@ class Request:
         self.lifecycle_callback = None
 
     def with_lifecycle_callback(self, lifecycle_callback):
+        """
+            lifecycle_callback: (Task.Lifecycle, request, Option[response] -> None)
+        """
         self.lifecycle_callback = lifecycle_callback
         return self
 
@@ -210,22 +215,22 @@ class Request:
         return request
 
     def __str__(self):
-        str = tag.Tagger().str_func(self.func, *self.args, **self.kwargs)
+        str = signature.Tagger().str_func(self.func, *self.args, **self.kwargs)
         return str
 
     def __repr__(self):
-        repr = tag.Tagger().repr_func(self.func, *self.args, **self.kwargs)
+        repr = signature.Tagger().repr_func(self.func, *self.args, **self.kwargs)
         return repr
 
     def __tag__(self):
-        _ = tag.Tagger().tag_func(self.func, *self.args, **self.kwargs)
+        _ = signature.Tagger().tag_func(self.func, *self.args, **self.kwargs)
         return _
 
     def iargs_kargs_kwargs(self):
         if hasattr(self.func, '__iargs_kargs_kwargs__'):
             return self.func.__iargs_kargs_kwargs__
         iargs, kargs, kwargs = \
-          tag.func_iargs_kargs_kwargs(self.func,
+          signature.func_iargs_kargs_kwargs(self.func,
                                         False,
                                         True,
                                         *self.args,
@@ -363,15 +368,15 @@ class Stream:
 
     @property
     def __str__(self):
-        str = tag.Tagger().str_ctor(self.__class__, self.iterable)
+        str = signature.Tagger().str_ctor(self.__class__, self.iterable)
         return str
 
     def __repr__(self):
-        repr = tag.Tagger().repr_ctor(self.__class__, self.iterable)
+        repr = signature.Tagger().repr_ctor(self.__class__, self.iterable)
         return repr
 
     def _tag_(self):
-        _ = tag.Tagger().tag_ctor(self.__class__, self.iterable)
+        _ = signature.Tagger().tag_ctor(self.__class__, self.iterable)
         return _
 
     def __len__(self):
@@ -399,14 +404,14 @@ class Requester:
         return iter(self.requests())
 
     def _tag_(self):
-        tag = tag.Tagger().tag_ctor(self.__class__,
+        tag = signature.Tagger().tag_ctor(self.__class__,
                                         self.func,
                                         *self.args,
                                         **self.kwargs)
         return tag
 
     def __str__(self):
-        tag = tag.Tagger().str_ctor(self.__class__,
+        tag = signature.Tagger().str_ctor(self.__class__,
                                        self.func,
                                        *self.args,
                                        **self.kwargs)
@@ -415,7 +420,7 @@ class Requester:
     def __repr__(self):
         repr  = self._tag_()
         for functor in self.functors:
-            repr = f"{repr}.apply({tag.Tagger().tag_object(functor)})"
+            repr = f"{repr}.apply({signature.Tagger().tag_object(functor)})"
         return repr
 
     def bind(self, *args, **kwargs):
@@ -566,7 +571,6 @@ class Report:
         self.args_reports = [self._arg_report(r) for r in response.args_responses] if response.args_responses is not None else []
         self.kwargs_reports = {k: self._arg_report(v) for k, v in response.kwargs_responses.items()} if response.kwargs_responses is not None else {}
 
-    """
     def __repr__(self):
         summary = self.summary()
         summary_repr = repr(summary)
@@ -576,7 +580,6 @@ class Report:
         summary = self.summary()
         _ = str(summary)
         return _
-    """
 
     def logfile(self):
         try:
@@ -598,7 +601,7 @@ class Report:
         return r
 
     def summary(self):
-        tagger = tag.Tagger()
+        tagger = signature.Tagger()
         report = self
         summary = dict(id=f"id:{report.id}",
                        completed=(report.status in [Report.STATUS.SUCCEEDED, Report.STATUS.FAILED]),
@@ -659,7 +662,7 @@ class Response:
         self.logname = task_logname
 
     def __str__(self):
-        return tag.Tagger().str_ctor(self.__class__,
+        return signature.Tagger().str_ctor(self.__class__,
                                         self.request,
                                         self._result,
                                         self.exception(),
@@ -667,7 +670,7 @@ class Response:
                                         None)
 
     def __repr__(self):
-        return tag.Tagger().repr_ctor(self.__class__,
+        return signature.Tagger().repr_ctor(self.__class__,
                                          self.request,
                                          self._result,
                                          self.exception(),
@@ -675,7 +678,7 @@ class Response:
                                          None)
 
     def __tag__(self):
-        return tag.Tagger().tag_ctor(self.__class__,
+        return signature.Tagger().tag_ctor(self.__class__,
                                         self.request,
                                         self._result,
                                         self.exception(),
@@ -750,10 +753,10 @@ class Literal(Response):
         super().__init__(request, request)
 
     def __tag__(self):
-        return tag.Tagger().tag_ctor(Literal, self.request)
+        return signature.Tagger().tag_ctor(Literal, self.request)
 
     def __repr__(self):
-        return tag.Tagger().repr_ctor(Literal, self.request)
+        return sigature.Tagger().repr_ctor(Literal, self.request)
 
     @property
     def done(self):
@@ -766,13 +769,13 @@ class Closure(Response):
         self._result = None
 
     def __tag__(self):
-        return tag.Tagger().tag_ctor(Closure, self.request)
+        return signature.Tagger().tag_ctor(Closure, self.request)
 
     def __repr__(self):
-        return tag.Tagger().repr_ctor(Closure, self.request)
+        return signature.Tagger().repr_ctor(Closure, self.request)
 
     def __str__(self):
-        return tag.Tagger().repr_ctor(Closure, self.request)
+        return signature.Tagger().repr_ctor(Closure, self.request)
 
     def result(self, **task_trace):
         if self._result is None:
@@ -786,13 +789,13 @@ class Reporter:
         self.reports = [response.report() for response in responses]
 
     def __tag__(self):
-        return tag.Tagger().tag_ctor(self.__class__, self.reports)
+        return signature.Tagger().tag_ctor(self.__class__, self.reports)
 
     def __repr__(self):
-        return tag.Tagger().repr_ctor(self.__class__, self.reports)
+        return signature.Tagger().repr_ctor(self.__class__, self.reports)
 
     def __str__(self):
-        return tag.Tagger().str_ctor(self.__class__, self.reports)
+        return signature.Tagger().str_ctor(self.__class__, self.reports)
 
     def results(self, **task_trace):
         results = [report.result(**task_trace) for report in self.reports]
@@ -805,13 +808,13 @@ class Responder:
         self.responses = responses
 
     def __tag__(self):
-        return tag.Tagger().tag_ctor(self.__class__, self.requester, self.responses)
+        return signature.Tagger().tag_ctor(self.__class__, self.requester, self.responses)
 
     def __repr__(self):
-        return tag.Tagger().repr_ctor(self.__class__, self.requester, self.responses)
+        return signature.Tagger().repr_ctor(self.__class__, self.requester, self.responses)
 
     def __str__(self):
-        return tag.Tagger().str_ctor(self.__class__, self.requester, self.responses)
+        return signature.Tagger().str_ctor(self.__class__, self.requester, self.responses)
 
     def reporter(self):
         reporter = Reporter(self.responses)
@@ -827,14 +830,14 @@ class FIRST(Request):
         self.args = args
 
     def __repr__(self):
-        repr = tag.Tagger().repr_ctor(self.__class__, *self.args)
+        repr = signature.Tagger().repr_ctor(self.__class__, *self.args)
         return repr
 
     def __str__(self):
-        tag = tag.Tagger().str_ctor(self.__class__, *self.args)
+        tag = signature.Tagger().str_ctor(self.__class__, *self.args)
         return tag
 
-    def _tag_(self):
+    def __tag__(self):
         tag = repr(self)
         return tag
 
@@ -878,6 +881,8 @@ class ReportSummaryGraph:
             print: tuple that can include 'logpath', 'exception', 'traceback'
         """
         self.summary = summary
+        if isinstance(self.summary, str):
+            self.summary = _eval(self.summary)
         self.indent = indent
         self.request_max_len = request_max_len
         self.result_max_len = result_max_len
@@ -988,6 +993,9 @@ class ReportSummaryGraph:
             g = g[link]
         g_ = g.with_indent(0)
         return g_
+
+    def logpath(self):
+        return self.summary['logpath']
 
     def log(self, dataspace=None):
         if dataspace is None:

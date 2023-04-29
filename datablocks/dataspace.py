@@ -12,6 +12,8 @@ import fsspec.implementations.local
 from fsspec.utils import other_paths
 from fsspec.implementations.local import make_path_posix
 
+import pyarrow as pa
+
 from . import config
 from . import signature
 from .utils import DEPRECATED
