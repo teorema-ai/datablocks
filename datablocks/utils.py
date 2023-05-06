@@ -1,6 +1,7 @@
 import builtins
 from contextlib import contextmanager
 import datetime
+import hashlib
 import io
 import logging
 import os
@@ -48,6 +49,11 @@ def ALIAS(_):
 
 
 def EXTRA(_):
+    return _
+
+
+def BROKEN(_):
+    logging.warning(f"BROKEN: {_}")
     return _
 
 
@@ -460,3 +466,23 @@ def truncate_str(s, max_len=None, *, use_ellipsis=False):
     if len(_s) < len(s) and use_ellipsis:
         _s = _s + "..."
     return _s
+
+
+def datetime_now_key():
+    now = datetime.datetime.now()
+    key = now.strftime('%Y-%m-%d.%H.%M.%S')
+    return key
+
+
+def key_id(key):
+    namespace_bytes = key.encode()
+    """
+    #namespace_uuid = uuid.UUID(bytes=namespace_bytes[:16]).int
+    namespace_uuid = uuid.UUID(bytes=namespace_bytes)
+    _uuid = uuid.uuid5(namespace_uuid, key).int
+    id = _uuid + version
+    """
+    hashstr = hashlib.sha1(namespace_bytes).hexdigest()
+    maxint64 = int(2**63)
+    id = int(hashstr, 16)%maxint64
+    return id

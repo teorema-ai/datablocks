@@ -162,7 +162,8 @@ class Dataspace:
             logger.debug(f"Dataspace {self.url} using storage_options {self.storage_options}")
             self.filesystem = fsspec.filesystem(protocol=self.protocol, **self.storage_options)
         else:
-            self.filesystem = fsspec.implementations.local.LocalFileSystem()
+            #self.filesystem = fsspec.implementations.local.LocalFileSystem()
+            self.filesystem = fsspec.filesystem('file')
         self.root = path
         self._path = self.root # DEPRECATE        self._lock = None
         self._locker = None
@@ -496,6 +497,9 @@ class Dataspace:
 
     def isdir(self, path):
         return self.filesystem.isdir(path)
+    
+    def isfile(self, path):
+        return self.filesystem.isfile(path)
 
 
 DATABLOCKS_DATALAKE = Dataspace(config.DATABLOCKS_DATALAKE_URL)

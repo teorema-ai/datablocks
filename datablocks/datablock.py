@@ -22,7 +22,7 @@ from . import signature as tag
 import datablocks
 from .signature import Signature, func_kwonly_parameters, func_kwdefaults, ctor_name
 from .signature import Tagger
-from .utils import DEPRECATED, OVERRIDE, REMOVE, ALIAS, EXTRA, RENAME, BOOL, microseconds_since_epoch, datetime_to_microsecond_str
+from .utils import DEPRECATED, OVERRIDE, REMOVE, ALIAS, EXTRA, RENAME, BROKEN, BOOL, microseconds_since_epoch, datetime_to_microsecond_str
 from .eval.request import Request, Report, FIRST, LAST, ReportSummaryGraph
 from .eval.pool import DATABLOCKS_LOGGING_POOL, DATABLOCKS_LOGGING_REDIRECT_POOL
 from .dataspace import Dataspace, DATABLOCKS_DATALAKE
@@ -239,6 +239,7 @@ class Scoped:
         return batch_list
 
 
+
 DEFAULT_TOPIC = None
 DEFAULT_VERSION = '0.0.1'
 class Datablock(Anchored, Scoped):
@@ -292,8 +293,6 @@ class Datablock(Anchored, Scoped):
     topics = []
     signature = Signature((), ('dataspace', 'version',)) # extract these attrs and use in __tag__
 
-    
-
     # TODO: make dataspace, version position-only and adjust Signature
     def __init__(self,
                  alias=None,
@@ -314,7 +313,8 @@ class Datablock(Anchored, Scoped):
         self.dataspace = dataspace
         self._tmpspace = tmpspace
         self.anchorspace = dataspace.subspace(*self.anchorchain)
-        self.versionspace = self.anchorspace.subspace(str(self.version),)
+        self.versionspace = self.anchorspace.subspace(f"version={str(self.version)}",)
+        self.logspace = self.versionspace.subspace(*pool.anchorchain)
         self.lock_pages = lock_pages
         self.verbose = verbose
         self.pool = pool
@@ -602,9 +602,9 @@ class Datablock(Anchored, Scoped):
         metric = self.extent_metric(**scope)
         print(metric)
     
-    RECORDS_COLUMNS_SHORT = ['stage', 'version', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
+    BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'version', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
 
-    def records(self, *, print=False, full=False, columns=None, all=False, tail=5):
+    def show_build_records(self, *, print=False, full=False, columns=None, all=False, tail=5):
         """
         All build records for a given Datablock class, irrespective of alias and version (see `list()` for more specific).
         'all=True' forces 'tail=None'
@@ -614,9 +614,7 @@ class Datablock(Anchored, Scoped):
         try:
             parquet_dataset = pq.ParquetDataset(recordspace.root, use_legacy_dataset=False, filesystem=recordspace.filesystem)
             frame = parquet_dataset.read().to_pandas()
-        except Exception as e:
-            if self.throw:
-                raise e
+        except (Exception, OSError) as e:
             frame = pd.DataFrame()
         if len(frame) > 0:
             
@@ -626,7 +624,7 @@ class Datablock(Anchored, Scoped):
             else:
                 _columns = [c for c in columns if c in frame.columns]
             if short:
-                _columns_ = [c for c in _columns if c in Datablock.RECORDS_COLUMNS_SHORT]
+                _columns_ = [c for c in _columns if c in Datablock.BUILD_RECORDS_COLUMNS_SHORT]
             else:
                 _columns_ = _columns
             frame.sort_values(['timestamp'], inplace=True)
@@ -645,20 +643,18 @@ class Datablock(Anchored, Scoped):
             __builtins__['print'](__frame)
         return __frame
 
-    def record_columns(self, *, print=False, short=False):
-        frame = self.records(print=False)
+    def show_build_record_columns(self, *, full=True):
+        frame = self.show_build_records()
         columns = frame.columns
-        if short:
-            _columns_ = [c for c in columns if c in Datablock.RECORDS_COLUMNS_SHORT]
+        if not full:
+            _columns_ = [c for c in columns if c in Datablock.BUILD_RECORDS_COLUMNS_SHORT]
         else:
             _columns_ = columns
-        if print:
-            __builtins__['print'](_columns_)
         return _columns_
     
-    def record(self, *, record=None):
+    def show_build_record(self, *, record=None, full=False):
         import datablocks
-        records = self.records(full=True)
+        records = self.show_build_records(full=full)
         if len(records) == 0:
             return None
         if isinstance(record, int):
@@ -667,57 +663,56 @@ class Datablock(Anchored, Scoped):
             _record = records.iloc[-1]
         return _record
 
-    def record_summary(self, *, record=None):
+    def show_build_summary(self, *, record=None):
         _record = self.record(record=record)
         summary = _record['report_summary']
         return summary
 
-    def record_logspace(self, *, record=None):
+    def show_build_logspace(self, *, record=None):
         _record = self.record(record=record)
         logspace = _record['logspace']
         return logspace
 
-    def record_build_graph(self, *, record=None, **kwargs):
-        _record = self.record(record=record)
-        logspace = _eval(_record['logspace'])
+    def show_build_graph(self, *, record=None, **kwargs):
+        _record = self.show_build_record(record=record)
+        try:
+            logspace = _eval(_record['logspace'])
+        except:
+            logspace = None
+        if logspace is None:
+            return None
         summary = _record['report_summary']
         graph = ReportSummaryGraph(summary, logspace=logspace, **kwargs)
         return graph
 
-    def record_validate_logs(self, *, record=None, request_max_len=50, **kwargs):
-        g = self.record_build_graph(record=record, **kwargs)
-        _ = g.validate_logs(request_max_len=request_max_len)
+    def show_build_logpath(self, *, record=None, **kwargs):
+        g = self.show_build_graph(record=record, **kwargs)
+        # Build graph looks like this: collate({extent}, collate(build_shard, ...)) 
+        # and we want the outer collate's arg 1 (inner collate)'s arg 0 -- build_shard 
+        if g is None:
+            return None
+        build = g.node(1, 0)
+        _ = build.logpath()
         return _
-    
-    def record_build_logpath(self, *, record=None, print=True, **kwargs):
-        try:
-            g = self.record_build_graph(record=record, **kwargs)
-            # Build graph looks like this: collate({extent}, collate(build_shard)) 
-            # and we want the outer collate's arg 1 (inner collate)'s arg 0 -- build_shard 
-            build = g.node(1, 0)
-            _ = build.logpath()
-            if print:
-                _print(_)
-            else:
-                return _
-        except:
-            if print:
-                _print(None)
 
-    """
-    #FIX: g.log() is broken
-    def record_log(self, *, record=None, **kwargs):
-        g = self.record_build_graph(record=record, **kwargs)
+    @BROKEN
+    def show_build_log(self, *, record=None, **kwargs):
+        g = self.build_graph(record=record, **kwargs)
         _ = g.log()
         return _
-    """
 
-    def record_scope(self, *, record=None):
-        _record = self.record(record=record)
+    def show_build_scope(self, *, record=None):
+        _record = self.show_build_record(record=record)
         scopestr = _record['scope']
         scope = _eval(scopestr)
         return scope
-
+    
+    def build_validate_logs(self, *, record=None, request_max_len=50, **kwargs):
+        g = self.show_build_graph(record=record, **kwargs)
+        _ = g.validate_logs(request_max_len=request_max_len)
+        return _
+    
+    @DEPRECATED
     def list(self):
         """
         All extents with the same alias and version. See `records()` for a broader list.
@@ -743,7 +738,7 @@ class Datablock(Anchored, Scoped):
             alias = hashstr
         recordspace = self._recordspace_().ensure()
 
-        def _write_record(lifecycle_stage, request, response):
+        def _write_record_lifecycle_callback(lifecycle_stage, request, task, response):
             timestamp = int(microseconds_since_epoch())
             datestr = datetime_to_microsecond_str()
             blockscopestr = repr(blockscope)
@@ -755,23 +750,21 @@ class Datablock(Anchored, Scoped):
                             date=datestr,
                             timestamp=timestamp,
                             runtime_secs='',
-                            task_id=0,
+                            key=str(task.key),
+                            id=str(task.id),
+                            logspace=str(task.logspace),
+                            logname=str(task.logname),
                             status='',
                             success='',
                             metric='',
-                            logspace='',
-                            logname='',
                             report_summary='',
             )
-            """
+        
             if self.verbose:
-                    print(f"[BUILD] writing records for request: {request}")
+                    print(f"[BUILD] writing record for request: {request}")
                     print(f"[BUILD] topics: {self.topics}")
                     print(f"[BUILD] blockscope: {blockscope}")
-            """
-            logging.debug(f"[BUILD] writing records for request: {request}")
-            logging.debug(f"[BUILD] topics: {self.topics}")
-            logging.debug(f"[BUILD] blockscope: {blockscope}")
+            
             logname = None
             task_id = None
             if response is not None:
@@ -818,13 +811,11 @@ class Datablock(Anchored, Scoped):
             record_frame.index.name = 'index'
             record_filepath = \
                 recordspace.join(recordspace.root, f"alias-{alias}-stage-{lifecycle_stage.name}-task_id-{task_id}-datetime-{datestr}.parquet")
-            """
             if self.verbose:
                 print(f"[BUILD] Writing build record at lifecycle_stage {lifecycle_stage.name} to {record_filepath}")
-            """
             logging.debug(f"[BUILD] Writing build record at lifecycle_stage {lifecycle_stage.name} to {record_filepath}")
             record_frame.to_parquet(record_filepath, storage_options=recordspace.storage_options)
-        return _write_record
+        return _write_record_lifecycle_callback
 
     def build_request(self, alias=None, **scope):
         request = Request(self.build, alias, **scope).apply(self.pool)
@@ -833,19 +824,26 @@ class Datablock(Anchored, Scoped):
     def build(self, alias=None, **scope):
         # TODO: consistency check: sha256 alias must be unique for a given version or match scope
         blockscope = self._blockscope_(**scope)
-        if self.record() is not None:
-            _scope = self.record_scope()
+        if self.show_build_record() is not None:
+            _scope = self.show_build_scope()
             if blockscope != _scope:
                 raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.__class__} alias {self.alias}")
-        request = self.build_databook_request(**blockscope).with_lifecycle_callback(self._build_databook_request_lifecycle_callback_(**blockscope))
+        pool_key = utils.datetime_now_key()
+        pool_dataspace = self.versionspace.subspace(*(self.pool.anchorchain+(pool_key,))).ensure()
+        pool = self.pool.clone(dataspace=pool_dataspace)
+        request = self.build_databook_request(pool, **blockscope).with_lifecycle_callback(self._build_databook_request_lifecycle_callback_(**blockscope))
         response = request.evaluate()
         if self.build_echo_task_id:
             print(f"task_id: {response.id}")
         result = response.result()
         return result
 
+    # TODO: build_databook_* -> build_*?
     @OVERRIDE
-    def build_databook_request(self, **scope):
+    def build_databook_request(self, pool=None, **scope):
+        if pool is None:
+            pool = self.pool
+
         batchscope = self._blockscope_(**scope)
         if self.reload:
             shortfall_databook = self.intent_databook(**batchscope)
@@ -862,7 +860,7 @@ class Datablock(Anchored, Scoped):
         logger.debug(f"Requesting build of shortfall_tagbatch_list: {shortfall_tagbatchscope_list}")
         shortfall_batch_requests = \
             [self._build_batch_request_(shortfall_tagbatchscope_list[i], **shortfall_batchscope_list[i])
-                                        .apply(self.pool)
+                            .apply(pool)
                                                  for i in range(len(shortfall_tagbatchscope_list))]
         shortfall_batch_requests_str = "[" + \
                                           ", ".join(str(_) for _ in shortfall_batch_requests) + \
@@ -873,8 +871,7 @@ class Datablock(Anchored, Scoped):
         logger.debug(f"collated_shortfall_batch_request: {collated_shortfall_batch_request}")
         extent_databook = self.extent_databook(**batchscope)
         build_databook_request = \
-            Request(self.collate_databooks, extent_databook, collated_shortfall_batch_request)\
-                .apply(self.pool)
+            Request(self.collate_databooks, extent_databook, collated_shortfall_batch_request)
         return build_databook_request
 
     @OVERRIDE
@@ -1177,7 +1174,7 @@ class DB:
             _root = _shardspace.root
             _fs = _shardspace.filesystem
             if not hasattr(self.obj, 'topics'):
-                if self.use_tempslace:
+                if self.use_tempspace:
                     _ = self.obj.read(_root, **shardscope)
                 else:
                     _ = self.obj.read(_root, _fs, **shardscope)
@@ -1251,9 +1248,35 @@ class DB:
         datablock_class = type(cls.__name__, 
                                (Datablock,), 
                                datablock_classdict,)
-        return datablock_class 
-    
-    def __init__(self, cls_or_clstr, alias=None, *, use_tempspace=True, **init_kwargs):
+        return datablock_class
+     
+    @staticmethod
+    def list_datablocks(*, dataspace=DATABLOCKS_DATALAKE):
+        def _chase_anchors(_dataspace, _anchorchain=()):
+            filenames = _dataspace.list()
+            anchorchains = []
+            for filename in filenames:
+                if filename.startswith('.'):
+                    continue
+                elif dataspace.isfile(filename):
+                    continue
+                elif filename.startswith('version='):
+                    anchorchain = _anchorchain + (filename,)
+                    anchorchains.append(anchorchain)
+                else:
+                    dataspace_ = _dataspace.subspace(filename)
+                    anchorchain_ = _anchorchain+(filename,)
+                    _anchorchains = _chase_anchors(dataspace_, anchorchain_)
+                    anchorchains.extend(_anchorchains)
+            return anchorchains
+        
+        datablock_dataspace = dataspace.subspace('datablock')
+
+        anchorchains = _chase_anchors(datablock_dataspace)
+        datablocks = {'.'.join(anchorchain[:-1]): anchorchain[-1] for anchorchain in anchorchains}
+        return datablocks
+
+    def __init__(self, cls_or_clstr, alias=None, *, use_tempspace=False, **init_kwargs):
         """
         Wrapper around
         def define(cls, *, module=__name__, topics, version, use_tempspace=False):  

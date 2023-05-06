@@ -16,11 +16,67 @@ _eval = __builtins__['eval']
 logger = logging.getLogger(__name__)
 
 
+class Future:
+    def __init__(self, func, *args_responses, **kwargs_responses):
+        self.func = func
+        self.args_responses = args_responses
+        self.kwargs_responses = kwargs_responses
+        self._running = True
+        self._done = False
+        self._exception = None
+        self._traceback = None
+        self._result = None
+
+    def __str__(self):
+        return signature.Tagger().str_ctor(self.__class__, self.func, *self.args_responses, **self.kwargs_responses)
+    
+    def __repr__(self):
+        return signature.Tagger().repr_ctor(self.__class__, self.func, *self.args_responses, **self.kwargs_responses)
+
+    def result(self):
+        if not self._done:
+            try:
+                _args = [_arg_response.result() for _arg_response in self._args_responses]
+                _kwargs = {key: _kwarg_response.result() for key, _kwarg_response in self._kwargs_responses.items()}
+                self._result = self.func(*_args, **_kwargs)
+            except Exception as e:
+                exc_type, exc_value, exc_traceback = utils.exc_info()
+                self._exception = exc_value
+                self._traceback = exc_traceback
+            finally:
+                self._done = True
+                self._running = False
+        return self._result
+
+    def done(self):
+        return self._done
+
+    def running(self):
+        return self._running
+
+    def exception(self):
+        return self._exception
+
+    def traceback(self):
+        return self._traceback
+
+    def add_done_callback(self, callback):
+        self.done_callback = callback
+        if self.done():
+            callback(self)
+
+
 class Task:
     class Lifecycle(enum.IntEnum):
         ERROR = -1
         BEGIN = 0
         END = 1
+
+    def __init__(self):
+        self.key = None
+        self.id = None
+        self.logspace = None
+        self.logpath = None
 
     def __call__(self, *args, **kwargs):
         pass
@@ -237,32 +293,32 @@ class Request:
                                         **self.kwargs)
         return iargs, kargs, kwargs
 
-    def compute_args_kwargs(self, reports, args, kwargs, **task_trace):
-        _args = [self._compute_arg(reports, a, i, **task_trace) for i, a in enumerate(args)]
-        _kwargs = {k: self._compute_kwarg(reports, a, k, **task_trace) for k, a in kwargs.items()}
+    def compute_args_kwargs(self, reports_only, args, kwargs, *, task=Task()):
+        _args = [self._compute_arg(reports_only, a, i, task=task) for i, a in enumerate(args)]
+        _kwargs = {k: self._compute_kwarg(reports_only, a, k, task=task) for k, a in kwargs.items()}
         return _args, _kwargs
 
-    def _compute_arg(self, report, arg, index, **task_trace):
+    def _compute_arg(self, report_only, arg, index, *, task):
         '''
             logger.debug(f"Computing args[{index}] for request tagged\n\t{self.tag}\n"
                         f"\t\targs[{index}] {arg}")
                     '''
-        r = self._compute_argument(report, arg, **task_trace)
+        r = self._compute_argument(report_only, arg, task=task)
         '''logger.debug(f"\n\t\tDone with args[{index}]")'''
         return r
 
-    def _compute_kwarg(self, report, kwarg, key, **task_trace):
+    def _compute_kwarg(self, report_only, kwarg, key, *, task):
         '''
             logger.debug(f"Computing kwargs[{key}] for request tagged\n\t{self.tag}\n"
                         f"\t\tkwargs[{key}]  {kwarg}")
                     '''
-        r = self._compute_argument(report, kwarg, **task_trace)
+        r = self._compute_argument(report_only, kwarg, task=task)
         '''logger.debug(f"\n\t\tDone with kwargs[{key}]")'''
         return r
 
     # TODO: eliminate 'report' option?  It doesn't seem to be use5
-    def _compute_argument(self, report, arg, **task_trace):
-        if report:
+    def _compute_argument(self, report_only, arg, *, task):
+        if report_only:
             report = arg.reporter() if isinstance(arg, Responder) else \
                          arg.report() if isinstance(arg, Response) else \
                          arg.reporter() if isinstance(arg, Requester) else \
@@ -271,8 +327,8 @@ class Request:
             return report
         else:
             response = \
-                        arg.evaluate(**task_trace) if isinstance(arg, Requester) else \
-                        arg.evaluate(**task_trace) if isinstance(arg, Request) else \
+                        arg.evaluate(task=task) if isinstance(arg, Requester) else \
+                        arg.evaluate(task=task) if isinstance(arg, Request) else \
                         arg
             return response
 
@@ -312,19 +368,19 @@ class Request:
         t = functor.apply(request, *args, **kwargs)
         return t
 
-    def compute(self, **task_trace):
-        response = self.evaluate(**task_trace)
+    def compute(self, *, task=Task()):
+        response = self.evaluate(task=task)
         result = response.result()
         return result
 
-    def evaluate(self, **task_trace):
+    def evaluate(self, *, task=Task()):
         ev = None
         args_responses = []
         kwargs_responses = {}
         try:
             compute_reports = True
             compute_responses = not compute_reports
-            args_responses, kwargs_responses = self.compute_args_kwargs(compute_responses, self.args, self.kwargs, **task_trace)
+            args_responses, kwargs_responses = self.compute_args_kwargs(compute_responses, self.args, self.kwargs, task=task)
             _args = [self._arg_result(arg) for arg in args_responses]
             _kwargs = {key: self._arg_result(arg) for key, arg in kwargs_responses.items()}
             r = self.func(*_args, **_kwargs)
@@ -339,7 +395,7 @@ class Request:
                           kwargs_responses=kwargs_responses,
                           exception=exc_value,
                           traceback=exc_traceback,
-                          **task_trace)
+                          task=task)
             return ev
         if ev is None:
             ev = Response(request=self,
@@ -347,12 +403,9 @@ class Request:
                           exception=None,
                           args_responses=args_responses,
                           kwargs_responses=kwargs_responses, 
-                          **task_trace)
+                          task=task)
         return ev
 
-    def submit(self, functor, **task_trace):
-        p = self.apply(functor).evaluate(**task_trace)
-        return p
 
 # TODO: --> Requests
 class Stream:
@@ -490,18 +543,18 @@ class Requester:
             self._requests = self._form_requests()
         return self._requests
 
-    def evaluate(self, **task_trace):
-        responses = [request.evaluate(**task_trace) for request in self.requests()]
+    def evaluate(self, *, task=Task()):
+        responses = [request.evaluate(task=task) for request in self.requests()]
         responder = Responder(self, responses)
         return responder
 
-    def reporter(self, **task_trace):
-        responder = self.evaluate(**task_trace)
+    def reporter(self, *, task=Task()):
+        responder = self.evaluate(task=task)
         reporter = responder.reporter()
         return reporter
 
-    def compute(self, **task_trace):
-        responder = self.evaluate(**task_trace)
+    def compute(self, *, task=Task()):
+        responder = self.evaluate(task=task)
         results = responder.results()
         return results
 
@@ -645,10 +698,8 @@ class Response:
                  traceback=None,
                  args_responses=None,
                  kwargs_responses=None,
-                 task_key=None,
-                 task_id=None,
-                 task_logspace=None,
-                 task_logname=None):
+                 *,
+                 task):
         self.request = request
         self._result = result
         self._exception = exception
@@ -656,10 +707,12 @@ class Response:
         self.args_responses = args_responses
         self.kwargs_responses = kwargs_responses
         self.start_time = self.done_time = datetime.datetime.now()
-        self.key = task_key
-        self.id = task_id
-        self.logspace = task_logspace
-        self.logname = task_logname
+        self.task = task
+        # TODO: self.key -> self.task.key, etc 
+        self.key = task.key
+        self.id = task.id
+        self.logspace = task.logspace
+        self.logname = task.logname
 
     def __str__(self):
         return signature.Tagger().str_ctor(self.__class__,
@@ -777,9 +830,9 @@ class Closure(Response):
     def __str__(self):
         return signature.Tagger().repr_ctor(Closure, self.request)
 
-    def result(self, **task_trace):
+    def result(self, *, task=Task()):
         if self._result is None:
-            response = self.request.evaluate(**task_trace)
+            response = self.request.evaluate(task=task)
             self._result = response.result()
         return self._result
 
@@ -797,8 +850,8 @@ class Reporter:
     def __str__(self):
         return signature.Tagger().str_ctor(self.__class__, self.reports)
 
-    def results(self, **task_trace):
-        results = [report.result(**task_trace) for report in self.reports]
+    def results(self, *, task=Task()):
+        results = [report.result(task=task) for report in self.reports]
         return results
 
 
@@ -820,8 +873,8 @@ class Responder:
         reporter = Reporter(self.responses)
         return reporter
 
-    def results(self, **task_trace):
-        results = [response.result(**task_trace) for response in self.responses]
+    def results(self, *, task=Task()):
+        results = [response.result(task=task) for response in self.responses]
         return results
 
 
@@ -846,10 +899,10 @@ class FIRST(Request):
         request = self.__class__(*_args)
         return request
 
-    def evaluate(self, **task_trace):
+    def evaluate(self, *, task=Task()):
         for arg in self.args:
             if isinstance(arg, Request):
-                response = arg.evaluate(**task_trace)
+                response = arg.evaluate(task=task)
             else:
                 response = Response(None, arg)
             if response.exception() is None:
@@ -859,10 +912,10 @@ class FIRST(Request):
 
 
 class LAST(FIRST):
-    def evaluate(self, **task_trace):
+    def evaluate(self, *, task=Task()):
         for arg in self.args:
             if isinstance(arg, Request):
-                response = arg.evaluate(**task_trace)
+                response = arg.evaluate(task=task)
             else:
                 response = Response(None, arg)
             if response.exception() is not None:

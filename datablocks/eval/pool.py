@@ -30,34 +30,15 @@ import pandas as pd
 import ray
 import ray.util
 
-from .. import signature
+from .. import signature, utils
 from ..dataspace import DATABLOCKS_DATALAKE
+from . import request
 from .request import Task, Request, Response
 
 
 VERSION = 0
 logger = logging.getLogger(__name__)
 
-
-
-# TODO: Move _delay* functionality into pool's evaluate()
-
-# TODO: Control plane.
-# TODO: The "local" part of the 'control plane' is the logspace:Dataspace, containing
-# TODO: - per task log files, which can be queried for their existence, assertaining
-# TODO: - whether the task ran, and through its contents to assertain success and debug failures.
-# TODO: The local part is persistent, but slow and is 'opaque' -- high entropy conditional
-# TODO: - on the top/driver task.
-# TODO: The "global" part of the 'control plane' connects tasks to their inputs,
-# TODO: - is contained in Response objects, which in turn contain Requests (mapping to its inputs)
-# TODO: - and delayeds, mapping to tasks, tying into the local control plane via task log file names.
-# TODO: The "global" transient control plane is an index into the local control plane, recursively
-# TODO: - mapping the driver task to its inputs and their status.
-#
-# TODO: The nomenclature here may be reversed.  Dataspace is in a sense a 'global' store, containing
-# TODO: - statuses of *all* tasks, and accessible from anywhere.
-# TODO: - at the same time, transient 'Response' objects are localized in the object/worker running the current
-# TODO: - driver task and mapping out only the part of the call history originating from the current (local) task/node.
 
 class ConstFuture:
     def __init__(self, result, *, exception=None, traceback=None):
@@ -140,7 +121,7 @@ class Logging:
             # TODO: - which contains all of the request/functor specificity. Input evaluation is being done using
             # TODO: - polymorphism of the *input* requests via their '.evaluate()' methods.
             # TODO: YES! We do need request, since it may need to encapsulate inner functors.
-            self.key = pool.task_key(request)
+            self.key = repr(request)
             # TODO: deprecate `tag'?
             # TODO: - `id` is used both to create validate tasks and create `logname`
             ## TODO: clarify relationship between id and tag;
@@ -148,7 +129,7 @@ class Logging:
             ## TODO: - unique per request, more precisely, uniquely determined by `key`
             ## TODO: - `tag` seems to be "more unique" -- one per invocation, hence, one per task
             ## TODO: - determines logname together with date 'now' and self.pool.timeus()
-            self.id = pool.task_id(self.key)
+            self.id = pool.key_id(self.key)
             self.request_tag = signature.tag(request)# TODO: --> str(request)?
             self.request_repr = repr(request) # needed for logging when request itself might not be available (but why?)
             self.__iargs_kargs_kwargs__ = request.iargs_kargs_kwargs()
@@ -174,7 +155,7 @@ class Logging:
 
         def __delete__(self):
             if self.request.lifecycle_callback is not None and hasattr(self, '_request'):
-                self.request.lifecycle_callback(Task.Lifecycle.ERROR, self._request, response=None)
+                self.request.lifecycle_callback(Task.Lifecycle.ERROR, self._request, task=self, response=None)
 
         def clone(self):
             # TODO: reuse self.key and self.id so that no calls to self.pool.key() etc.
@@ -210,8 +191,8 @@ class Logging:
             _logging_ = logging
             request = self.request.rebind(*args, **kwargs)
             self._request = request
-            # FIX: ensure validate_task arguments are as expected
-            self.pool.validate_task(self.id,
+            # FIX: ensure authenticate_task arguments are as expected
+            self.pool.authenticate_task(self.id,
                                     self.key,
                                     self.request_tag,
                                     self.request_repr)
@@ -254,12 +235,11 @@ class Logging:
             logger.debug(f"START: Executing request called {request_str} with task id {self.id}")
             exc = None
             try:
+                # TODO: move `lifecycle_callback()` invocation inside `evaluate()`
                 if self.request.lifecycle_callback is not None:
-                    self.request.lifecycle_callback(Task.Lifecycle.BEGIN, request, response=None)
-                response = request.with_throw(self.pool.throw).evaluate(task_key=self.key,
-                                                                        task_id=self.id,
-                                                                        task_logspace=self.logspace,
-                                                                        task_logname=self.logname)
+                    # TODO: lifecycle_callback should accept request, task, response[=None]
+                    self.request.lifecycle_callback(Task.Lifecycle.BEGIN, request, self, response=None)
+                response = request.with_throw(self.pool.throw).evaluate(task=self)
                 #_ = response.result()     # TODO: REMOVE?
                 #__ = response.exception() # TODO?: REMOVE?
                 report = response.report()
@@ -296,7 +276,7 @@ class Logging:
                 raise exc
             return report
 
-    class TaskReportFuture(ConstFuture):
+    class TaskFuture(ConstFuture):
         def __init__(self, report, *, exception=None, traceback=None):
             super().__init__(report, exception=exception, traceback=traceback)
             self.report = report
@@ -352,7 +332,10 @@ class Logging:
                 tb = '\n'.join(tb_lines)
                 logger.error(f"\n{tb}{exc_type}: {exc_value}")
                 e = exc_value
-            future = Logging.TaskReportFuture(report, exception=e, traceback=tb)
+            future = Logging.TaskFuture(report, exception=e, traceback=tb)
+            """
+            future = Logging.TaskFuture(request)
+            """
             return future
 
         def restart(self):
@@ -366,10 +349,7 @@ class Logging:
                      future,
                      start_time,
                      done_callback=None,
-                     task_key=None,
-                     task_id=None,
-                     task_logspace=None,
-                     task_logname=None):
+                     task):
             self.pool = pool
             self.request = request
             self.future = future
@@ -387,10 +367,12 @@ class Logging:
             self._future_result = None
             self._result = None
             self._done = False
-            self.key = task_key
-            self.id = task_id
-            self.logspace = task_logspace
-            self.logname = task_logname
+            self.task = task
+            # TODO: self.key -> self.task.key, etc.
+            self.key = task.key
+            self.id = task.id
+            self.logspace = task.logspace
+            self.logname = task.logname
 
             # TODO: clearly separate Future done callbacks and Response (promise) done callbacks.
             future.add_done_callback(self._done_callback)
@@ -402,8 +384,6 @@ class Logging:
                 self.done_callbacks.append(done_callback)
                 if self.future.done():
                     done_callback(self)
-            
-
 
         def __str__(self):
             tag = signature.Tagger().str_ctor(self.__class__,
@@ -479,11 +459,10 @@ class Logging:
                 c(promise)
 
         def _lifecycle_done_callback(self):
-            response = self
-            request = response.request
+            request = self.request
             stage = Task.Lifecycle.END
             if request.lifecycle_callback is not None:
-                _ = request.lifecycle_callback(stage, request, response)
+                _ = request.lifecycle_callback(stage, request, self.task, self)
                 return _
 
 
@@ -523,8 +502,8 @@ class Logging:
             request = self.__class__(self.pool, _request)
             return request
 
-        def evaluate(self, **task_trace):
-            r = self.pool.evaluate(self, **task_trace)
+        def evaluate(self, *, task=request.Task()):
+            r = self.pool.evaluate(self, task=task)
             return r
 
         @property
@@ -545,38 +524,38 @@ class Logging:
                  dataspace,
                  priority=0,
                  return_none=False,
-                 validate_tasks=False,
+                 authenticate_tasks=False,
                  throw=True,
                  log_to_file=True,
                  log_level='INFO',
                  log_prefix=None,
                  log_format="%(asctime)s:%(levelname)s:%(funcName)s:%(message)s",
                  redirect_stdout=False):
-        state = name,\
-                dataspace,\
-                priority,\
-                return_none,\
-                validate_tasks, \
-                throw,\
-                log_to_file,\
-                log_level,\
-                log_prefix,\
-                log_format,\
-                redirect_stdout
+        state = dict(name=name,
+                dataspace=dataspace,
+                priority=priority,
+                return_none=return_none,
+                authenticate_tasks=authenticate_tasks, 
+                throw=throw,
+                log_to_file=log_to_file,
+                log_level=log_level,
+                log_prefix=log_prefix,
+                log_format=log_format,
+                redirect_stdout=redirect_stdout)
         Logging.__setstate__(self, state)
 
     def __getstate__(self):
-        state = self.name,\
-                    self.dataspace,\
-                    self.priority,\
-                    self.return_none,\
-                    self.validate_tasks, \
-                    self.throw, \
-                    self.log_to_file,\
-                    self.log_level,\
-                    self.log_prefix,\
-                    self.log_format,\
-                    self.redirect_stdout
+        state = dict(name=self.name,\
+                    dataspace=self.dataspace,\
+                    priority=self.priority,\
+                    return_none=self.return_none,\
+                    authenticate_tasks=self.authenticate_tasks, \
+                    throw=self.throw, \
+                    log_to_file=self.log_to_file,\
+                    log_level=self.log_level,\
+                    log_prefix=self.log_prefix,\
+                    log_format=self.log_format,\
+                    redirect_stdout=self.redirect_stdout)
         return state
 
     def __setstate__(self, state):
@@ -584,13 +563,13 @@ class Logging:
         self.dataspace,\
         self.priority,\
         self.return_none,\
-        self.validate_tasks, \
+        self.authenticate_tasks, \
         self.throw, \
         self.log_to_file,\
         self.log_level,\
         self.log_prefix,\
         self.log_format,\
-        self.redirect_stdout = state
+        self.redirect_stdout = tuple(state.values())
 
         self.anchorchain = 'datablocks', 'eval', 'pool', 'Logging'
         if self.name:
@@ -603,10 +582,16 @@ class Logging:
 
         self._ids = None
 
+    def clone(self, **kwargs):
+        state = self.__getstate__()
+        state.update(**kwargs)
+        clone = self.__class__(**state)
+        clone
+
     @property
     def ids(self):
         from ..config import CONFIG
-        from ..db import Ids
+        from ..hub.db import Ids
         if self._ids is None:
             self._ids = Ids(self.anchorspace,
               user=CONFIG.USER,
@@ -617,17 +602,20 @@ class Logging:
 
     def __eq__(self, other):
         return isinstance(other, self.__class__) and \
+            self.__getstate__() == other.__getstate__()
+        """
             self.name == other.name and \
             self.dataspace == other.dataspace and \
             self.priority == other.priority and \
             self.return_none == other.return_none and \
-            self.validate_tasks == other.validate_tasks and \
+            self.authenticate_tasks == other.authenticate_tasks and \
             self.throw == other.throw and\
             self.log_level == other.log_level and\
             self.log_prefix == other.log_prefix and \
             self.log_format == other.log_format and\
             self.log_to_file == other.log_to_file and \
             self.redirect_stdout == other.redirect_stdout
+        """
 
     def __tag__(self):
         _ = f"{signature.Tagger().ctor_name(self.__class__)}({self.name}, " +\
@@ -644,7 +632,7 @@ class Logging:
                f"dataspace={self.dataspace}, " + \
                f"priority={self.priority}, " + \
                f"return_none={self.return_none}, " + \
-               f"validate_tasks={self.validate_tasks}, " + \
+               f"authenticate_tasks={self.authenticate_tasks}, " + \
                f"throw={self.throw}, " + \
                f"log_to_file={self.log_to_file}, " + \
                f"log_level={self.log_level}, "+ \
@@ -659,24 +647,12 @@ class Logging:
     def apply(self, request):
         return self.Request(self, request)
 
-    def task_key(self, request):
-        return repr(request)
-
-    def task_id(self, key, *, version=VERSION, unique_hash=True):
-        if self.validate_tasks:
+    def key_id(self, key, *, version=VERSION, unique_hash=True):
+        if self.authenticate_tasks:
             key_ = self.ids.sanitize_value(key, quote=False)
             id = self.ids.get_id(key_, version, unique_hash=unique_hash)  # TODO: do we need to have a unique hash?
         else:
-            namespace_bytes = key.encode()
-            """
-            #namespace_uuid = uuid.UUID(bytes=namespace_bytes[:16]).int
-            namespace_uuid = uuid.UUID(bytes=namespace_bytes)
-            _uuid = uuid.uuid5(namespace_uuid, key).int
-            id = _uuid + version
-            """
-            hashstr = hashlib.sha1(namespace_bytes).hexdigest()
-            maxint64 = int(2**63)
-            id = int(hashstr, 16)%maxint64
+            id = utils.key_id(key)
         return id
 
     @staticmethod
@@ -696,11 +672,11 @@ class Logging:
         tag = self.id(key, version=version, unique_hash=unique_hash)
         return tag
 
-    def validate_task(self, id, key, request_tag, request_repr):
-        if not self.validate_tasks:
+    def authenticate_task(self, id, key, request_tag, request_repr):
+        if not self.authenticate_tasks:
             return
         from ..config import CONFIG
-        from ..db import Ids
+        from ..hub.db import Ids
         # REMOVE
         # TODO: use self.ids?
         ids = Ids(self.anchorspace,
@@ -732,28 +708,16 @@ class Logging:
             self._executor = Logging.TaskExecutor(throw=self.throw)
         return self._executor
 
-    def evaluate(self, request, **task_trace):
-        # FIX: task_trace must match those imposed by task (key, id, logspace, logname)
-        # TODO: pass in Task itself?
+    def evaluate(self, request, *, task=request.Task()):
         assert isinstance(request, self.__class__.Request)
-        task = request.task.clone()
-        """
-        if ('task_key' in task_trace and task_trace['task_key'] != task.key) or \
-           ('task_id' in task_trace and task_trace['task_id'] != task.id) or \
-           ('task_logspace' in task_trace and task_trace['task_logspace'] != task.logspace) or\
-           ('task_logname' in task_trace and task_trace['task_logname'] != task.logname)
-            logging.warning(f"Ignoring mismatched task_trace settings: {task_trace}")
-        """
-
-        _task_trace = dict(task_key=task.key, task_id=task.id, task_logspace=task.logspace, task_logname=task.logname)
-        if task_trace != _task_trace:
-            logging.debug(f"Ignoring mismatch: task_trace <-- {task_trace} !!!!!!!!!!========= {_task_trace} --> _task_trace")
+        # TODO: do we need to preallocate a task inside self.__class__.Request?
+        _task = request.task.clone() # spawn a new inner task
 
         delayed = self._delay_request(request.with_throw(self.throw))
         start_time = datetime.datetime.now()
         future = self._submit_delayed(delayed)
         logger.debug(f"Submitted delayed request based on task "
-                     f"with id {task.id} "
+                     f"with id {_task.id} "
                      f"to evaluate request {request} at {start_time}"
                      f" with prority {self.priority}"
                      f" logging to {task.logpath}")
@@ -762,11 +726,11 @@ class Logging:
                                  future=future,
                                  start_time=start_time,
                                  done_callback=self._execution_done_callback,
-                                 **_task_trace)
+                                 task=_task)
         return response
 
-    def compute(self, request, **task_trace):
-        promise = self.evaluate(request, **task_trace)
+    def compute(self, request, *, task=request.Task()):
+        promise = self.evaluate(request, task=task)
         result = promise.result()
         return result
 
@@ -830,7 +794,7 @@ class Dask(Logging):
                  n_workers=12,
                  priority=0,
                  return_none=False,
-                 validate_tasks=False,
+                 authenticate_tasks=False,
                  throw=False,
                  log_to_file=True,
                  log_level='INFO',
@@ -840,7 +804,7 @@ class Dask(Logging):
         _kwargs = dict(dataspace=dataspace,
                        priority=priority,
                        return_none=return_none,
-                       validate_tasks=validate_tasks,
+                       authenticate_tasks=authenticate_tasks,
                        throw=throw,
                        log_to_file=log_to_file,
                        log_level=log_level,
@@ -924,7 +888,7 @@ class Ray(Logging):
                  dataspace,
                  ray_kwargs=None,
                  ray_working_dir_config={},
-                 validate_tasks=False,
+                 authenticate_tasks=False,
                  throw=False,
                  log_to_file=True,
                  log_level='INFO',
@@ -936,7 +900,7 @@ class Ray(Logging):
         _kwargs = dict(dataspace=dataspace,
                        return_none=False,
                        priority=0,
-                       validate_tasks=validate_tasks,
+                       authenticate_tasks=authenticate_tasks,
                        throw=throw,
                        log_to_file=log_to_file,
                        log_level=log_level,
@@ -953,7 +917,7 @@ class Ray(Logging):
                f"dataspace={self.dataspace}, " + \
                f"ray_kwargs={self.ray_kwargs}, " + \
                f"ray_working_dir_config={self.ray_working_dir_config}, " + \
-               f"validate_tasks={self.validate_tasks}, " + \
+               f"authenticate_tasks={self.authenticate_tasks}, " + \
                f"throw={self.throw}, " + \
                f"log_to_file={self.log_to_file}, " + \
                f"log_level={self.log_level}, "+ \
@@ -1018,7 +982,7 @@ class Ray(Logging):
         for f in concurrent.futures.as_completed(futures):
             yield f.promise
 
-    def evaluate(self, request, **task_trace):
+    def evaluate(self, request, *, task=request.Task()):
         assert isinstance(request, self.__class__.Request)
         task = request.task.clone()
         client = self.client
@@ -1044,7 +1008,7 @@ class Ray(Logging):
                                  future=future,
                                  start_time=start_time,
                                  done_callback=self._execution_done_callback,
-                                 **task_trace)
+                                 task=task)
         return response
 
     @staticmethod
@@ -1070,7 +1034,7 @@ class Multiprocess(Logging):
                  max_workers=12,
                  priority=0,
                  return_none=False,
-                 validate_tasks=False,
+                 authenticate_tasks=False,
                  log_to_file=True,
                  log_level='INFO',
                  log_prefix=None,
@@ -1079,7 +1043,7 @@ class Multiprocess(Logging):
         _kwargs = dict(dataspace=dataspace,
                          priority=priority,
                          return_none=return_none,
-                         validate_tasks=validate_tasks,
+                         authenticate_tasks=authenticate_tasks,
                          log_to_file=log_to_file,
                          log_level=log_level,
                          log_prefix=log_prefix,
@@ -1111,7 +1075,7 @@ class Multiprocess(Logging):
 
 
 class HTTP(Logging):
-    class Future(Logging.TaskReportFuture):
+    class Future(Logging.TaskFuture):
         # HTTP inherits _delay_request() from Logging, whose 'delayed' is a Task  returning Report
         # so we need this Future to be able to unpack it.
         def __init__(self, result, *, exception=None, traceback=None):
@@ -1180,7 +1144,7 @@ class HTTP(Logging):
                  auth=None,
                  priority=0,
                  return_none=False,
-                 validate_tasks=False,
+                 authenticate_tasks=False,
                  throw=False,
                  log_to_file=True,
                  log_level='INFO',
@@ -1191,7 +1155,7 @@ class HTTP(Logging):
                 dataspace, \
                 priority, \
                 return_none, \
-                validate_tasks, \
+                authenticate_tasks, \
                 throw, \
                 log_to_file, \
                 log_level, \
@@ -1224,7 +1188,7 @@ class HTTP(Logging):
                f"auth = {self.auth}, " + \
                f"priority = {self.priority}, " + \
                f"return_none = {self.return_none}, " + \
-               f"validate_tasks = {self.validate_tasks}, " + \
+               f"authenticate_tasks = {self.authenticate_tasks}, " + \
                f"throw = {self.throw}, " + \
                f"log_to_file = {self.log_to_file}, " + \
                f"log_level={self.log_level}, " + \
