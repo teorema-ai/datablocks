@@ -153,10 +153,6 @@ class Logging:
         def __getstate__(self):
             return self.pool, self.request, self.logname
 
-        def __delete__(self):
-            if self.request.lifecycle_callback is not None and hasattr(self, '_request'):
-                self.request.lifecycle_callback(Task.Lifecycle.ERROR, self._request, task=self, response=None)
-
         def clone(self):
             # TODO: reuse self.key and self.id so that no calls to self.pool.key() etc.
             #  are involved. This way cloning won't require talking to the db.
@@ -235,13 +231,11 @@ class Logging:
             logger.debug(f"START: Executing request called {request_str} with task id {self.id}")
             exc = None
             try:
-                # TODO: move `lifecycle_callback()` invocation inside `evaluate()`
-                if self.request.lifecycle_callback is not None:
-                    # TODO: lifecycle_callback should accept request, task, response[=None]
-                    self.request.lifecycle_callback(Task.Lifecycle.BEGIN, request, self, response=None)
                 response = request.with_throw(self.pool.throw).evaluate(task=self)
-                #_ = response.result()     # TODO: REMOVE?
-                #__ = response.exception() # TODO?: REMOVE?
+                _ = response.result()
+                exc = response.exception()
+                if self.pool.throw:
+                    raise exc.with_traceback(response.traceback)
                 report = response.report()
                 # HACK: need to pass logspace and logname to request.evaluate()
                 report.logspace = self.logspace
@@ -344,46 +338,29 @@ class Logging:
     class Response(Response):
         def __init__(self,
                      *,
-                     pool,
                      request,
+                     pool,
                      future,
                      start_time,
-                     done_callback=None,
                      task):
-            self.pool = pool
             self.request = request
+            self.pool = pool
             self.future = future
             self.start_time = start_time
 
-            self.args_responses = None
-            self.kwargs_responses = None
-
             # HACK
-            # RENAME: promise --> response
-            self.future.promise = self
+            self.future.response = self
 
             self.done_time = None
-            self.done_callbacks = []
             self._future_result = None
             self._result = None
             self._done = False
             self.task = task
-            # TODO: self.key -> self.task.key, etc.
-            self.key = task.key
-            self.id = task.id
-            self.logspace = task.logspace
-            self.logname = task.logname
 
-            # TODO: clearly separate Future done callbacks and Response (promise) done callbacks.
-            future.add_done_callback(self._done_callback)
-            if self._lifecycle_done_callback:
-                self.done_callbacks.append(self._lifecycle_done_callback)
-                if self.future.done():
-                    self._lifecycle_done_callback()
-            if done_callback is not None:
-                self.done_callbacks.append(done_callback)
-                if self.future.done():
-                    done_callback(self)
+            future.response = self
+            future.add_done_callback(self.done_callback)
+            if self.future.done():
+                self.done_callback(self)
 
         def __str__(self):
             tag = signature.Tagger().str_ctor(self.__class__,
@@ -394,10 +371,6 @@ class Logging:
 
         def __repr__(self):
             return str(self)
-
-        @property
-        def task(self):
-            return self.request.func
 
         def exception(self):
             exception = self.future.exception()
@@ -448,28 +421,10 @@ class Logging:
                     r = logfile.read(size)
             return r
 
-        # TODO: clearly separate Future _done_callback and the Response (promise) done callback
-        @staticmethod
-        def _done_callback(future):
-            promise = future.promise
-            done_time = datetime.datetime.now()
-            promise._done = True
-            promise.done_time = done_time
-            for c in promise.done_callbacks:
-                c(promise)
-
-        def _lifecycle_done_callback(self):
-            request = self.request
-            stage = Task.Lifecycle.END
-            if request.lifecycle_callback is not None:
-                _ = request.lifecycle_callback(stage, request, self.task, self)
-                return _
-
-
     class Request(Request):
-        def __init__(self, pool, request):
-            self.pool = pool
+        def __init__(self, request, pool):
             self.request = request
+            self.pool = pool
             self.task = pool.Task(pool, request)
             super().__init__(self.task, *request.args, **request.kwargs)
 
@@ -478,7 +433,7 @@ class Logging:
             return _
 
         def __repr__(self):
-            _ = signature.Tagger().repr_ctor(self.__class__, self.pool, self.request)
+            _ = signature.Tagger().repr_ctor(self.__class__, self.request, self.pool)
             return _
 
         def __str__(self):
@@ -499,7 +454,7 @@ class Logging:
 
         def rebind(self, *args, **kwargs):
             _request = self.request.rebind(*args, **kwargs)
-            request = self.__class__(self.pool, _request)
+            request = self.__class__(_request, self.pool)
             return request
 
         def evaluate(self, *, task=request.Task()):
@@ -645,7 +600,7 @@ class Logging:
         self.executor.restart()
 
     def apply(self, request):
-        return self.Request(self, request)
+        return self.Request(request, self)
 
     def key_id(self, key, *, version=VERSION, unique_hash=True):
         if self.authenticate_tasks:
@@ -730,12 +685,12 @@ class Logging:
         return response
 
     def compute(self, request, *, task=request.Task()):
-        promise = self.evaluate(request, task=task)
-        result = promise.result()
+        response = self.evaluate(request, task=task)
+        result = response.result()
         return result
 
-    def as_completed(self, promises):
-        for p in promises:
+    def as_completed(self, responses):
+        for p in responses:
             yield p
 
     def _submit_delayed(self, delayed):
@@ -773,10 +728,10 @@ class Logging:
         return result
 
     @staticmethod
-    def _execution_done_callback(promise):
+    def _execution_done_callback(response):
         pass
 
-"""
+
 class Dask(Logging):
     class Task(Logging.Task):
         pass
@@ -850,10 +805,10 @@ class Dask(Logging):
         self.executor.restart()
         # TODO: why doesn't the inherited method work?
 
-    def as_completed(self, promises):
-        futures = (p.future for p in promises)
+    def as_completed(self, responses):
+        futures = (r.future for r in responses)
         for f in dd.distributed.as_completed(futures):
-            yield f.promise
+            yield f.response
 
     def _submit_delayed(self, delayed):
         future = self.client.compute(delayed)
@@ -861,16 +816,21 @@ class Dask(Logging):
 
     def _delay_request(self, request):
         task = request.task
-        _args, _kwargs = self._delay_request_args_kwargs(request)
-        delayed = dask.delayed(task)(*_args,
-                                             dask_key_name=request.dask_key,
-                                              **_kwargs)
+        # NB:
+        # This will rewrite args, kwargs and turn any Dask.Request arg into dask.delayed of the underlying arg.task
+        # This has the effect of hiding (internalizing in Dask) the (Dask.)Request subgraph attached to this request.
+        # This is done to allow Dask to schedule its execution graph statically and to prevent a lock between parent 
+        # and child Dask tasks.  For example, if the parent busy-waits on its children, and there is no capacity to run 
+        # the parent and all of the children, then a (dead?/live?)lock occurs.  Perhaps this can be remedied by non-busy
+        # waiting or dynamic scheduling?  Dynamic scheduling seems to have the same effect as busy waiting
+        _delayed_args, _delayed_kwargs = self._delay_request_args_kwargs(request)
+        delayed = dask.delayed(task)(*_delayed_args, dask_key_name=request.dask_key, **_delayed_kwargs)
         return delayed
 
     def _delay_request_argument(self, request, arg):
         delayed = self._delay_request(arg) if isinstance(arg, Dask.Request) else arg
         return delayed
-"""
+
 
 class Ray(Logging):
     class Task(Logging.Task):
@@ -945,7 +905,7 @@ class Ray(Logging):
         self._ray_client = None
 
     def apply(self, request):
-        arequest = self.Request(self, request)
+        arequest = self.Request(request, self)
         return arequest
 
     def repr(self, request):
@@ -977,10 +937,10 @@ class Ray(Logging):
         self.__delete__()
         _ = self.client
 
-    def as_completed(self, promises):
-        futures = (p.future for p in promises)
+    def as_completed(self, responses):
+        futures = (r.future for r in responses)
         for f in concurrent.futures.as_completed(futures):
-            yield f.promise
+            yield f.response
 
     def evaluate(self, request, *, task=request.Task()):
         assert isinstance(request, self.__class__.Request)
@@ -1068,10 +1028,10 @@ class Multiprocess(Logging):
                                                                     mp_context=multiprocessing.get_context('spawn'))
         return self._executor
 
-    def as_completed(self, promises):
-        futures = (p.future for p in promises)
+    def as_completed(self, responses):
+        futures = (p.future for p in responses)
         for f in concurrent.futures.as_completed(futures):
-            yield f.promise
+            yield f.response
 
 
 class HTTP(Logging):

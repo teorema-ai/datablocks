@@ -26,6 +26,7 @@ class Future:
         self._exception = None
         self._traceback = None
         self._result = None
+        self._done_callback = None
 
     def __str__(self):
         return signature.Tagger().str_ctor(self.__class__, self.func, *self.args_responses, **self.kwargs_responses)
@@ -36,9 +37,9 @@ class Future:
     def result(self):
         if not self._done:
             try:
-                _args = [_arg_response.result() for _arg_response in self._args_responses]
-                _kwargs = {key: _kwarg_response.result() for key, _kwarg_response in self._kwargs_responses.items()}
-                self._result = self.func(*_args, **_kwargs)
+                args = [self._arg_result(arg_response) for arg_response in self.args_responses]
+                kwargs = {key: self._arg_result(kwarg_response) for key, kwarg_response in self.kwargs_responses.items()}
+                self._result = self.func(*args, **kwargs)
             except Exception as e:
                 exc_type, exc_value, exc_traceback = utils.exc_info()
                 self._exception = exc_value
@@ -46,6 +47,8 @@ class Future:
             finally:
                 self._done = True
                 self._running = False
+                if self._done_callback is not None:
+                    self._done_callback(self)
         return self._result
 
     def done(self):
@@ -61,9 +64,21 @@ class Future:
         return self._traceback
 
     def add_done_callback(self, callback):
-        self.done_callback = callback
+        self._done_callback = callback
         if self.done():
-            callback(self)
+            self._done_callback(self)
+
+    @staticmethod
+    def _arg_result(arg):
+        if not isinstance(arg, Report) and not isinstance(arg, Response):
+            result = arg
+        else:
+            exception = arg.exception()
+            if exception is not None:
+                raise exception
+            result = arg.result()
+        return result
+
 
 
 class Task:
@@ -80,6 +95,15 @@ class Task:
 
     def __call__(self, *args, **kwargs):
         pass
+
+    def repr(self):
+        repr = signature.Tagger().repr_ctor(self.__init__)
+        return repr
+
+    def __str__(self):
+        str = signature.Tagger().str_ctor(self.__init__)
+        return str
+    
 
 # TODO: split into RPCClass (holding ctor + ctor_args, ctor_kwargs)
 # TODO: and RPCMethod holding an instance of RPCClass and _method_, _prototype_
@@ -226,7 +250,6 @@ class URL_RPC(RPC):
 
 
 class Request:
-
     def __init__(self, func, *args, **kwargs):
         if isinstance(func, str):
             self.func = URL_RPC(func)
@@ -293,31 +316,31 @@ class Request:
                                         **self.kwargs)
         return iargs, kargs, kwargs
 
-    def compute_args_kwargs(self, reports_only, args, kwargs, *, task=Task()):
-        _args = [self._compute_arg(reports_only, a, i, task=task) for i, a in enumerate(args)]
-        _kwargs = {k: self._compute_kwarg(reports_only, a, k, task=task) for k, a in kwargs.items()}
+    def evaluate_args_kwargs(self, reports_only, args, kwargs, *, task=Task()):
+        _args = [self._evaluate_arg(reports_only, a, i, task=task) for i, a in enumerate(args)]
+        _kwargs = {k: self._evaluate_kwarg(reports_only, a, k, task=task) for k, a in kwargs.items()}
         return _args, _kwargs
 
-    def _compute_arg(self, report_only, arg, index, *, task):
+    def _evaluate_arg(self, report_only, arg, index, *, task):
         '''
             logger.debug(f"Computing args[{index}] for request tagged\n\t{self.tag}\n"
                         f"\t\targs[{index}] {arg}")
                     '''
-        r = self._compute_argument(report_only, arg, task=task)
+        r = self._evaluate_argument(report_only, arg, task=task)
         '''logger.debug(f"\n\t\tDone with args[{index}]")'''
         return r
 
-    def _compute_kwarg(self, report_only, kwarg, key, *, task):
+    def _evaluate_kwarg(self, report_only, kwarg, key, *, task):
         '''
             logger.debug(f"Computing kwargs[{key}] for request tagged\n\t{self.tag}\n"
                         f"\t\tkwargs[{key}]  {kwarg}")
                     '''
-        r = self._compute_argument(report_only, kwarg, task=task)
+        r = self._evaluate_argument(report_only, kwarg, task=task)
         '''logger.debug(f"\n\t\tDone with kwargs[{key}]")'''
         return r
 
     # TODO: eliminate 'report' option?  It doesn't seem to be use5
-    def _compute_argument(self, report_only, arg, *, task):
+    def _evaluate_argument(self, report_only, arg, *, task):
         if report_only:
             report = arg.reporter() if isinstance(arg, Responder) else \
                          arg.report() if isinstance(arg, Response) else \
@@ -331,16 +354,6 @@ class Request:
                         arg.evaluate(task=task) if isinstance(arg, Request) else \
                         arg
             return response
-
-    def _arg_result(self, arg):
-        if not isinstance(arg, Report) and not isinstance(arg, Response):
-            result = arg
-        else:
-            exception = arg.exception()
-            if exception is not None:
-                raise exception
-            result = arg.result()
-        return result
 
     def close(self):
         c = Closure(self)
@@ -374,37 +387,16 @@ class Request:
         return result
 
     def evaluate(self, *, task=Task()):
-        ev = None
         args_responses = []
         kwargs_responses = {}
-        try:
-            compute_reports = True
-            compute_responses = not compute_reports
-            args_responses, kwargs_responses = self.compute_args_kwargs(compute_responses, self.args, self.kwargs, task=task)
-            _args = [self._arg_result(arg) for arg in args_responses]
-            _kwargs = {key: self._arg_result(arg) for key, arg in kwargs_responses.items()}
-            r = self.func(*_args, **_kwargs)
-        except Exception as e:
-            exc_type, exc_value, exc_traceback = utils.exc_info()
-            if self.evaluate_raises_exceptions:
-                raise e
-            logger.debug(f"Caught exception {repr(str(e))}")
-            ev = Response(request=self,
-                          result=None,
-                          args_responses=args_responses,
-                          kwargs_responses=kwargs_responses,
-                          exception=exc_value,
-                          traceback=exc_traceback,
-                          task=task)
-            return ev
-        if ev is None:
-            ev = Response(request=self,
-                          result=r,
-                          exception=None,
-                          args_responses=args_responses,
-                          kwargs_responses=kwargs_responses, 
-                          task=task)
-        return ev
+        compute_reports = True
+        compute_responses = not compute_reports
+        args_responses, kwargs_responses = self.evaluate_args_kwargs(compute_responses, self.args, self.kwargs, task=task)
+        future = Future(self.func, *args_responses, **kwargs_responses)
+        response = Response(request=self, future=future, task=task)
+        if self.lifecycle_callback is not None:
+            self.lifecycle_callback(Task.Lifecycle.BEGIN, self, task, response)
+        return response
 
 
 # TODO: --> Requests
@@ -693,54 +685,54 @@ class Report:
 class Response:
     def __init__(self,
                  request,
-                 result,
-                 exception,
-                 traceback=None,
-                 args_responses=None,
-                 kwargs_responses=None,
+                 future,
                  *,
                  task):
         self.request = request
-        self._result = result
-        self._exception = exception
-        self._traceback = traceback
-        self.args_responses = args_responses
-        self.kwargs_responses = kwargs_responses
-        self.start_time = self.done_time = datetime.datetime.now()
+        self.future = future
         self.task = task
-        # TODO: self.key -> self.task.key, etc 
-        self.key = task.key
-        self.id = task.id
-        self.logspace = task.logspace
-        self.logname = task.logname
+        self.start_time = datetime.datetime.now()
+        self.done_time = None
+        self.future.add_done_callback(self.done_callback)
+
+    @property
+    def key(self):
+        return self.task.key
+
+    @property
+    def id(self):
+        return self.task.id
+
+    @property
+    def logspace(self):
+        return self.task.logspace
+
+    @property
+    def logname(self):
+        return self.task.logname
 
     def __str__(self):
         return signature.Tagger().str_ctor(self.__class__,
                                         self.request,
-                                        self._result,
-                                        self.exception(),
-                                        None,
-                                        None)
+                                        self.future,
+                                        task=self.task)
 
     def __repr__(self):
         return signature.Tagger().repr_ctor(self.__class__,
                                          self.request,
-                                         self._result,
-                                         self.exception(),
-                                         None,
-                                         None)
-
+                                         self.future,
+                                         task=self.task)
+                                
     def __tag__(self):
         return signature.Tagger().tag_ctor(self.__class__,
                                         self.request,
-                                        self._result,
-                                        self.exception(),
-                                        None,
-                                        None)
+                                        self.future,
+                                        task=self.task)
+    """
     @property
     def request_id(self):
         return None
-
+    """
     def wait(self):
         try:
             self.result()
@@ -752,23 +744,33 @@ class Response:
         return report
 
     def result(self):
-        if self._exception is not None:
-            raise self._exception.with_traceback(self._traceback)
-        return self._result
+        result = self.future.result()
+        if self.future.exception() is not None:
+            raise self.future.exception().with_traceback(self.future.traceback())
+        else:
+            return result 
 
     def exception(self):
-        return self._exception
+        return self.future.exception()
 
     def traceback(self):
-        return self._traceback
+        return self.future.traceback()
+    
+    @property
+    def args_responses(self):
+        return self.future.args_responses
+
+    @property
+    def kwargs_responses(self):
+        return self.future.kwargs_responses
 
     @property
     def done(self):
-        return True
+        return self.future.done()
 
     @property
     def running(self):
-        return False
+        return self.future.running()
 
     @property
     def failed(self):
@@ -800,7 +802,21 @@ class Response:
         logpath = self.logspace.join(self.logspace.path, self.logname)
         return logpath
 
+    @staticmethod
+    def done_callback(future):
+        response = future.response
+        done_time = datetime.datetime.now()
+        response._done = True
+        response.done_time = done_time
 
+        request = response.request
+        stage = Task.Lifecycle.END
+        if request.lifecycle_callback is not None:
+            _ = request.lifecycle_callback(stage, request, response.task, response)
+            return _
+
+
+"""
 class Literal(Response):
     def __init__(self, request):
         super().__init__(request, request)
@@ -835,7 +851,7 @@ class Closure(Response):
             response = self.request.evaluate(task=task)
             self._result = response.result()
         return self._result
-
+"""
 
 class Reporter:
     def __init__(self, responses):
