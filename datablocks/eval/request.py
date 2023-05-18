@@ -49,6 +49,8 @@ class Future:
                 self._running = False
                 if self._done_callback is not None:
                     self._done_callback(self)
+        if self._exception:
+            raise self._exception.with_traceback(self._traceback)
         return self._result
 
     def done(self):
@@ -92,6 +94,7 @@ class Task:
         self.id = None
         self.logspace = None
         self.logpath = None
+        self.logname = None
 
     def __call__(self, *args, **kwargs):
         pass
@@ -394,6 +397,7 @@ class Request:
         args_responses, kwargs_responses = self.evaluate_args_kwargs(compute_responses, self.args, self.kwargs, task=task)
         future = Future(self.func, *args_responses, **kwargs_responses)
         response = Response(request=self, future=future, task=task)
+        future.promise = response
         if self.lifecycle_callback is not None:
             self.lifecycle_callback(Task.Lifecycle.BEGIN, self, task, response)
         return response
@@ -687,10 +691,12 @@ class Response:
                  request,
                  future,
                  *,
-                 task):
+                 task,
+                 done_callback=None):
         self.request = request
         self.future = future
         self.task = task
+        self._done_callback = done_callback
         self.start_time = datetime.datetime.now()
         self.done_time = None
         self.future.add_done_callback(self.done_callback)
@@ -804,7 +810,7 @@ class Response:
 
     @staticmethod
     def done_callback(future):
-        response = future.response
+        response = future.promise
         done_time = datetime.datetime.now()
         response._done = True
         response.done_time = done_time
@@ -812,8 +818,11 @@ class Response:
         request = response.request
         stage = Task.Lifecycle.END
         if request.lifecycle_callback is not None:
-            _ = request.lifecycle_callback(stage, request, response.task, response)
-            return _
+            request.lifecycle_callback(stage, request, response.task, response)
+        
+        if response._done_callback is not None:
+            response._done_callback(future)
+            
 
 
 """
@@ -945,7 +954,7 @@ class FirstSuccessRequest(FIRST):
 
 
 class ReportSummaryGraph:
-    def __init__(self, summary, indent=0, *, request_max_len=50, result_max_len=50, print=(), logspace=None):
+    def __init__(self, summary, indent=0, *, request_max_len=None, result_max_len=None, print=(), logspace=None):
         """
             print: tuple that can include 'logpath', 'exception', 'traceback'
         """
@@ -1076,7 +1085,7 @@ class ReportSummaryGraph:
     def validate_logs(self, *, dataspace=None, request_max_len=50):
         if dataspace is None:
             dataspace = self.logspace
-        _ = report_summary_validate_logs(self, dataspace=dataspace, request_max_len=request_max_len)
+        _ = report_summary_validate_logs(self.summary, dataspace=dataspace, request_max_len=request_max_len)
         return _
 
 

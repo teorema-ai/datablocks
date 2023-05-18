@@ -33,7 +33,7 @@ import ray.util
 from .. import signature, utils
 from ..dataspace import DATABLOCKS_DATALAKE
 from . import request
-from .request import Task, Request, Response
+from .request import Task, Future, Request, Response
 
 
 VERSION = 0
@@ -269,6 +269,35 @@ class Logging:
             if exc is not None:
                 raise exc
             return report
+        
+    class Future:
+        """
+            Future "dynamically extends" request.Future to override its result() method.
+            We are avoiding "statically" extending it as a subclass, since we cannot supply arguments
+            to request.Future ctor
+        """
+        def __init__(self, response):
+            self._response = response
+        
+        @property
+        def response(self):
+            response = object.__getattribute__(self, '_response')
+            return response
+        
+        def result(self):
+            report = self.response.future.result()
+            result = report.result()
+            return result
+        
+        def __repr__(self):
+            return signature.Tagger().repr_ctor(self.__class__, self.response)
+
+        def __str__(self):
+            return signature.Tagger().str_ctor(self.__class__, self.response)
+        
+        def __getattr__(self, attr):
+            _ = getattr(self.response.future, attr)
+            return _
 
     class TaskFuture(ConstFuture):
         def __init__(self, report, *, exception=None, traceback=None):
@@ -327,8 +356,10 @@ class Logging:
                 logger.error(f"\n{tb}{exc_type}: {exc_value}")
                 e = exc_value
             future = Logging.TaskFuture(report, exception=e, traceback=tb)
+            #future = Logging.TaskFuture(request)
             """
-            future = Logging.TaskFuture(request)
+            response = request.request.evaluate(task=request.task)
+            future = Logging.Future(response)
             """
             return future
 
@@ -342,25 +373,21 @@ class Logging:
                      pool,
                      future,
                      start_time,
-                     task):
+                     task,
+                     done_callback=None):
             self.request = request
             self.pool = pool
             self.future = future
             self.start_time = start_time
-
-            # HACK
-            self.future.response = self
 
             self.done_time = None
             self._future_result = None
             self._result = None
             self._done = False
             self.task = task
+            self._done_callback = done_callback
 
-            future.response = self
-            future.add_done_callback(self.done_callback)
-            if self.future.done():
-                self.done_callback(self)
+            future.promise = self
 
         def __str__(self):
             tag = signature.Tagger().str_ctor(self.__class__,
@@ -399,7 +426,7 @@ class Logging:
 
         def report(self):
             # NB: Task.__call__() returns Report from the inner Request's evaluation Result.
-            report = self.future.report
+            report = self.future.response.report()
             return report
 
         def logfile(self):
@@ -541,7 +568,7 @@ class Logging:
         state = self.__getstate__()
         state.update(**kwargs)
         clone = self.__class__(**state)
-        clone
+        return clone
 
     @property
     def ids(self):
@@ -663,10 +690,9 @@ class Logging:
             self._executor = Logging.TaskExecutor(throw=self.throw)
         return self._executor
 
-    def evaluate(self, request, *, task=request.Task()):
+    def evaluate(self, request, *, task):
         assert isinstance(request, self.__class__.Request)
-        # TODO: do we need to preallocate a task inside self.__class__.Request?
-        _task = request.task.clone() # spawn a new inner task
+        _task = request.task # use a new inner task 
 
         delayed = self._delay_request(request.with_throw(self.throw))
         start_time = datetime.datetime.now()
@@ -675,7 +701,7 @@ class Logging:
                      f"with id {_task.id} "
                      f"to evaluate request {request} at {start_time}"
                      f" with prority {self.priority}"
-                     f" logging to {task.logpath}")
+                     f" logging to {_task.logpath}")
         response = self.Response(pool=self,
                                  request=request,
                                  future=future,
@@ -808,7 +834,7 @@ class Dask(Logging):
     def as_completed(self, responses):
         futures = (r.future for r in responses)
         for f in dd.distributed.as_completed(futures):
-            yield f.response
+            yield f.promise
 
     def _submit_delayed(self, delayed):
         future = self.client.compute(delayed)
@@ -940,7 +966,7 @@ class Ray(Logging):
     def as_completed(self, responses):
         futures = (r.future for r in responses)
         for f in concurrent.futures.as_completed(futures):
-            yield f.response
+            yield f.promise
 
     def evaluate(self, request, *, task=request.Task()):
         assert isinstance(request, self.__class__.Request)
@@ -1031,7 +1057,7 @@ class Multiprocess(Logging):
     def as_completed(self, responses):
         futures = (p.future for p in responses)
         for f in concurrent.futures.as_completed(futures):
-            yield f.response
+            yield f.promise
 
 
 class HTTP(Logging):
