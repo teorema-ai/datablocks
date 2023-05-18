@@ -342,6 +342,7 @@ class Logging:
             self.throw = throw
 
         def submit(self, request):
+            """
             report = None
             e = None
             tb = None
@@ -358,9 +359,8 @@ class Logging:
             future = Logging.TaskFuture(report, exception=e, traceback=tb)
             #future = Logging.TaskFuture(request)
             """
-            response = request.request.evaluate(task=request.task)
-            future = Logging.Future(response)
-            """
+            response = Request.evaluate(request, task=request.task)
+            future = response.future
             return future
 
         def restart(self):
@@ -399,6 +399,7 @@ class Logging:
         def __repr__(self):
             return str(self)
 
+        """
         def exception(self):
             exception = self.future.exception()
             return exception
@@ -411,7 +412,8 @@ class Logging:
             if self._result is None:
                 self._result = self.future.result()
             return self._result
-
+        """
+        
         @property
         def done(self):
             if hasattr(self.future, 'done'):
@@ -424,10 +426,12 @@ class Logging:
                 return self.future.running()
             return not self.failed and not self.done
 
+        """
         def report(self):
             # NB: Task.__call__() returns Report from the inner Request's evaluation Result.
             report = self.future.response.report()
             return report
+        """
 
         def logfile(self):
             try:
@@ -710,10 +714,12 @@ class Logging:
                                  task=_task)
         return response
 
+    """
     def compute(self, request, *, task=request.Task()):
         response = self.evaluate(request, task=task)
         result = response.result()
         return result
+    """
 
     def as_completed(self, responses):
         for p in responses:

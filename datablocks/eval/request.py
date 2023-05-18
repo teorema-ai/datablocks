@@ -319,44 +319,36 @@ class Request:
                                         **self.kwargs)
         return iargs, kargs, kwargs
 
-    def evaluate_args_kwargs(self, reports_only, args, kwargs, *, task=Task()):
-        _args = [self._evaluate_arg(reports_only, a, i, task=task) for i, a in enumerate(args)]
-        _kwargs = {k: self._evaluate_kwarg(reports_only, a, k, task=task) for k, a in kwargs.items()}
+    def evaluate_args_kwargs(self, args, kwargs, *, task=Task()):
+        _args = [self._evaluate_arg(a, i, task=task) for i, a in enumerate(args)]
+        _kwargs = {k: self._evaluate_kwarg(a, k, task=task) for k, a in kwargs.items()}
         return _args, _kwargs
 
-    def _evaluate_arg(self, report_only, arg, index, *, task):
+    def _evaluate_arg(self, arg, index, *, task):
         '''
             logger.debug(f"Computing args[{index}] for request tagged\n\t{self.tag}\n"
                         f"\t\targs[{index}] {arg}")
                     '''
-        r = self._evaluate_argument(report_only, arg, task=task)
+        r = self._evaluate_argument(arg, task=task)
         '''logger.debug(f"\n\t\tDone with args[{index}]")'''
         return r
 
-    def _evaluate_kwarg(self, report_only, kwarg, key, *, task):
+    def _evaluate_kwarg(self, kwarg, key, *, task):
         '''
             logger.debug(f"Computing kwargs[{key}] for request tagged\n\t{self.tag}\n"
                         f"\t\tkwargs[{key}]  {kwarg}")
                     '''
-        r = self._evaluate_argument(report_only, kwarg, task=task)
+        r = self._evaluate_argument(kwarg, task=task)
         '''logger.debug(f"\n\t\tDone with kwargs[{key}]")'''
         return r
 
     # TODO: eliminate 'report' option?  It doesn't seem to be use5
-    def _evaluate_argument(self, report_only, arg, *, task):
-        if report_only:
-            report = arg.reporter() if isinstance(arg, Responder) else \
-                         arg.report() if isinstance(arg, Response) else \
-                         arg.reporter() if isinstance(arg, Requester) else \
-                         arg.report() if isinstance(arg, Request) else \
-                         arg
-            return report
-        else:
-            response = \
-                        arg.evaluate(task=task) if isinstance(arg, Requester) else \
-                        arg.evaluate(task=task) if isinstance(arg, Request) else \
-                        arg
-            return response
+    def _evaluate_argument(self, arg, *, task):
+        response = \
+                    arg.evaluate(task=task) if isinstance(arg, Requester) else \
+                    arg.evaluate(task=task) if isinstance(arg, Request) else \
+                    arg
+        return response
 
     def close(self):
         c = Closure(self)
@@ -390,11 +382,7 @@ class Request:
         return result
 
     def evaluate(self, *, task=Task()):
-        args_responses = []
-        kwargs_responses = {}
-        compute_reports = True
-        compute_responses = not compute_reports
-        args_responses, kwargs_responses = self.evaluate_args_kwargs(compute_responses, self.args, self.kwargs, task=task)
+        args_responses, kwargs_responses = self.evaluate_args_kwargs(self.args, self.kwargs, task=task)
         future = Future(self.func, *args_responses, **kwargs_responses)
         response = Response(request=self, future=future, task=task)
         future.promise = response
