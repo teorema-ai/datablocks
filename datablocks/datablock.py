@@ -314,7 +314,7 @@ class Datablock(Anchored, Scoped):
         self._tmpspace = tmpspace
         self.anchorspace = dataspace.subspace(*self.anchorchain)
         self.versionspace = self.anchorspace.subspace(f"version={str(self.version)}",)
-        self.logspace = self.versionspace.subspace(*pool.anchorchain)
+        #self.logspace = self.versionspace.subspace(*pool.anchorchain)
         self.lock_pages = lock_pages
         self.verbose = verbose
         self.pool = pool
@@ -611,11 +611,11 @@ class Datablock(Anchored, Scoped):
         """
         short = not full
         recordspace = self._recordspace_()
-        try:
-            parquet_dataset = pq.ParquetDataset(recordspace.root, use_legacy_dataset=False, filesystem=recordspace.filesystem)
-            frame = parquet_dataset.read().to_pandas()
-        except (Exception, OSError) as e:
-            frame = pd.DataFrame()
+
+        parquet_dataset = pq.ParquetDataset(recordspace.root, use_legacy_dataset=False, filesystem=recordspace.filesystem)
+        table = parquet_dataset.read()
+        frame = table.to_pandas()
+    
         if len(frame) > 0:
             
             frame.reset_index(inplace=True, drop=True)
@@ -643,18 +643,17 @@ class Datablock(Anchored, Scoped):
             __builtins__['print'](__frame)
         return __frame
 
-    def show_build_record_columns(self, *, full=True):
-        frame = self.show_build_records()
+    def show_build_columns(self, *, full=True, **ignored):
+        frame = self.show_build_records(full=full)
         columns = frame.columns
-        if not full:
-            _columns_ = [c for c in columns if c in Datablock.BUILD_RECORDS_COLUMNS_SHORT]
-        else:
-            _columns_ = columns
-        return _columns_
+        return columns
     
     def show_build_record(self, *, record=None, full=False):
         import datablocks
-        records = self.show_build_records(full=full)
+        try:
+            records = self.show_build_records(full=full)
+        except:
+            return None
         if len(records) == 0:
             return None
         if isinstance(record, int):
@@ -663,54 +662,75 @@ class Datablock(Anchored, Scoped):
             _record = records.iloc[-1]
         return _record
 
-    def show_build_summary(self, *, record=None):
-        _record = self.record(record=record)
+    def show_build_graph(self, *, record=None, **kwargs):
+        _record = self.show_build_record(record=record, full=True)
+        _summary = _record['report_summary']
+        _logspace = self.show_build_logspace()
+        graph = ReportSummaryGraph(_summary, logspace=_logspace, **kwargs)
+        return graph
+
+    def show_build_summary(self, *, record=None, **ignored):
+        _record = self.show_build_record(record=record, full=True)
         summary = _record['report_summary']
         return summary
 
-    def show_build_logspace(self, *, record=None):
-        _record = self.record(record=record)
-        logspace = _record['logspace']
+    def show_build_scope(self, *, record=None, **ignored):
+        _record = self.show_build_record(record=record, full=True)
+        scopestr = _record['scope']
+        scope = _eval(scopestr)
+        return scope
+
+    def show_build_logspace(self, *, record=None, **ignored):
+        _record = self.show_build_record(record=record, full=True)
+        _logspace = _record['logspace']
+        logspace = _eval(_logspace)
         return logspace
-
-    def show_build_graph(self, *, record=None, **kwargs):
-        _record = self.show_build_record(record=record)
-        try:
-            logspace = _eval(_record['logspace'])
-        except:
-            logspace = None
-        if logspace is None:
-            return None
-        summary = _record['report_summary']
-        graph = ReportSummaryGraph(summary, logspace=logspace, **kwargs)
-        return graph
-
+    def show_build_logname(self, *, record=None, **kwargs):
+        record = self.show_build_record(record=record, full=True)
+        _ = record['logname']
+        return _
+    
     def show_build_logpath(self, *, record=None, **kwargs):
+        logspace = self.show_build_logspace(record=record)
+        logname = self.show_build_logname(record=record)
+        if logspace and logname:
+            logpath = logspace.join(logspace.root, logname+'.log')
+            return logpath
+
+    def show_build_logs(self, *, record=None, request_max_len=50, **kwargs):
+        g = self.show_build_graph(record=record, **kwargs)
+        if g is not None:
+            _ = g.validate_logs(request_max_len=request_max_len)
+            return _
+        
+    @DEPRECATED # USE show_build_graph()
+    def show_build_request(self, *, record=None, max_len=None, **kwargs):
+        kwargs[f'request_max_len'] = max_len
         g = self.show_build_graph(record=record, **kwargs)
         # Build graph looks like this: collate({extent}, collate(build_shard, ...)) 
         # and we want the outer collate's arg 1 (inner collate)'s arg 0 -- build_shard 
         if g is None:
             return None
-        build = g.node(1, 0)
-        _ = build.logpath()
+        _ = g.request
+        return _
+    
+    @DEPRECATED # Use show_build_graph()
+    def show_build_result(self, *, record=None, max_len=None, **kwargs):
+        kwargs[f'request_max_len'] = max_len
+        g = self.show_build_graph(record=record, **kwargs)
+        # Build graph looks like this: collate({extent}, collate(build_shard, ...)) 
+        # and we want the outer collate's arg 1 (inner collate)'s arg 0 -- build_shard 
+        if g is None:
+            return None
+        _ = g.result
         return _
 
     @BROKEN
     def show_build_log(self, *, record=None, **kwargs):
         g = self.build_graph(record=record, **kwargs)
-        _ = g.log()
-        return _
-
-    def show_build_scope(self, *, record=None):
-        _record = self.show_build_record(record=record)
-        scopestr = _record['scope']
-        scope = _eval(scopestr)
-        return scope
-    
-    def build_validate_logs(self, *, record=None, request_max_len=50, **kwargs):
-        g = self.show_build_graph(record=record, **kwargs)
-        _ = g.validate_logs(request_max_len=request_max_len)
-        return _
+        if g is not None:
+            _ = g.log()
+            return _
     
     @DEPRECATED
     def list(self):
@@ -718,7 +738,7 @@ class Datablock(Anchored, Scoped):
         All extents with the same alias and version. See `records()` for a broader list.
         """
 
-        records = self.records(full=True)
+        records = self.show_build_records(full=True)
         _records = records[(records['status']=='STATUS.SUCCEEDED') & (records['stage']=='END')].groupby(['alias', 'version']).last()
         shardscopes = [_eval(_shardscope) for _shardscope in _records['shardscope']]
         extent_databooks = [self.extent_databook(**shardscope) for shardscope in shardscopes]
@@ -768,7 +788,10 @@ class Datablock(Anchored, Scoped):
             logname = None
             task_id = None
             if response is not None:
-                runtime_secs = (response.done_time - response.start_time).total_seconds()
+                if response.done_time is not None and response.start_time is not None:
+                    runtime_secs = (response.done_time - response.start_time).total_seconds()
+                else:
+                    runtime_secs = str(None)
                 report = response.report()
                 task_id = response.id
                 report_summary = report.summary()
@@ -788,7 +811,7 @@ class Datablock(Anchored, Scoped):
                 """
                 logging.debug(f"[BUILD] summary: {summarystr}, logpath: {logpath}, logname: {logname}")
                 _record.update(dict(
-                                    task_id=task_id,
+                                    task_id=str(task_id),
                                     runtime_secs=f"{runtime_secs}",
                                     status=report_summary['status'],
                                     success=report_summary['success'],
@@ -828,9 +851,12 @@ class Datablock(Anchored, Scoped):
             _scope = self.show_build_scope()
             if blockscope != _scope:
                 raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.__class__} alias {self.alias}")
+        """
         pool_key = utils.datetime_now_key()
         pool_dataspace = self.versionspace.subspace(*(self.pool.anchorchain+(pool_key,))).ensure()
         pool = self.pool.clone(dataspace=pool_dataspace)
+        """
+        pool = self.pool
         request = self.build_databook_request(pool, **blockscope).with_lifecycle_callback(self._build_databook_request_lifecycle_callback_(**blockscope))
         response = request.evaluate()
         if self.build_echo_task_id:
@@ -860,8 +886,7 @@ class Datablock(Anchored, Scoped):
         logger.debug(f"Requesting build of shortfall_tagbatch_list: {shortfall_tagbatchscope_list}")
         shortfall_batch_requests = \
             [self._build_batch_request_(shortfall_tagbatchscope_list[i], **shortfall_batchscope_list[i])
-                            .apply(pool)
-                                                 for i in range(len(shortfall_tagbatchscope_list))]
+                            .apply(pool) for i in range(len(shortfall_tagbatchscope_list))]
         shortfall_batch_requests_str = "[" + \
                                           ", ".join(str(_) for _ in shortfall_batch_requests) + \
                                           "]"
@@ -871,7 +896,7 @@ class Datablock(Anchored, Scoped):
         logger.debug(f"collated_shortfall_batch_request: {collated_shortfall_batch_request}")
         extent_databook = self.extent_databook(**batchscope)
         build_databook_request = \
-            Request(self.collate_databooks, extent_databook, collated_shortfall_batch_request)
+            Request(self.collate_databooks, extent_databook, collated_shortfall_batch_request).apply(pool)
         return build_databook_request
 
     @OVERRIDE
@@ -902,7 +927,7 @@ class Datablock(Anchored, Scoped):
     def _read_block_(self, tagblockscope, topic, **blockscope):
         raise NotImplementedError()
     
-    def UNSAFE_clear_records(self):
+    def UNSAFE_clear_build_records(self):
         recordspace = self._recordspace_()
         recordspace.remove()
     
@@ -1048,8 +1073,10 @@ class DB:
             return repr
         
     @staticmethod
-    def define(cls, *, module_name=__name__, topics, version, use_tempspace=None, datablock_repr=None, datablock_tag=None):
+    def DATABLOCK(cls, *, module_name=__name__, topics, version, use_tempspace=None, datablock_repr=None, datablock_tag=None):
         """
+            Datablock subclass factory using `cls` as implementation of the basic `build()`, `read()`, `valid()`, `metric()` methods.
+            Optional members: `version` and `topics`.
             cls must define methods
                build(root|{topic->root}, [fs], **shardscope) -> rooted_shard_path | {topic -> rooted_shard_path}
                read(root|{topic->root}, [fs], **shardscope) -> object | {topic -> object}
@@ -1222,7 +1249,7 @@ class DB:
                     metric = self.obj.metric(_shardspace.root, _fs, topic, **scope)
             return metric
 
-        datablocks_module_name = "datablock."+module_name
+        datablocks_module_name = "DATABLOCK."+module_name
         try:
             importlib.import_module(datablocks_module_name)
         except:
@@ -1279,7 +1306,7 @@ class DB:
     def __init__(self, cls_or_clstr, alias=None, *, use_tempspace=False, **init_kwargs):
         """
         Wrapper around
-        def define(cls, *, module=__name__, topics, version, use_tempspace=False):  
+        def DATABLOCK(cls, *, module=__name__, topics, version, use_tempspace=False):  
         """
         if isinstance(cls_or_clstr, str):
             clstr = cls_or_clstr
@@ -1311,7 +1338,7 @@ class DB:
             self._tag = Tagger(tag_defaults=False).tag_func(DB, clstr, **init_kwargs)
 
         # TODO: could simply save _repr and _tag instead of init_kwargs, alias and clstr
-        datablock_class = DB.define(cls,
+        datablock_class = DB.DATABLOCK(cls,
                                     module_name=module_name, 
                                     version=version, 
                                     topics=topics, 
@@ -1347,20 +1374,23 @@ class DB:
         except:
             pass
         alias = object.__getattribute__(self, 'alias')
-        try:
-            records = self.datablock.records()
-            if len(records) == 0:
-                raise ValueError(f"No records for datablock {self.datablock} of version: {self.datablock.version}")
-            if alias is None:
-                rec = records.iloc[-1]
-            else:
-                rec = records[records.alias == alias].iloc[-1]
-            # TODO: fix serialization of version to record to exlude `repr`
-            if rec['version'] != repr(self.datablock.version) and rec['version'] != self.datablock.version:
-                raise ValueError(f"Version mismatch for datablock {self.datablock} of version: {self.datablock.version} and record with alias {alias}: {rec['version']}")
-            _scope = _eval(rec['scope'])
-        except Exception as e:
-            _scope = None
+        records = self.datablock.show_build_records()
+        if len(records) == 0:
+            msg = f"No records for datablock {self.datablock} of version: {self.datablock.version}"
+            if self.verbose:
+                print(msg)
+            raise ValueError(msg)
+        if alias is None:
+            rec = records.iloc[-1]
+        else:
+            rec = records[records.alias == alias].iloc[-1]
+        # TODO: fix serialization of version to record to exlude `repr`
+        if rec['version'] != repr(self.datablock.version) and rec['version'] != self.datablock.version:
+            msg = f"Version mismatch for datablock {self.datablock} of version: {self.datablock.version} and record with alias {alias}: {rec['version']}"
+            if self.verbose:
+                print(msg)
+            raise ValueError(msg)
+        _scope = _eval(rec['scope'])
         self._scope = _scope
         return _scope
         
