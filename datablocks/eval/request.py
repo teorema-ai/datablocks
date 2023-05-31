@@ -11,7 +11,9 @@ from .. import utils
 from .. import signature
 from ..utils import REPLACE, REMOVE, DEPRECATED, ALIAS, truncate_str
 
+# eval support
 _eval = __builtins__['eval']
+import datablocks.dataspace
 
 logger = logging.getLogger(__name__)
 
@@ -81,15 +83,14 @@ class Future:
             result = arg.result()
         return result
 
-
-
 class Task:
     class Lifecycle(enum.IntEnum):
         ERROR = -1
         BEGIN = 0
         END = 1
 
-    def __init__(self):
+    def __init__(self, func):
+        self._func = func
         self.key = None
         self.id = None
         self.logspace = None
@@ -97,7 +98,12 @@ class Task:
         self.logname = None
 
     def __call__(self, *args, **kwargs):
-        pass
+        _ = self.func(*args, **kwargs)
+        return _
+
+    @property
+    def func(self):
+        return self._func
 
     def repr(self):
         repr = signature.Tagger().repr_ctor(self.__init__)
@@ -254,26 +260,61 @@ class URL_RPC(RPC):
 
 class Request:
     def __init__(self, func, *args, **kwargs):
-        if isinstance(func, str):
-            self.func = URL_RPC(func)
+        if isinstance(func, Task): # implement rebind without changing task to preserve key, id, logname, etc.
+            self.task = func
         else:
-            self.func = func
-        if not callable(self.func):
-            raise ValueError(f"Request func {self.func} of non-callable type {type(self.func)}")
+            if isinstance(func, str):
+                _func = URL_RPC(func)
+            else:
+                _func = func
+            if not callable(_func):
+                raise ValueError(f"Request func {_func} of non-callable type {type(_func)}")
+            self.task = Task(_func)
         self.args, self.kwargs = args, kwargs
-        self.throw = False
-        self.lifecycle_callback = None
+        self.settings = dict(
+                             throw=False, 
+                             lifecycle_callback=None,
+                             )
+    def __ne__(self, other):
+        _ = (self.__class__ != other.__class__) or \
+            (signature.tag(self) != signature.tag(other))
+        return _
+
+    @ALIAS
+    def set(self, **settings):
+        _ = self.with_settings(**settings)
+        return _
+    
+    def get(self, key):
+        _ = self.settings[key]
+        return _
+
+    def has(self, key):
+        _ = key in self.settings
+        return _
+    
+    # Use .set()
+    @DEPRECATED
+    def with_settings(self, **settings):
+        request = copy.deepcopy(self)
+        request.settings.update(**settings)
+        return request
+
+    # TODO: unify callbacks (summary, lifecycle) inside `settings`
+    # Use .set()
+    def with_summary(self, summary):
+        self.set(summary=summary)
+        return self
 
     def with_lifecycle_callback(self, lifecycle_callback):
         """
             lifecycle_callback: (Task.Lifecycle, request, Option[response] -> None)
         """
-        self.lifecycle_callback = lifecycle_callback
-        return self
+        request = self.set(lifecycle_callback=lifecycle_callback)
+        return request
 
     def with_throw(self, throw=True):
-        request = copy.copy(self)
-        request.throw = throw
+        request = self.set(throw=throw)
         return request
 
     @ALIAS
@@ -283,70 +324,73 @@ class Request:
 
     @property
     def evaluate_raises_exceptions(self):
-        return self.throw
+        return self.settings['throw']
+    
+    @property
+    def lifecycle_callback(self):
+        return self.settings['lifecycle_callback']
 
     def __eq__(self, other):
-        return isinstance(other, self.__class__) and self.func == other.func and \
+        return isinstance(other, self.__class__) and self.task == other.task and \
                self.args == other.args and self.kwargs == other.kwargs
 
     def rebind(self, *args, **kwargs):
-        request = Request(self.func, *args, **kwargs)\
-                    .with_evaluate_raises_exceptions(self.evaluate_raises_exceptions)\
-                    .with_throw(self.throw)\
-                    .with_lifecycle_callback(self.lifecycle_callback)
+        # rebind should preserve task
+        request = Request(self.task, *args, **kwargs)\
+                    .with_settings(**self.settings)
         return request
 
     def __str__(self):
-        str = signature.Tagger().str_func(self.func, *self.args, **self.kwargs)
+        str = signature.Tagger().str_func(self.task.func, *self.args, **self.kwargs)
         return str
 
     def __repr__(self):
-        repr = signature.Tagger().repr_func(self.func, *self.args, **self.kwargs)
+        repr = signature.Tagger().repr_func(self.task.func, *self.args, **self.kwargs)
         return repr
 
     def __tag__(self):
-        _ = signature.Tagger().tag_func(self.func, *self.args, **self.kwargs)
+        _ = signature.Tagger().tag_func(self.task.func, *self.args, **self.kwargs)
         return _
 
     def iargs_kargs_kwargs(self):
-        if hasattr(self.func, '__iargs_kargs_kwargs__'):
-            return self.func.__iargs_kargs_kwargs__
+        if hasattr(self.task, '__iargs_kargs_kwargs__'):
+            return self.task.__iargs_kargs_kwargs__
         iargs, kargs, kwargs = \
-          signature.func_iargs_kargs_kwargs(self.func,
+          signature.func_iargs_kargs_kwargs(self.task.func,
                                         False,
                                         True,
                                         *self.args,
                                         **self.kwargs)
         return iargs, kargs, kwargs
 
-    def evaluate_args_kwargs(self, args, kwargs, *, task=Task()):
-        _args = [self._evaluate_arg(a, i, task=task) for i, a in enumerate(args)]
-        _kwargs = {k: self._evaluate_kwarg(a, k, task=task) for k, a in kwargs.items()}
+    def evaluate_args_kwargs(self, args, kwargs):
+        _args = [self._evaluate_arg(a, i) for i, a in enumerate(args)]
+        _kwargs = {k: self._evaluate_kwarg(a, k) for k, a in kwargs.items()}
         return _args, _kwargs
 
-    def _evaluate_arg(self, arg, index, *, task):
+    def _evaluate_arg(self, arg, index):
         '''
             logger.debug(f"Computing args[{index}] for request tagged\n\t{self.tag}\n"
                         f"\t\targs[{index}] {arg}")
                     '''
-        r = self._evaluate_argument(arg, task=task)
+        r = self._evaluate_argument(arg)
         '''logger.debug(f"\n\t\tDone with args[{index}]")'''
         return r
 
-    def _evaluate_kwarg(self, kwarg, key, *, task):
+    def _evaluate_kwarg(self, kwarg, key):
         '''
             logger.debug(f"Computing kwargs[{key}] for request tagged\n\t{self.tag}\n"
                         f"\t\tkwargs[{key}]  {kwarg}")
                     '''
-        r = self._evaluate_argument(kwarg, task=task)
+        r = self._evaluate_argument(kwarg)
         '''logger.debug(f"\n\t\tDone with kwargs[{key}]")'''
         return r
 
     # TODO: eliminate 'report' option?  It doesn't seem to be use5
-    def _evaluate_argument(self, arg, *, task):
+    def _evaluate_argument(self, arg):
         response = \
-                    arg.evaluate(task=task) if isinstance(arg, Requester) else \
-                    arg.evaluate(task=task) if isinstance(arg, Request) else \
+                    arg.evaluate() if isinstance(arg, BLOCK.Request) else \
+                    arg.evaluate() if isinstance(arg, Request) else \
                     arg
         return response
 
@@ -376,183 +420,21 @@ class Request:
         t = functor.apply(request, *args, **kwargs)
         return t
 
-    def compute(self, *, task=Task()):
-        response = self.evaluate(task=task)
+    def compute(self):
+        response = self.evaluate()
         result = response.result()
         return result
 
-    def evaluate(self, *, task=Task()):
-        args_responses, kwargs_responses = self.evaluate_args_kwargs(self.args, self.kwargs, task=task)
-        future = Future(self.func, *args_responses, **kwargs_responses)
-        response = Response(request=self, future=future, task=task)
+    def evaluate(self):
+        args_responses, kwargs_responses = self.evaluate_args_kwargs(self.args, self.kwargs)
+        future = Future(self.task, *args_responses, **kwargs_responses)
+        response = Response(request=self, future=future)
         future.promise = response
         if self.lifecycle_callback is not None:
-            self.lifecycle_callback(Task.Lifecycle.BEGIN, self, task, response)
+            self.lifecycle_callback(Task.Lifecycle.BEGIN, self, response)
         return response
 
-
-# TODO: --> Requests
-class Stream:
-    def __init__(self, iterable):
-        self.iterable = iterable
-        self._list = None
-
-    @property
-    def list(self):
-        if self._list is None:
-            self._list = list(self.iterable)
-        return self._list
-
-    @property
-    def __str__(self):
-        str = signature.Tagger().str_ctor(self.__class__, self.iterable)
-        return str
-
-    def __repr__(self):
-        repr = signature.Tagger().repr_ctor(self.__class__, self.iterable)
-        return repr
-
-    def _tag_(self):
-        _ = signature.Tagger().tag_ctor(self.__class__, self.iterable)
-        return _
-
-    def __len__(self):
-        return len(self.list)
-
-    def __getitem__(self, item):
-        return self.list[item]
-
-# TODO: --> Block.Request
-class Requester:
-    def __init__(self, func, *args, **kwargs):
-        self.func = func
-        self.args = args
-        self.kwargs = kwargs
-        self._requests = None
-        self.functors = []
-
-    def __getitem__(self, item):
-        return self.requests()[item]
-
-    def __len__(self):
-        return len(self.requests())
-
-    def __iter__(self):
-        return iter(self.requests())
-
-    def _tag_(self):
-        tag = signature.Tagger().tag_ctor(self.__class__,
-                                        self.func,
-                                        *self.args,
-                                        **self.kwargs)
-        return tag
-
-    def __str__(self):
-        tag = signature.Tagger().str_ctor(self.__class__,
-                                       self.func,
-                                       *self.args,
-                                       **self.kwargs)
-        return tag
-
-    def __repr__(self):
-        repr  = self._tag_()
-        for functor in self.functors:
-            repr = f"{repr}.apply({signature.Tagger().tag_object(functor)})"
-        return repr
-
-    def bind(self, *args, **kwargs):
-        _request = Request(self.func, *args, **kwargs)
-        request = _request
-        for functor in self.functors:
-            request = request.apply(functor)
-        return request
-
-    def _form_rstreams(self, rstreams=None):
-        if rstreams is None:
-            rstreams = []
-        for i, arg in enumerate(self.args):
-            if isinstance(arg, Stream):
-                if len(arg) < 1:
-                    raise ValueError(f"arg with index {i} is a stream {arg} of len < 1: {len(arg)}")
-                if isinstance(arg.iterable, Requester):
-                    rstreams = arg.iterable._form_rstreams(rstreams)
-                elif arg not in rstreams:
-                    rstreams.insert(0, arg)
-        for key, arg in self.kwargs.items():
-            if isinstance(arg, Stream):
-                if len(arg) < 1:
-                    raise ValueError(f"kwarg with key {key} is a stream {arg} of len < 1: {len(arg)}")
-                if isinstance(arg.iterable, Requester):
-                    rstreams = arg.iterable._form_rstreams(rstreams)
-                elif arg not in rstreams:
-                    rstreams.insert(0, arg)
-        return rstreams
-
-    def _form_request(self, rscounters):
-        args = [arg if not isinstance(arg, Stream) else
-                arg[rscounters[arg]] if not isinstance(arg.iterable, Requester) else
-                arg.iterable._form_request(rscounters) for arg in self.args]
-        kwargs = {key: arg if not isinstance(arg, Stream) else
-                         arg[rscounters[arg]] if not isinstance(arg.iterable, Requester) else
-                         arg.iterable._form_request(rscounters) for key, arg in self.kwargs.items()}
-        request = self.bind(*args, **kwargs)
-        return request
-
-    def _form_requests(self, rstreams=None):
-        if rstreams is None:
-            rstreams = self._form_rstreams()
-        if len(rstreams) == 0:
-            requests = [self.bind(*self.args, **self.kwargs)]
-            return requests
-
-        rscounters = {stream: 0 for stream in rstreams}
-
-        requests = []
-        carry = False
-        while not carry:
-            request = self._form_request(rscounters)
-            requests.append(request)
-            for arg in rscounters:
-                rscounters[arg] += 1
-                if rscounters[arg] < len(arg):
-                    carry = False
-                    break
-                else:
-                    rscounters[arg] = 0
-                    carry = True
-        return requests
-
-    def requests(self):
-        if self._requests is None:
-            self._requests = self._form_requests()
-        return self._requests
-
-    def evaluate(self, *, task=Task()):
-        responses = [request.evaluate(task=task) for request in self.requests()]
-        responder = Responder(self, responses)
-        return responder
-
-    def reporter(self, *, task=Task()):
-        responder = self.evaluate(task=task)
-        reporter = responder.reporter()
-        return reporter
-
-    def compute(self, *, task=Task()):
-        responder = self.evaluate(task=task)
-        results = responder.results()
-        return results
-
-    def clone(self):
-        requester = Requester(self.func, *self.args, **self.kwargs)
-        requester.functors = copy.deepcopy(self.functors)
-        return requester
-
-    def apply(self, functor):
-        requester = self.clone()
-        requester.functors.append(functor)
-        return requester
-
-
+# TODO: make an extension of dict for easy serdes, including RPC
 class Report:
     class STATUS(enum.IntEnum):
         UNKNOWN = 0
@@ -607,9 +489,101 @@ class Report:
             self.done_time = None
         self.args_reports = [self._arg_report(r) for r in response.args_responses] if response.args_responses is not None else []
         self.kwargs_reports = {k: self._arg_report(v) for k, v in response.kwargs_responses.items()} if response.kwargs_responses is not None else {}
+        self.settings = dict(result_use_summary=False)
+
+    def set(self, **settings):
+        self.settings.update(**settings)
+        return self
+
+    def summary(self):
+        tagger = signature.Tagger()
+        report = self
+        args_summaries = [report._arg_summary(r) for r in report.args_reports]
+        kwargs_summaries = {k: report._arg_summary(v) for k, v in report.kwargs_reports.items()}
+        summary = dict(id=f"id:{report.id}",
+                       completed=(report.status in [Report.STATUS.SUCCEEDED, Report.STATUS.FAILED]),
+                       success=(report.status in [Report.STATUS.SUCCEEDED]),
+                       status=str(report.status),
+                       exception=str(report.exception),
+                       traceback=utils.exc_traceback_string(report.traceback),
+                       start_time=str(report.start_time),
+                       done_time=str(report.done_time),
+                       logpath=report.logpath,
+                       logspace_url=report.logspace_url,
+                       logspace=str(report.logspace),
+                       args_summaries=args_summaries,
+                       kwargs_summaries=kwargs_summaries,
+                       #request=tagger.str_object(report.request),
+                       request=tagger.repr_object(report.request),
+                       )
+        total_logs = 0
+        total_logs += sum([s['logs_total'] for s in args_summaries if 'logs_total' in s])
+        total_logs += sum([s['logs_total'] for s in kwargs_summaries.values() if 'logs_total' in s])
+        valid_logs = 0
+        valid_logs += sum([s['logs_valid'] for s in args_summaries if 'logs_valid' in s])
+        valid_logs += sum([s['logs_valid'] for s in kwargs_summaries.values() if 'logs_valid' in s])
+        
+        if report.request.has('summary'):
+            summary['result'] = f"SUMMARY: {report.request.get('summary')(report.result)}"
+        else:
+            summary['result'] = report.result
+        if report.logspace and report.logpath:
+            total_logs += 1
+            summary['logpath_status'] = 'VALID' if report.logspace.exists(summary['logpath']) else 'MISSING'
+            if summary['logpath_status'] == 'VALID':
+                valid_logs += 1
+
+        else:
+            summary['logpath_status'] = None
+        summary['logs_total'] = total_logs
+        summary['logs_valid'] = valid_logs
+        summary['logs_missing'] = total_logs - valid_logs
+
+        return summary
+    
+    @DEPRECATED # use 'logpath_status', 'total_logs' and 'valid_logs' fields in summary/graph
+    @staticmethod
+    def validate_logs(report_or_summary, *, request_max_len=50):
+        def _summary_validate_logs(summary, *, _validations, _valids=0, _invalids=0):
+            logspace = _eval(summary['logspace']) if 'logspace' in summary else None
+            validations = copy.copy(_validations)
+            valids = _valids
+            invalids = _invalids
+            if logspace:
+                logspace.filesystem.invalidate_cache() # TODO: do this to a clone of logspace
+                if 'logpath' in summary and summary['logpath'] is not None:
+                    valid = logspace.exists(summary['logpath'])
+                    ivalid = 1 if valid else 0
+                    valids += ivalid
+                    invalids += (1-ivalid)
+                    status = 'EXISTS' if valid else 'MISSING'
+                    validation = {
+                        'logpath': summary['logpath'],
+                        'logspace': str(logspace),
+                        'status': status,
+                        'valid':  valid,
+                        'request': f"{summary['request'][:request_max_len]}..."
+                    }
+                    validations.append(validation)
+            if 'args_summaries' in summary:
+                for arg_summary in summary['args_summaries']:
+                    validations, valids, invalids = \
+                        _summary_validate_logs(arg_summary, _validations=validations, _valids=valids, _invalids=invalids)
+            if 'kwargs_summaries' in summary:
+                for kwarg_summary in summary['kwargs_summaries']:
+                    validations, valids, invalids = \
+                        _summary_validate_logs(kwarg_summary, _validations=validations, _valids=valids, _invalids=invalids)
+            return validations, valids, invalids
+        if isinstance(report_or_summary, Report):
+            summary = report_or_summary.summary
+        else:
+            summary = report_or_summary
+        validations_, valids, invalids = _summary_validate_logs(summary, _validations=[])
+        validations = {i: v for i, v in enumerate(validations_)}
+        return {"VALID_LOGS": valids, "INVALID_LOGS": invalids, "LOGS": validations}
 
     def __repr__(self):
-        summary = self.summary()
+        summary = self.set(reset_use_summary=False).summary()
         summary_repr = repr(summary)
         return summary_repr
 
@@ -637,26 +611,6 @@ class Report:
                 r = logfile.read(size)
         return r
 
-    def summary(self):
-        tagger = signature.Tagger()
-        report = self
-        summary = dict(id=f"id:{report.id}",
-                       completed=(report.status in [Report.STATUS.SUCCEEDED, Report.STATUS.FAILED]),
-                       success=(report.status in [Report.STATUS.SUCCEEDED]),
-                       status=str(report.status),
-                       exception=str(report.exception),
-                       traceback=utils.exc_traceback_string(report.traceback),
-                       start_time=str(report.start_time),
-                       done_time=str(report.done_time),
-                       logpath=report.logpath,
-                       logspace_url=report.logspace_url,
-                       logspace=str(report.logspace),
-                       result=report.result,
-                       args_summaries=[report._arg_summary(r) for r in report.args_reports],
-                       kwargs_summaries={k: report._arg_summary(v) for k, v in report.kwargs_reports.items()},
-                       request=tagger.str_object(report.request))
-        return summary
-
     @staticmethod
     def _arg_summary(arg):
         if isinstance(arg, Report):
@@ -679,11 +633,9 @@ class Response:
                  request,
                  future,
                  *,
-                 task,
                  done_callback=None):
         self.request = request
         self.future = future
-        self.task = task
         self._done_callback = done_callback
         self.start_time = datetime.datetime.now()
         self.done_time = None
@@ -691,42 +643,34 @@ class Response:
 
     @property
     def key(self):
-        return self.task.key
+        return self.request.task.key
 
     @property
     def id(self):
-        return self.task.id
+        return self.request.task.id
 
     @property
     def logspace(self):
-        return self.task.logspace
+        return self.request.task.logspace
 
     @property
     def logname(self):
-        return self.task.logname
+        return self.request.task.logname
 
     def __str__(self):
         return signature.Tagger().str_ctor(self.__class__,
                                         self.request,
-                                        self.future,
-                                        task=self.task)
+                                        self.future)
 
     def __repr__(self):
         return signature.Tagger().repr_ctor(self.__class__,
                                          self.request,
-                                         self.future,
-                                         task=self.task)
+                                         self.future)
                                 
     def __tag__(self):
         return signature.Tagger().tag_ctor(self.__class__,
                                         self.request,
-                                        self.future,
-                                        task=self.task)
-    """
-    @property
-    def request_id(self):
-        return None
-    """
+                                        self.future)
     def wait(self):
         try:
             self.result()
@@ -796,6 +740,25 @@ class Response:
         logpath = self.logspace.join(self.logspace.path, self.logname)
         return logpath
 
+    def logfile(self):
+            try:
+                _path = self.logpath
+                _f = self.request.logspace.filesystem.open(_path, 'r')
+            except:
+                return None
+            return _f
+
+    def log(self, size=None):
+        logfile = self.logfile()
+        if logfile is None:
+            r = ''
+        else:
+            if size is None:
+                r = logfile.read()
+            else:
+                r = logfile.read(size)
+        return r
+
     @staticmethod
     def done_callback(future):
         response = future.promise
@@ -806,7 +769,7 @@ class Response:
         request = response.request
         stage = Task.Lifecycle.END
         if request.lifecycle_callback is not None:
-            request.lifecycle_callback(stage, request, response.task, response)
+            request.lifecycle_callback(stage, request, response)
         
         if response._done_callback is not None:
             response._done_callback(future)
@@ -827,7 +790,7 @@ class Literal(Response):
     @property
     def done(self):
         return True
-
+"""
 
 class Closure(Response):
     def __init__(self, request):
@@ -843,52 +806,11 @@ class Closure(Response):
     def __str__(self):
         return signature.Tagger().repr_ctor(Closure, self.request)
 
-    def result(self, *, task=Task()):
+    def result(self):
         if self._result is None:
-            response = self.request.evaluate(task=task)
+            response = self.request.evaluate()
             self._result = response.result()
         return self._result
-"""
-
-class Reporter:
-    def __init__(self, responses):
-        self.reports = [response.report() for response in responses]
-
-    def __tag__(self):
-        return signature.Tagger().tag_ctor(self.__class__, self.reports)
-
-    def __repr__(self):
-        return signature.Tagger().repr_ctor(self.__class__, self.reports)
-
-    def __str__(self):
-        return signature.Tagger().str_ctor(self.__class__, self.reports)
-
-    def results(self, *, task=Task()):
-        results = [report.result(task=task) for report in self.reports]
-        return results
-
-
-class Responder:
-    def __init__(self, requester, responses):
-        self.requester = requester
-        self.responses = responses
-
-    def __tag__(self):
-        return signature.Tagger().tag_ctor(self.__class__, self.requester, self.responses)
-
-    def __repr__(self):
-        return signature.Tagger().repr_ctor(self.__class__, self.requester, self.responses)
-
-    def __str__(self):
-        return signature.Tagger().str_ctor(self.__class__, self.requester, self.responses)
-
-    def reporter(self):
-        reporter = Reporter(self.responses)
-        return reporter
-
-    def results(self, *, task=Task()):
-        results = [response.result(task=task) for response in self.responses]
-        return results
 
 
 class FIRST(Request):
@@ -912,10 +834,10 @@ class FIRST(Request):
         request = self.__class__(*_args)
         return request
 
-    def evaluate(self, *, task=Task()):
+    def evaluate(self):
         for arg in self.args:
             if isinstance(arg, Request):
-                response = arg.evaluate(task=task)
+                response = arg.evaluate()
             else:
                 response = Response(None, arg)
             if response.exception() is None:
@@ -925,10 +847,10 @@ class FIRST(Request):
 
 
 class LAST(FIRST):
-    def evaluate(self, *, task=Task()):
+    def evaluate(self):
         for arg in self.args:
             if isinstance(arg, Request):
-                response = arg.evaluate(task=task)
+                response = arg.evaluate()
             else:
                 response = Response(None, arg)
             if response.exception() is not None:
@@ -941,11 +863,216 @@ class FirstSuccessRequest(FIRST):
     pass
 
 
-class ReportSummaryGraph:
-    def __init__(self, summary, indent=0, *, request_max_len=None, result_max_len=None, print=(), logspace=None):
+class BLOCK:
+    # TODO: --> Requests
+    class Stream:
+        def __init__(self, iterable):
+            self.iterable = iterable
+            self._list = None
+
+        @property
+        def list(self):
+            if self._list is None:
+                self._list = list(self.iterable)
+            return self._list
+
+        @property
+        def __str__(self):
+            str = signature.Tagger().str_ctor(self.__class__, self.iterable)
+            return str
+
+        def __repr__(self):
+            repr = signature.Tagger().repr_ctor(self.__class__, self.iterable)
+            return repr
+
+        def _tag_(self):
+            _ = signature.Tagger().tag_ctor(self.__class__, self.iterable)
+            return _
+
+        def __len__(self):
+            return len(self.list)
+
+        def __getitem__(self, item):
+            return self.list[item]
+
+    class Request:
+        def __init__(self, func, *args, **kwargs):
+            self.func = func
+            self.args = args
+            self.kwargs = kwargs
+            self._requests = None
+            self.functors = []
+
+        def __getitem__(self, item):
+            return self.requests()[item]
+
+        def __len__(self):
+            return len(self.requests())
+
+        def __iter__(self):
+            return iter(self.requests())
+
+        def _tag_(self):
+            tag = signature.Tagger().tag_ctor(self.__class__,
+                                            self.func,
+                                            *self.args,
+                                            **self.kwargs)
+            return tag
+
+        def __str__(self):
+            tag = signature.Tagger().str_ctor(self.__class__,
+                                        self.func,
+                                        *self.args,
+                                        **self.kwargs)
+            return tag
+
+        def __repr__(self):
+            repr  = self._tag_()
+            for functor in self.functors:
+                repr = f"{repr}.apply({signature.Tagger().tag_object(functor)})"
+            return repr
+
+        def bind(self, *args, **kwargs):
+            _request = Request(self.func, *args, **kwargs)
+            request = _request
+            for functor in self.functors:
+                request = request.apply(functor)
+            return request
+
+        def _form_rstreams(self, rstreams=None):
+            if rstreams is None:
+                rstreams = []
+            for i, arg in enumerate(self.args):
+                if isinstance(arg, Stream):
+                    if len(arg) < 1:
+                        raise ValueError(f"arg with index {i} is a stream {arg} of len < 1: {len(arg)}")
+                    if isinstance(arg.iterable, Requester):
+                        rstreams = arg.iterable._form_rstreams(rstreams)
+                    elif arg not in rstreams:
+                        rstreams.insert(0, arg)
+            for key, arg in self.kwargs.items():
+                if isinstance(arg, Stream):
+                    if len(arg) < 1:
+                        raise ValueError(f"kwarg with key {key} is a stream {arg} of len < 1: {len(arg)}")
+                    if isinstance(arg.iterable, BLOCK.Request):
+                        rstreams = arg.iterable._form_rstreams(rstreams)
+                    elif arg not in rstreams:
+                        rstreams.insert(0, arg)
+            return rstreams
+
+        def _form_request(self, rscounters):
+            args = [arg if not isinstance(arg, Stream) else
+                    arg[rscounters[arg]] if not isinstance(arg.iterable, BLOCK.Request) else
+                    arg.iterable._form_request(rscounters) for arg in self.args]
+            kwargs = {key: arg if not isinstance(arg, Stream) else
+                            arg[rscounters[arg]] if not isinstance(arg.iterable, BLOCK.Request) else
+                            arg.iterable._form_request(rscounters) for key, arg in self.kwargs.items()}
+            request = self.bind(*args, **kwargs)
+            return request
+
+        def _form_requests(self, rstreams=None):
+            if rstreams is None:
+                rstreams = self._form_rstreams()
+            if len(rstreams) == 0:
+                requests = [self.bind(*self.args, **self.kwargs)]
+                return requests
+
+            rscounters = {stream: 0 for stream in rstreams}
+
+            requests = []
+            carry = False
+            while not carry:
+                request = self._form_request(rscounters)
+                requests.append(request)
+                for arg in rscounters:
+                    rscounters[arg] += 1
+                    if rscounters[arg] < len(arg):
+                        carry = False
+                        break
+                    else:
+                        rscounters[arg] = 0
+                        carry = True
+            return requests
+
+        def requests(self):
+            if self._requests is None:
+                self._requests = self._form_requests()
+            return self._requests
+
+        def evaluate(self):
+            responses = [request.evaluate() for request in self.requests()]
+            responder = BLOCK.Response(self, responses)
+            return responder
+
+        def reporter(self):
+            responder = self.evaluate()
+            reporter = responder.reporter()
+            return reporter
+
+        def compute(self):
+            responder = self.evaluate()
+            results = responder.results()
+            return results
+
+        def clone(self):
+            requester = BLOCK.Request(self.func, *self.args, **self.kwargs)
+            requester.functors = copy.deepcopy(self.functors)
+            return requester
+
+        def apply(self, functor):
+            requester = self.clone()
+            requester.functors.append(functor)
+            return requester
+        
+    class Report:
+        def __init__(self, responses):
+            self.reports = [response.report() for response in responses]
+
+        def __tag__(self):
+            return signature.Tagger().tag_ctor(self.__class__, self.reports)
+
+        def __repr__(self):
+            return signature.Tagger().repr_ctor(self.__class__, self.reports)
+
+        def __str__(self):
+            return signature.Tagger().str_ctor(self.__class__, self.reports)
+
+        def results(self):
+            results = [report.result() for report in self.reports]
+            return results
+
+    class Response:
+        def __init__(self, requester, responses):
+            self.requester = requester
+            self.responses = responses
+
+        def __tag__(self):
+            return signature.Tagger().tag_ctor(self.__class__, self.requester, self.responses)
+
+        def __repr__(self):
+            return signature.Tagger().repr_ctor(self.__class__, self.requester, self.responses)
+
+        def __str__(self):
+            return signature.Tagger().str_ctor(self.__class__, self.requester, self.responses)
+
+        def reporter(self):
+            reporter = BLOCK.Report(self.responses)
+            return reporter
+
+        def results(self):
+            results = [response.result() for response in self.responses]
+            return results
+
+
+class Graph:
+    def __init__(self, report_or_summary, indent=0, *, request_max_len=None, result_max_len=None, print=()):
         """
             print: tuple that can include 'logpath', 'exception', 'traceback'
         """
+        if isinstance(report_or_summary, Report):
+            summary = report_or_summary.summary
+        else:
+            summary = report_or_summary
         self.summary = summary
         if isinstance(self.summary, str):
             self.summary = _eval(self.summary)
@@ -953,7 +1080,7 @@ class ReportSummaryGraph:
         self.request_max_len = request_max_len
         self.result_max_len = result_max_len
         self.print = print
-        self.logspace = logspace
+        self.logspace = _eval(self.summary['logspace']) if 'logspace' in self.summary else None
 
     def clone(self):
         clone = self.__class__(self.summary, self.indent, request_max_len=self.request_max_len, result_max_len=self.result_max_len, print=self.print)
@@ -1066,49 +1193,29 @@ class ReportSummaryGraph:
     def log(self, dataspace=None):
         if dataspace is None:
             dataspace = self.logspace
+        if dataspace is None:
+            return None
         file = dataspace.filesystem.open(self.summary['logpath'], 'r')
         log = ''.join(file.readlines())
         return log
     
-    def validate_logs(self, *, dataspace=None, request_max_len=50):
-        if dataspace is None:
-            dataspace = self.logspace
-        _ = report_summary_validate_logs(self.summary, dataspace=dataspace, request_max_len=request_max_len)
+    def validate_logs(self, *, request_max_len=50):
+        _ = Report.validate_logs(self.summary, request_max_len=request_max_len)
         return _
 
 
-def report_summary_validate_logs(summary, *, dataspace, request_max_len=50):
-    def _summary_validate_logs(summary, *, dataspace, _validations, _valids=0, _invalids=0):
-        validations = copy.copy(_validations)
-        valids = _valids
-        invalids = _invalids
-        if 'logpath' in summary and summary['logpath'] is not None:
-            valid = dataspace.exists(summary['logpath'])
-            ivalid = 1 if valid else 0
-            valids += ivalid
-            invalids += (1-ivalid)
-            status = 'EXISTS' if valid else 'MISSING'
-            validation = {
-                'logpath': summary['logpath'],
-                'dataspace': str(dataspace),
-                'status': status,
-                'valid':  valid,
-                'request': f"{summary['request'][:request_max_len]}..."
-            }
-            validations.append(validation)
-        if 'args_summaries' in summary:
-            for arg_summary in summary['args_summaries']:
-                validations, valids, invalids = \
-                    _summary_validate_logs(arg_summary, dataspace=dataspace, _validations=validations, _valids=valids, _invalids=invalids)
-        if 'kwargs_summaries' in summary:
-            for kwarg_summary in summary['kwargs_summaries']:
-                validations, valids, invalids = \
-                    _summary_validate_logs(kwarg_summary, dataspace=dataspace, _validations=validations, _valids=valids, _invalids=invalids)
-        return validations, valids, invalids
-    dataspace.filesystem.invalidate_cache() # TODO: do this to a clone of dataspace
-    validations_, valids, invalids = _summary_validate_logs(summary, dataspace=dataspace, _validations=[])
-    validations = {i: v for i, v in enumerate(validations_)}
-    return {"VALID_LOGS": valids, "INVALID_LOGS": invalids, "LOGS": validations}
+@DEPRECATED
+@ALIAS
+class ReportSummaryGraph(Graph):
+    pass
+
+
+
+
+@ALIAS
+def report_summary_graph(*args, **kwargs):
+    return report_graph(*args, **kwargs) 
+
 
 @DEPRECATED
 def report_summary_truncate(summary, *, result_max_len=50, request_max_len=50):

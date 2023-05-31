@@ -33,7 +33,8 @@ import ray.util
 from .. import signature, utils
 from ..dataspace import DATABLOCKS_DATALAKE
 from . import request
-from .request import Task, Future, Request, Response
+from .request import Task, Future, Request, Response, Closure
+from ..utils import REMOVE, DEPRECATED
 
 
 VERSION = 0
@@ -84,16 +85,18 @@ class ConstFuture:
 
 @contextmanager
 def logging_context(logspace, logpath):
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            if logspace is not None:
+    if logspace is None:
+        yield None
+    elif logspace.is_local():
+        logfile = open(logpath, 'w', 1)
+        yield logfile
+    else:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
                 tmpfilepath = os.path.join(tmpdir, 'log')
                 tmpfile = open(tmpfilepath, 'w')
                 yield tmpfile
-            else:
-                yield None
-        finally:
-            if logspace is not None:
+            finally:
                 tmpfile.flush()
                 logspace.filesystem.put(tmpfilepath, logpath)
 
@@ -112,7 +115,6 @@ class Logging:
             self.pool = pool
             self.request = request
             self.logname = logname
-            self.func = request.func
             self.signature = signature.func_signature(self.func)
             self.__defaults__ = signature.func_defaults(self.func)
             self.__kwdefaults__ = signature.func_kwdefaults(self.func)
@@ -141,7 +143,7 @@ class Logging:
             if self.logname is None:
                 now = datetime.datetime.now()
                 badge = f"{now.strftime('%Y-%m-%d')}-{self.pool.timeus()}"
-                self.logname = f"task-{badge}-{self.id:042d}.log"
+                self.logname = f"task-{self.id:028d}-{badge}.log"
 
         def __repr__(self):
             _ = signature.Tagger().repr_ctor(self.__class__, self.pool, self.request)
@@ -153,6 +155,11 @@ class Logging:
         def __getstate__(self):
             return self.pool, self.request, self.logname
 
+        @property
+        def func(self):
+            return self.request.task.func
+
+        @DEPRECATED 
         def clone(self):
             # TODO: reuse self.key and self.id so that no calls to self.pool.key() etc.
             #  are involved. This way cloning won't require talking to the db.
@@ -169,7 +176,7 @@ class Logging:
         def __eq__(self, other):
             return isinstance(other, self.__class__) and \
                    self.pool == other.pool and \
-                   self.func == other.func and \
+                   self.request.task == other.request.task and \
                    self.key == other.key and \
                    self.id == other.id and \
                    self.request_tag == other.request_tag and \
@@ -185,16 +192,13 @@ class Logging:
             #_logging_ = logging.getLogger(__name__)
             #_logging_ = logging.getLogger()
             _logging_ = logging
-            request = self.request.rebind(*args, **kwargs)
-            self._request = request
             # FIX: ensure authenticate_task arguments are as expected
             self.pool.authenticate_task(self.id,
                                     self.key,
                                     self.request_tag,
                                     self.request_repr)
-            request_logger = None
-            request_str = str(request)
-            _logging_.debug(f">>>>>>>> {self.id}: BEGAN executing request called {request_str}")
+            _logger = None
+            _logging_.debug(f">>>>>>>> {self.id}: BEGAN executing request called {str(self.request)}")
 
             #logger = logging.getLogger(log_file)
             # cannot add handler to a named logger since functions
@@ -224,52 +228,36 @@ class Logging:
                             "" if self.pool.log_prefix is None else ":") +
                         f"{self.pool.log_format}")
                     handler.setFormatter(formatter)
-                    if hasattr(request.func, '__globals__') and 'logger' in request.func.__globals__:
-                        request_logger = request.func.__globals__['logger']
-                        request.func.__globals__['logger'] = logger
+                    if hasattr(self.func, '__globals__') and 'logger' in self.func.__globals__:
+                        _logger = self.func.__globals__['logger']
+                        self.func.__globals__['logger'] = logger
                     logger.addHandler(handler)
-            logger.debug(f"START: Executing request called {request_str} with task id {self.id}")
-            exc = None
+            logger.debug(f"START: Executing request called {str(self.request)} with task id {self.id}")
             try:
-                response = request.with_throw(self.pool.throw).evaluate(task=self)
-                _ = response.result()
-                exc = response.exception()
-                if self.pool.throw:
-                    raise exc.with_traceback(response.traceback)
-                report = response.report()
-                # HACK: need to pass logspace and logname to request.evaluate()
-                report.logspace = self.logspace
-                report.logspace_url = self.logspace.url if self.logspace is not None else None
-                report.logpath = self.logpath
+                _ = self.request.task(*args, **kwargs)
             except:
-                exc_type, exc_value, exc_traceback = sys.exc_info()
-                if self.pool.throw:
-                    raise exc_value.with_traceback(exc_traceback)
-                tb_lines = traceback.format_tb(exc_traceback)
-                tb = '\n'.join(tb_lines)
-                logger.error(f"\n{tb}{exc_type}: {exc_value}")
-                exc = exc_value
+                pass
             finally:
-                logger.debug(f"STOP: Executing request called {request_str} with task id {self.id}")
+                logger.debug(f"STOP: Executing request called {str(self.request)} with task id {self.id}")
                 if logstream is not None:
                     if self.pool.redirect_stdout:
                         _logging_.debug(f"Restoring stdout from {self.logpath} in {self.logspace}")
                         sys.stdout = _stdout
                         _logging_.debug(f"Restored stdout from {self.logpath} in {self.logspace}")
                     else:
-                        if hasattr(request.func, '__globals__'):
-                            request.func.__globals__['logger'] = request_logger
+                        if hasattr(self.func, '__globals__'):
+                            self.func.__globals__['logger'] = _logger
                         logger.handlers = []
                         for h in _handlers:
                             logger.addHandler(h)
                         logcontext.__exit__(None, None, None)
                         _logging_.debug(f"Removed logger handler recording to {self.logpath} in {self.logspace}")
                     logger.setLevel(_log_level)
-                    _logging_.debug(f"<<<<<<<< {self.id}: ENDED executing request called {request_str}")
-            if exc is not None:
-                raise exc
-            return report
+                    _logging_.debug(f"<<<<<<<< {self.id}: ENDED executing request called {str(self.request)}")
+            return _
         
+    '''
+    @REMOVE
     class Future:
         """
             Future "dynamically extends" request.Future to override its result() method.
@@ -298,7 +286,10 @@ class Logging:
         def __getattr__(self, attr):
             _ = getattr(self.response.future, attr)
             return _
+    '''
 
+    '''
+    @REMOVE
     class TaskFuture(ConstFuture):
         def __init__(self, report, *, exception=None, traceback=None):
             super().__init__(report, exception=exception, traceback=traceback)
@@ -336,6 +327,7 @@ class Logging:
             if exception is None:
                 traceback = self.report.traceback
             return traceback
+    '''
 
     class TaskExecutor:
         def __init__(self, *, throw=False):
@@ -359,7 +351,7 @@ class Logging:
             future = Logging.TaskFuture(report, exception=e, traceback=tb)
             #future = Logging.TaskFuture(request)
             """
-            response = Request.evaluate(request, task=request.task)
+            response = Request.evaluate(request)
             future = response.future
             return future
 
@@ -373,7 +365,6 @@ class Logging:
                      pool,
                      future,
                      start_time,
-                     task,
                      done_callback=None):
             self.request = request
             self.pool = pool
@@ -384,7 +375,7 @@ class Logging:
             self._future_result = None
             self._result = None
             self._done = False
-            self.task = task
+            self.task = request.task
             self._done_callback = done_callback
 
             future.promise = self
@@ -399,70 +390,24 @@ class Logging:
         def __repr__(self):
             return str(self)
 
-        """
-        def exception(self):
-            exception = self.future.exception()
-            return exception
-
-        def traceback(self):
-            traceback = self.future.traceback()
-            return traceback
-
-        def result(self):
-            if self._result is None:
-                self._result = self.future.result()
-            return self._result
-        """
         
-        @property
-        def done(self):
-            if hasattr(self.future, 'done'):
-                return self.future.done()
-            return self._done
-
-        @property
-        def running(self):
-            if hasattr(self.future, 'running'):
-                return self.future.running()
-            return not self.failed and not self.done
-
-        """
-        def report(self):
-            # NB: Task.__call__() returns Report from the inner Request's evaluation Result.
-            report = self.future.response.report()
-            return report
-        """
-
-        def logfile(self):
-            try:
-                _path = self.logpath
-                _f = self.request.logspace.filesystem.open(_path, 'r')
-            except:
-                return None
-            return _f
-
-        def log(self, size=None):
-            logfile = self.logfile()
-            if logfile is None:
-                r = ''
-            else:
-                if size is None:
-                    r = logfile.read()
-                else:
-                    r = logfile.read(size)
-            return r
-
     class Request(Request):
         def __init__(self, request, pool):
-            self.request = request
+            self.request = request # only for __repr__ and __str__
             self.pool = pool
-            self.task = pool.Task(pool, request)
+            if isinstance(request.task, pool.Task):
+                self.task = request.task
+            else:
+                self.task = pool.Task(pool, request)
             super().__init__(self.task, *request.args, **request.kwargs)
 
+        # Use super()'s magic methods
+        """
         def __tag__(self):
             _ = signature.tag(self.request)
+            _ = signature.tag(self)
             return _
-
+        """
         def __repr__(self):
             _ = signature.Tagger().repr_ctor(self.__class__, self.request, self.pool)
             return _
@@ -473,6 +418,7 @@ class Logging:
             _ = f"{_request_str}.apply({pool_str})"
             return _
 
+        """
         def with_lifecycle_callback(self, lifecycle_callback):
             self.request = self.request.with_lifecycle_callback(lifecycle_callback)
             _ = super().with_lifecycle_callback(lifecycle_callback)
@@ -482,14 +428,18 @@ class Logging:
             self.request = self.request.with_throw(throw)
             _ = super().with_throw(throw)
             return _
+        """
 
+        """
         def rebind(self, *args, **kwargs):
             _request = self.request.rebind(*args, **kwargs)
             request = self.__class__(_request, self.pool)
+            request = super().rebind(*args, **kwargs)
             return request
+        """
 
-        def evaluate(self, *, task=request.Task()):
-            r = self.pool.evaluate(self, task=task)
+        def evaluate(self):
+            r = self.pool.evaluate(self)
             return r
 
         @property
@@ -694,29 +644,27 @@ class Logging:
             self._executor = Logging.TaskExecutor(throw=self.throw)
         return self._executor
 
-    def evaluate(self, request, *, task):
+    def evaluate(self, request):
         assert isinstance(request, self.__class__.Request)
-        _task = request.task # use a new inner task 
 
         delayed = self._delay_request(request.with_throw(self.throw))
         start_time = datetime.datetime.now()
         future = self._submit_delayed(delayed)
         logger.debug(f"Submitted delayed request based on task "
-                     f"with id {_task.id} "
+                     f"with id {request.task.id} "
                      f"to evaluate request {request} at {start_time}"
                      f" with prority {self.priority}"
-                     f" logging to {_task.logpath}")
+                     f" logging to {request.task.logpath}")
         response = self.Response(pool=self,
                                  request=request,
                                  future=future,
                                  start_time=start_time,
-                                 done_callback=self._execution_done_callback,
-                                 task=_task)
+                                 done_callback=self._execution_done_callback)
         return response
 
     """
-    def compute(self, request, *, task=request.Task()):
-        response = self.evaluate(request, task=task)
+    def compute(self, request):
+        response = self.evaluate(request)
         result = response.result()
         return result
     """
@@ -817,8 +765,9 @@ class Dask(Logging):
         self.n_workers = n_workers
 
     def apply(self, request, dask_key=None):
-        arequest = self.Request(self, request, dask_key)
-        return arequest
+        _request = self.Request(self, request, dask_key)
+        closure = Closure(_request) # must close, since Dask controls its subgraph
+        return closure
 
     @property
     def executor(self):
@@ -847,7 +796,6 @@ class Dask(Logging):
         return future
 
     def _delay_request(self, request):
-        task = request.task
         # NB:
         # This will rewrite args, kwargs and turn any Dask.Request arg into dask.delayed of the underlying arg.task
         # This has the effect of hiding (internalizing in Dask) the (Dask.)Request subgraph attached to this request.
@@ -856,7 +804,7 @@ class Dask(Logging):
         # the parent and all of the children, then a (dead?/live?)lock occurs.  Perhaps this can be remedied by non-busy
         # waiting or dynamic scheduling?  Dynamic scheduling seems to have the same effect as busy waiting
         _delayed_args, _delayed_kwargs = self._delay_request_args_kwargs(request)
-        delayed = dask.delayed(task)(*_delayed_args, dask_key_name=request.dask_key, **_delayed_kwargs)
+        delayed = dask.delayed(request.task)(*_delayed_args, dask_key_name=request.dask_key, **_delayed_kwargs)
         return delayed
 
     def _delay_request_argument(self, request, arg):
@@ -974,9 +922,10 @@ class Ray(Logging):
         for f in concurrent.futures.as_completed(futures):
             yield f.promise
 
-    def evaluate(self, request, *, task=request.Task()):
+    def evaluate(self, request):
         assert isinstance(request, self.__class__.Request)
-        task = request.task.clone()
+        #task = request.task.clone() # why clone?  That changes task.logname
+        task = request.task
         client = self.client
         if client is None:
             future = ray.remote(Ray._delayed) \
@@ -1067,12 +1016,13 @@ class Multiprocess(Logging):
 
 
 class HTTP(Logging):
+    '''
     class Future(Logging.TaskFuture):
         # HTTP inherits _delay_request() from Logging, whose 'delayed' is a Task  returning Report
         # so we need this Future to be able to unpack it.
         def __init__(self, result, *, exception=None, traceback=None):
             super().__init__(result, exception=exception, traceback=traceback)
-
+    '''
     class Response(Logging.Response):
         pass
 
