@@ -13,7 +13,6 @@ import pdb
 import yaml
 
 import fsspec
-import pyarrow.parquet
 import pyarrow.parquet as pq
 import pandas as pd
 
@@ -23,7 +22,7 @@ import datablocks
 from .signature import Signature, func_kwonly_parameters, func_kwdefaults, ctor_name
 from .signature import Tagger
 from .utils import DEPRECATED, OVERRIDE, REMOVE, ALIAS, EXTRA, RENAME, BROKEN, BOOL, microseconds_since_epoch, datetime_to_microsecond_str
-from .eval.request import Request, Report, FIRST, LAST, ReportSummaryGraph
+from .eval.request import Request, Report, FIRST, LAST, Graph
 from .eval.pool import DATABLOCKS_LOGGING_POOL, DATABLOCKS_LOGGING_REDIRECT_POOL
 from .dataspace import Dataspace, DATABLOCKS_DATALAKE
 
@@ -290,6 +289,7 @@ class Datablock(Anchored, Scoped):
     * Use logger/logging in Datablock/Datastack, but verbose in the user impl.
     """
     # TODO: implement support for multiple batch_to_shard_keys
+    style = '0.0.1'
     topics = []
     signature = Signature((), ('dataspace', 'version',)) # extract these attrs and use in __tag__
 
@@ -520,11 +520,13 @@ class Datablock(Anchored, Scoped):
                 shortfall_datapage[kvhandle] = filepathset
             shortfall_databook[topic] = shortfall_datapage
         return shortfall_databook
+    
 
     def _shard_pathset_(self, dataspace, topic, **shard):
         shardspace = self._shardspace(dataspace, topic, **shard)
         dirpath = shardspace.root
         return dirpath
+    
 
     @OVERRIDE
     def _shardspace_(self, dataspace, topic, **shard):
@@ -662,12 +664,32 @@ class Datablock(Anchored, Scoped):
             _record = records.iloc[-1]
         return _record
 
-    def show_build_graph(self, *, record=None, **kwargs):
+    def show_build_graph(self, *, record=None, node=tuple(), print=('logpath', 'logpath_status'), **kwargs):
         _record = self.show_build_record(record=record, full=True)
         _summary = _record['report_summary']
-        _logspace = self.show_build_logspace()
-        graph = ReportSummaryGraph(_summary, logspace=_logspace, **kwargs)
+        _graph = Graph(_summary, print=print, **kwargs)
+        if node is not None:
+            graph = _graph.node(*node)
+        else:
+            graph = _graph
         return graph
+    
+    def show_build_nbatches(self, *, record=None, print=True):
+        g = self.show_build_graph(record=record, node=(1,)) # inner `collate_databooks()`, aka 2nd arg to outer `collate_databooks` (top of the graph)
+        nbatches = len(g.args)
+        if print:
+            _print(nbatches)
+        else:
+            return nbatches
+    
+    def show_build_batch_graph(self, *, record=None, batch=0):
+        g = self.show_build_graph(record=record, node=(1,batch)) # inner `collate_databooks()`, aka 2nd arg to outer `collate_databooks` (top of the graph)
+        return g
+
+    def show_build_batch_log(self, *, record=None, batch=0):
+        g = self.show_build_graph(record=record, node=(1,batch)) # inner `collate_databooks()`, aka 2nd arg to outer `collate_databooks` (top of the graph)
+        log = g.log()
+        return log
 
     def show_build_summary(self, *, record=None, **ignored):
         _record = self.show_build_record(record=record, full=True)
@@ -685,6 +707,7 @@ class Datablock(Anchored, Scoped):
         _logspace = _record['logspace']
         logspace = _eval(_logspace)
         return logspace
+    
     def show_build_logname(self, *, record=None, **kwargs):
         record = self.show_build_record(record=record, full=True)
         _ = record['logname']
@@ -697,6 +720,7 @@ class Datablock(Anchored, Scoped):
             logpath = logspace.join(logspace.root, logname+'.log')
             return logpath
 
+    @DEPRECATED # USE show_build_graph()
     def show_build_logs(self, *, record=None, request_max_len=50, **kwargs):
         g = self.show_build_graph(record=record, **kwargs)
         if g is not None:
@@ -726,8 +750,8 @@ class Datablock(Anchored, Scoped):
         return _
 
     @BROKEN
-    def show_build_log(self, *, record=None, **kwargs):
-        g = self.build_graph(record=record, **kwargs)
+    def show_build_log(self, *, record=None, node=None, **kwargs):
+        g = self.show_build_graph(record=record, node=None, **kwargs)
         if g is not None:
             _ = g.log()
             return _
@@ -758,13 +782,17 @@ class Datablock(Anchored, Scoped):
             alias = hashstr
         recordspace = self._recordspace_().ensure()
 
-        def _write_record_lifecycle_callback(lifecycle_stage, request, task, response):
+        def _write_record_lifecycle_callback(lifecycle_stage, request, response):
+            # TODO: report_summary should be just a repr(report.to_dict()), ideally, repr(report)
+            # TODO: however, we may rewrite report.result
+            task = request.task
             timestamp = int(microseconds_since_epoch())
             datestr = datetime_to_microsecond_str()
             blockscopestr = repr(blockscope)
-            _record = dict(alias=alias,
+            _record = dict(style=Datablock.style,
+                           alias=alias,
                            stage=lifecycle_stage.name,
-                            classname=classname,
+                           classname=classname,
                             version=versionstr,
                             scope=blockscopestr,
                             date=datestr,
@@ -845,11 +873,18 @@ class Datablock(Anchored, Scoped):
         return request
 
     def build(self, alias=None, **scope):
+        def equal_scopes(s1, s2):
+            if set(s1.keys()) != (s2.keys()):
+                return False
+            for key in s1.keys():
+                if s1[key] != s2[key]:
+                    return False
+            return True
         # TODO: consistency check: sha256 alias must be unique for a given version or match scope
         blockscope = self._blockscope_(**scope)
         if self.show_build_record() is not None:
             _scope = self.show_build_scope()
-            if blockscope != _scope:
+            if not equal_scopes(blockscope, _scope):
                 raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.__class__} alias {self.alias}")
         """
         pool_key = utils.datetime_now_key()
@@ -864,7 +899,7 @@ class Datablock(Anchored, Scoped):
         result = response.result()
         return result
 
-    # TODO: build_databook_* -> build_*?
+    # TODO: build_databook_* -> build_block_*?
     @OVERRIDE
     def build_databook_request(self, pool=None, **scope):
         if pool is None:
@@ -896,7 +931,7 @@ class Datablock(Anchored, Scoped):
         logger.debug(f"collated_shortfall_batch_request: {collated_shortfall_batch_request}")
         extent_databook = self.extent_databook(**batchscope)
         build_databook_request = \
-            Request(self.collate_databooks, extent_databook, collated_shortfall_batch_request).apply(pool)
+            Request(self.collate_databooks, extent_databook, collated_shortfall_batch_request)
         return build_databook_request
 
     @OVERRIDE
@@ -1073,7 +1108,7 @@ class DB:
             return repr
         
     @staticmethod
-    def DATABLOCK(cls, *, module_name=__name__, topics, version, use_tempspace=None, datablock_repr=None, datablock_tag=None):
+    def DATABLOCK_CLASS(cls, *, module_name=__name__, topics, version, use_tempspace=None, datablock_repr=None, datablock_tag=None):
         """
             Datablock subclass factory using `cls` as implementation of the basic `build()`, `read()`, `valid()`, `metric()` methods.
             Optional members: `version` and `topics`.
@@ -1081,16 +1116,15 @@ class DB:
                build(root|{topic->root}, [fs], **shardscope) -> rooted_shard_path | {topic -> rooted_shard_path}
                read(root|{topic->root}, [fs], **shardscope) -> object | {topic -> object}
         """
-        
-        def __init__(self, alias=None, datablock={}, **kwargs):
+         
+        def __init__(self, alias=None, datablock={}, **impl_kwargs):
             datablock_kwargs = copy.deepcopy(datablock)
             datablock_kwargs['version'] = version
             Datablock.__init__(self, alias, **datablock_kwargs)
-            cls_kwargs = copy.deepcopy(kwargs)
             try:
-                self.obj = cls(**cls_kwargs)
+                self.obj = cls(**impl_kwargs)
             except Exception as e:
-                print(f"ERROR: failed to instantiate cls {cls} using cls_kwargs {cls_kwargs}")
+                print(f"ERROR: failed to instantiate impl cls {cls} using impl_kwargs {impl_kwargs}")
                 raise(e)
             self.use_tempspace = use_tempspace
             if self.use_tempspace is None:
@@ -1147,7 +1181,7 @@ class DB:
                 _shardspace = self._shardspace_(self.versionspace, topic, **tagshardscope)
             return _shardspace
 
-        def _build_shard_(self, tagshardscope, **shardscope):
+        def _build_batch_(self, tagshardscope, **shardscope):
             if self.use_tempspace:
                 _dataspace = Dataspace.temporary(self.tmpspace.root)
             else:
@@ -1196,7 +1230,7 @@ class DB:
             _ = self.extent_databook(**tagshardscope)
             return _
 
-        def _read_shard_(self, tagshardscope, topic, **shardscope):
+        def _read_batch_(self, tagshardscope, topic, **shardscope):
             _shardspace = self._load_shardspace(topic, **tagshardscope)
             _root = _shardspace.root
             _fs = _shardspace.filesystem
@@ -1263,8 +1297,8 @@ class DB:
                     'block_defaults': func_kwdefaults(cls.build), 
                     '__init__': __init__,
                     '__repr__': __repr__,
-                    '_build_batch_': _build_shard_,
-                    '_read_block_': _read_shard_,
+                    '_build_batch_': _build_batch_,
+                    '_read_block_': _read_batch_,
                     '_load_shardspace': _load_shardspace,
         }
         if hasattr(cls, 'valid'):
@@ -1278,7 +1312,7 @@ class DB:
         return datablock_class
      
     @staticmethod
-    def list_datablocks(*, dataspace=DATABLOCKS_DATALAKE):
+    def list_datablocks(*, dataspace=DATABLOCKS_DATALAKE, pretty_print=True):
         def _chase_anchors(_dataspace, _anchorchain=()):
             filenames = _dataspace.list()
             anchorchains = []
@@ -1301,15 +1335,38 @@ class DB:
 
         anchorchains = _chase_anchors(datablock_dataspace)
         datablocks = {'.'.join(anchorchain[:-1]): anchorchain[-1] for anchorchain in anchorchains}
-        return datablocks
-
-    def __init__(self, cls_or_clstr, alias=None, *, use_tempspace=False, **init_kwargs):
+        if pretty_print:
+                for key, value in datablocks.items():
+                    print(f"{key}: {value}")
+        else:
+            return datablocks
+    
+    def __new__(cls, impl_cls_or_clstr, alias=None, *, use_tempspace=False, **kwargs):
+        self = object.__new__(cls)
+        self._init_(impl_cls_or_clstr, alias, use_tempspace=use_tempspace, **kwargs)
+        return self
+    
+    def _init_(self, impl_cls_or_clstr, alias=None, *, use_tempspace=False, **kwargs):
         """
-        Wrapper around
-        def DATABLOCK(cls, *, module=__name__, topics, version, use_tempspace=False):  
+        Wrapper around output of 
+        DATABLOCK_CLASS(cls, *, module=__name__, topics, version, use_tempspace=False):
+        class DB:
+            def __init__(impl_clstr, alias, **kwargs):
+                impl_clstr -> cls, module_name
+                cls   -> topics, version
+                datablock_class = \
+                        DATABLOCK_CLASS(cls, module_name, topics, version)
+                [
+                    class datablock_class:
+                        def __init__(self, alias, datablock, **impl_kwargs)
+                            Datablock.__init__(alias, **datablock)
+                            self.obj = cls(**init_kwargs)
+                ]
+                self._datablock = datablock_class(alias, **kwargs):
+                    [kwargs get interpreted as datablock, **impl_kwargs]  
         """
-        if isinstance(cls_or_clstr, str):
-            clstr = cls_or_clstr
+        if isinstance(impl_cls_or_clstr, str):
+            clstr = impl_cls_or_clstr
             clstrparts = clstr.split('.')
             if len(clstrparts) == 1:
                 module_name = __name__
@@ -1320,7 +1377,7 @@ class DB:
             mod = importlib.import_module(module_name)
             cls = getattr(mod, clsname)
         else:
-            cls = cls_or_clstr
+            cls = impl_cls_or_clstr
             module_name = cls.__module__
             clstr = f"{module_name}.{cls.__name__}"
         if hasattr(cls, 'topics'):
@@ -1331,23 +1388,36 @@ class DB:
             version = cls.version
         else:
             version = DEFAULT_VERSION
-        self._repr = Tagger().repr_func(DB, clstr, alias, use_tempspace=use_tempspace, **init_kwargs)
+        self._repr = Tagger().repr_func(DB, clstr, alias, use_tempspace=use_tempspace, **kwargs)
         if alias is not None:
-            self._tag = Tagger(tag_defaults=False).tag_func(DB, clstr, alias, **init_kwargs)
+            self._tag = Tagger(tag_defaults=False).tag_func(DB, clstr, alias, **kwargs)
         else:
-            self._tag = Tagger(tag_defaults=False).tag_func(DB, clstr, **init_kwargs)
+            self._tag = Tagger(tag_defaults=False).tag_func(DB, clstr, **kwargs)
 
         # TODO: could simply save _repr and _tag instead of init_kwargs, alias and clstr
-        datablock_class = DB.DATABLOCK(cls,
+        datablock_class = DB.DATABLOCK_CLASS(cls,
                                     module_name=module_name, 
                                     version=version, 
                                     topics=topics, 
                                     use_tempspace=use_tempspace,
                                     )
-        self._alias = alias
-        self._cls = clstr
-        self._datablock = datablock_class(alias, **init_kwargs)
+        self._setup_(cls, alias, datablock_class, **kwargs)
         
+    def _setup_(self, cls, alias, datablock_class, **kwargs):
+        self._alias = alias
+        self._cls = cls
+        self._kwargs = kwargs
+        self._datablock_class = datablock_class
+        self._datablock = datablock_class(alias, **kwargs)
+        return self
+
+    def set(self, **kwargs):
+        _self = object.__new__(self.__class__)
+        _kwargs = copy.deepcopy(self._kwargs)
+        _kwargs.update(**kwargs)
+        _self._setup_(self._cls, self._alias, self._datablock_class, **_kwargs)
+        return _self
+
     @property
     def impl(self):
         datablock = object.__getattribute__(self, '_datablock')
@@ -1407,13 +1477,61 @@ class DB:
         _ =  int(hashlib.sha1(_repr.encode()).hexdigest(), 16)
         return _
     
+    def reader(self, topic=None):
+        if self.scope is None:
+            raise ValueError(f"{self} of version {self.datablock.version} has not been built yet")
+        _request = self.datablock.read_databook_request(topic, **self.scope)\
+            .set(summary=lambda _: self.extent()[topic])
+        tagger = Tagger(tag_args=True, tag_kwargs=True, tag_defaults=False)
+        _funcrepr = f"{self.__tag__()}.reader"
+        if topic is None:
+            _repr = tagger.repr_func(_funcrepr)
+        else:
+            _repr = tagger.repr_func(_funcrepr, topic)
+        _tag = f"{self.classname}"
+        if self.alias is not None:
+            _tag += f":{self.alias}"
+            if topic is not None:
+                _tag += f":{topic}"
+        else:
+            if topic is not None:
+                _tag += f"::{topic}"
+        request = self.Request(_request, labels=dict(tag=_tag, repr=_repr))
+        return request
+    
+    def read(self, topic=None):
+        if self.scope is None:
+                raise ValueError(f"{self} of version {self.datablock.version} has not been built yet")
+        _ = self.datablock.read(topic, **self.scope)
+        return _
+    
+    def extent(self):
+        if self.scope is None:
+            raise ValueError(f"{self} of version {self.datablock.version} has not been built yet")
+        _ = self.datablock.extent(**self.scope)
+        return _
+
+    def extent_metric(self):
+        if self.scope is None:
+            raise ValueError(f"{self} of version {self.datablock.version} has not been built yet")
+        _ = self.datablock.extent_metric(**self.scope)
+        return _    
+
+    def UNSAFE_clear(self):
+        if self.scope is None:
+            raise ValueError(f"{self} of version {self.datablock.version} has not been built yet")
+        _ = self.datablock.UNSAFE_clear(**self.scope)
+        return _
+    
+    # TODO: remove implemented methods from __getattr__
     # TODO: make all name attrs into methods, only the `else-clause` dispatches to self.datablock, the rest can be found in __dict__, obviating the need for __getattr__.
     def __getattr__(self, attrname):
         if attrname == 'reader':
             if self.scope is None:
                 raise ValueError(f"{self} of version {self.datablock.version} has not been built yet")
             def reader(topic=None):
-                _request = self.datablock.read_databook_request(topic, **self.scope)
+                _request = self.datablock.read_databook_request(topic, **self.scope)\
+                    .set(summary=lambda _: self.extent()[topic])
                 tagger = Tagger(tag_args=True, tag_kwargs=True, tag_defaults=False)
                 _funcrepr = f"{self.__tag__()}.reader"
                 if topic is None:
