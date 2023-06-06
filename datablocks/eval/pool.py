@@ -235,8 +235,6 @@ class Logging:
             logger.debug(f"START: Executing request called {str(self.request)} with task id {self.id}")
             try:
                 _ = self.request.task(*args, **kwargs)
-            except:
-                pass
             finally:
                 logger.debug(f"STOP: Executing request called {str(self.request)} with task id {self.id}")
                 if logstream is not None:
