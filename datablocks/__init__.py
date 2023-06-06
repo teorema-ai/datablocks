@@ -86,10 +86,10 @@ def parse_and_exec_argstr(argstr, *, console):
 
 def print_usage(*, console):
     if console:
-        print(f"""Usage:\n[DATABLOCKS_DATALACK_URL={{DATABLOCKS_DATALAKE_URL}}]\\\n"""
-                      f"""{sys.argv[0]} --help | {{package.module.Class}}({{key}}={{val}},...).{{method}}({{key}}={{val}},...)""")
+        print(f"""Usage:\nDATABLOCKS_DATALACK_URL={{DATABLOCKS_DATALAKE_URL}}\\\n"""
+                      f"""{sys.argv[0]} --help | \n[package.module, package.module, ...] {{package.module.Class}}({{key}}={{val}},...).{{method}}({{key}}={{val}},...)""")
     else:
-        print(f"""Usage:\n{__name__}.run("--help")  |\n{__name__}.exec("{{package.module.Class}}({{key}}={{val}},...).{{method}}({{key}}={{val}},...)""")
+        print(f"""Usage:\n{__name__}.exed("--help")  |\n{__name__}.exec("{{package.module.Class}}({{key}}={{val}},...).{{method}}({{key}}={{val}},...)""")
 
 
 def exec(argstr=None):
