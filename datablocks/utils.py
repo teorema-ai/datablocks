@@ -486,3 +486,10 @@ def key_id(key):
     maxint64 = int(2**63)
     id = int(hashstr, 16)%maxint64
     return id
+
+
+def docstr(docstr):
+    def decorator(f):
+        f.__doc__ = docstr
+        return f
+    return decorator
