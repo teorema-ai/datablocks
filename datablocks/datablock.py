@@ -23,7 +23,7 @@ import datablocks
 from .signature import Signature, func_kwonly_parameters, func_kwdefaults, ctor_name
 from .signature import Tagger
 from .utils import DEPRECATED, OVERRIDE, REMOVE, ALIAS, EXTRA, RENAME, BROKEN, BOOL, microseconds_since_epoch, datetime_to_microsecond_str, docstr
-from .eval.request import Request, Report, FIRST, LAST, Graph
+from .eval.request import Request, Report, LAST, Graph
 from .eval.pool import DATABLOCKS_LOGGING_POOL, DATABLOCKS_LOGGING_REDIRECT_POOL
 from .dataspace import Dataspace, DATABLOCKS_DATALAKE
 
@@ -615,11 +615,15 @@ class Datablock(Anchored, Scoped):
         short = not full
         recordspace = self._recordspace_()
 
-        parquet_dataset = pq.ParquetDataset(recordspace.root, use_legacy_dataset=False, filesystem=recordspace.filesystem)
-        table = parquet_dataset.read()
-        frame = table.to_pandas()
+        frame = None
+        try:
+            parquet_dataset = pq.ParquetDataset(recordspace.root, use_legacy_dataset=False, filesystem=recordspace.filesystem)
+            table = parquet_dataset.read()
+            frame = table.to_pandas()
+        except:
+            pass
     
-        if len(frame) > 0:
+        if frame is not None and len(frame) > 0:
             
             frame.reset_index(inplace=True, drop=True)
             if columns is None:
@@ -988,7 +992,8 @@ class Datablock(Anchored, Scoped):
             logging.debug(f"Clearing shardspace {shardspace}")
             shardspace.remove()
 
-
+"""
+#GITREMOVE
 class CachingDatablock(Datablock):
     def __init__(self,
                  dataspace,
@@ -1078,6 +1083,7 @@ class CachingDatablock(Datablock):
         subspace = self.versionspace.subspace(*datachain)
         subspace.ensure()
         return subspace.root
+"""
 
 
 class DB:
@@ -1161,81 +1167,80 @@ class DB:
     
     def _init_(self, impl_cls_or_clstr, alias=None, *, use_tempspace=False, **kwargs):
         if isinstance(impl_cls_or_clstr, str):
-            clstr = impl_cls_or_clstr
-            clstrparts = clstr.split('.')
-            if len(clstrparts) == 1:
+            impl_clstr = impl_cls_or_clstr
+            impl_clstrparts = impl_clstr.split('.')
+            if len(impl_clstrparts) == 1:
                 module_name = __name__
-                clsname = clstrpargs[0]
+                impl_clsname = impl_clstrpargs[0]
             else:
-                module_name = '.'.join(clstrparts[:-1])
-                clsname = clstrparts[-1]
+                module_name = '.'.join(impl_clstrparts[:-1])
+                impl_clsname = impl_clstrparts[-1]
             mod = importlib.import_module(module_name)
-            cls = getattr(mod, clsname)
+            impl_cls = getattr(mod, impl_clsname)
         else:
-            cls = impl_cls_or_clstr
-            module_name = cls.__module__
-            clstr = f"{module_name}.{cls.__name__}"
-        if hasattr(cls, 'topics'):
-            topics = cls.topics
+            impl_cls = impl_cls_or_clstr
+            module_name = impl_cls.__module__
+            impl_clstr = f"{module_name}.{impl_cls.__name__}"
+        if hasattr(impl_cls, 'topics'):
+            topics = impl_cls.topics
         else:
             topics = [DEFAULT_TOPIC]
-        if hasattr(cls, 'version'):
-            version = cls.version
+        if hasattr(impl_cls, 'version'):
+            version = impl_cls.version
         else:
             version = DEFAULT_VERSION
-        self._repr = Tagger().repr_func(DB, clstr, alias, use_tempspace=use_tempspace, **kwargs)
+        self._repr = Tagger().repr_func(DB, impl_clstr, alias, use_tempspace=use_tempspace, **kwargs)
         if alias is not None:
-            self._tag = Tagger(tag_defaults=False).tag_func(DB, clstr, alias, **kwargs)
+            self._tag = Tagger(tag_defaults=False).tag_func(DB, impl_clstr, alias, **kwargs)
         else:
-            self._tag = Tagger(tag_defaults=False).tag_func(DB, clstr, **kwargs)
+            self._tag = Tagger(tag_defaults=False).tag_func(DB, impl_clstr, **kwargs)
 
         # TODO: could simply save _repr and _tag instead of init_kwargs, alias and clstr
-        datablock_class = DB.MAKE_DATABLOCK_CLASS(cls,
+        pimpl_class = DB.MAKE_DATABLOCK_CLASS(impl_cls,
                                     module_name=module_name, 
                                     version=version, 
                                     topics=topics, 
                                     use_tempspace=use_tempspace,
                                     )
-        self._setup_(cls, alias, datablock_class, **kwargs)
+        self._setup_(impl_cls, alias, pimpl_class, **kwargs)
         
-    def _setup_(self, cls, alias, datablock_class, **kwargs):
+    def _setup_(self, impl_cls, alias, pimpl_cls, **kwargs):
         self._alias = alias
-        self._cls = cls
+        self._impl_cls = impl_cls
+        self._pimpl_cls = pimpl_cls
         self._kwargs = kwargs
-        self._datablock_class = datablock_class
-        self._datablock = datablock_class(alias, **kwargs)
+        self._pimpl = pimpl_cls(alias, **kwargs)
         return self
-
-    def set(self, **kwargs):
-        _self = object.__new__(self.__class__)
-        _kwargs = copy.deepcopy(self._kwargs)
-        _kwargs.update(**kwargs)
-        _self._setup_(self._cls, self._alias, self._datablock_class, **_kwargs)
-        return _self
-
-    @property
-    def pimpl(self):
-        _ = object.__getattribute__(self, '_datablock')
-        return _
     
-    @property
-    def impl(self):
-        pimpl = self.pimpl
-        _ = pimpl.impl
-        return _
-
-    @property
-    def classname(self): # -> pimpl_classname
-        return object.__getattribute__(self, '_cls')
-    
-    @property
-    def datablock(self):
-        return self.pimpl
-    
+    # Use @property to access _alias, etc. to avoid capture by __getattr__
     @property
     def alias(self):
         return object.__getattribute__(self, '_alias')
+
+    @property
+    def impl_cls(self):
+        return object.__getattribute__(self, '_impl_cls')
     
+    @property
+    def pimpl_cls(self):
+        return object.__getattribute__(self, '_pimpl_cls')
+
+    @property
+    def kwargs(self):
+        return object.__getattribute__(self, '_kwargs')
+
+    @property
+    def pimpl(self):
+        return object.__getattribute__(self, '_pimpl')
+
+    def set(self, **kwargs):
+        _self = object.__new__(self.__class__)
+        _kwargs = copy.deepcopy(self.kwargs)
+        _kwargs.update(**kwargs)
+        _self._setup_(self.impl_cls, self.alias, self.pimpl_cls, **_kwargs)
+        return _self
+    
+    # FIX: this cannot throw, since then scope extraction is reattempted via __getattr__
     @property
     def scope(self):
         try:
@@ -1244,9 +1249,9 @@ class DB:
         except:
             pass
         alias = object.__getattribute__(self, 'alias')
-        records = self.datablock.show_block_records()
+        records = self.pimpl.show_block_records()
         if len(records) == 0:
-            msg = f"No records for datablock {self.datablock} of version: {self.datablock.version}"
+            msg = f"No records for datablock {self.pimpl} of version: {self.pimpl.version}"
             if self.verbose:
                 print(msg)
             raise ValueError(msg)
@@ -1279,7 +1284,7 @@ class DB:
     
     def reader(self, topic=None):
         if self.scope is None:
-            raise ValueError(f"{self} of version {self.datablock.version} has not been built yet")
+            raise ValueError(f"{self} of version {self.pimpl.version} has not been built yet")
         _request = self.pimpl.read_databook_request(topic, **self.scope)\
             .set(summary=lambda _: self.extent()[topic])
         tagger = Tagger(tag_args=True, tag_kwargs=True, tag_defaults=False)
@@ -1288,7 +1293,7 @@ class DB:
             _repr = tagger.repr_func(_funcrepr)
         else:
             _repr = tagger.repr_func(_funcrepr, topic)
-        _tag = f"{self.classname}"
+        _tag = f"{self.impl_cls}"
         if self.alias is not None:
             _tag += f":{self.alias}"
             if topic is not None:
@@ -1314,78 +1319,17 @@ class DB:
     def extent_metric(self):
         if self.scope is None:
             raise ValueError(f"{self} of version {self.pimpl.version} has not been built yet")
-        _ = self.datablock.extent_metric(**self.scope)
+        _ = self.pimpl.extent_metric(**self.scope)
         return _    
 
     def UNSAFE_clear(self):
         if self.scope is None:
             raise ValueError(f"{self} of version {self.pimpl.version} has not been built yet")
-        _ = self.datablock.UNSAFE_clear(**self.scope)
+        _ = self.pimpl.UNSAFE_clear(**self.scope)
         return _
     
-    # TODO: remove implemented methods from __getattr__
-    # TODO: make all name attrs into methods, only the `else-clause` dispatches to self.datablock, the rest can be found in __dict__, obviating the need for __getattr__.
     def __getattr__(self, attrname):
-        '''
-        if attrname == 'reader':
-            if self.scope is None:
-                raise ValueError(f"{self} of version {self.datablock.version} has not been built yet")
-            def reader(topic=None):
-                _request = self.datablock.read_databook_request(topic, **self.scope)\
-                    .set(summary=lambda _: self.extent()[topic])
-                tagger = Tagger(tag_args=True, tag_kwargs=True, tag_defaults=False)
-                _funcrepr = f"{self.__tag__()}.reader"
-                if topic is None:
-                    _repr = tagger.repr_func(_funcrepr)
-                else:
-                    _repr = tagger.repr_func(_funcrepr, topic)
-                _tag = f"{self.classname}"
-                if self.alias is not None:
-                    _tag += f":{self.alias}"
-                    if topic is not None:
-                        _tag += f":{topic}"
-                else:
-                    if topic is not None:
-                        _tag += f"::{topic}"
-                request = self.Request(_request, labels=dict(tag=_tag, repr=_repr))
-                return request
-            return reader
-        elif attrname == 'read':
-            if self.scope is None:
-                raise ValueError(f"{self} of version {self.datablock.version} has not been built yet")
-            def read(topic=None):
-                _ = self.datablock.read(topic, **self.scope)
-                return _
-            return read
-        elif attrname == 'extent':
-            if self.scope is None:
-                raise ValueError(f"{self} of version {self.datablock.version} has not been built yet")
-            def extent():
-                _ = self.datablock.extent(**self.scope)
-                return _
-            return extent
-        elif attrname == 'extent_metric':
-            if self.scope is None:
-                raise ValueError(f"{self} of version {self.datablock.version} has not been built yet")
-            def extent_metric():
-                _ = self.datablock.extent_metric(**self.scope)
-                return _
-            return extent_metric
-        elif attrname == 'UNSAFE_clear':
-            if self.scope is None:
-                raise ValueError(f"{self} of version {self.datablock.version} has not been built yet")
-            def UNSAFE_clear():
-                _ = self.datablock.UNSAFE_clear(**self.scope)
-                return _
-            return UNSAFE_clear
-        elif attrname == '__tag__':
-            _ = _ = object.__getattribute__(self, '__tag__')
-            return _
-        else:
-            attr = getattr(self.datablock, attrname)
-            return attr
-        '''
-        attr = getattr(self.datablock, attrname)
+        attr = getattr(self.pimpl, attrname)
         return attr
 
     @staticmethod
@@ -1418,35 +1362,7 @@ class DB:
                 tag = datablock_tag
             return tag
 
-        # REMOVE
-        '''
-        @classmethod
-        def _impl_method_uses_fs(cls, func):
-            sig = func_signature(func)
-            kinds = [inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD]
-            ppars = {name: par for name, par in sig.parameters.items() if par.kind in kinds}
-            if len(ppars) > 1:
-                key = list(ppars.keys())[1]
-                par = ppars[key]
-                ann = par.annotation
-                if issubclass(ann, fsspec.AbastractFileSystem):
-                    return True
-            return False
-
-        @classmethod
-        def _impl_uses_fs(cls, obj):
-            methodnames= ['build', 'read', 'valid', 'metric']
-            flag = None
-            for methodname in methodnames: 
-                method = getattr(obj, methodname)
-                _flag = cls._impl_method_uses_fs(method)
-                if flag is None:
-                    flag = _flag
-                else:
-                    if flag != _flag:
-                        raise ValueError(f"Inconsistent use of filesystem in method {methodname} of object {obj}")
-            return flag
-        '''
+        
         @functools.lru_cache(maxsize=10)
         def impl(self, root, filesystem):
             try:
@@ -1455,11 +1371,6 @@ class DB:
                 print(f"ERROR: failed to instantiate impl_cls {impl_cls} using impl_kwargs {self.impl_kwargs}")
                 raise(e)
             return impl
-
-        # REMOVE
-        def _load_shardspace(self, topic, **tagshardscope):
-            _shardspace = self._shardspace_(self.versionspace, topic, **tagshardscope)
-            return _shardspace
 
         def _build_batch_(self, tagshardscope, **shardscope):
             _dataspace = self.versionspace
@@ -1576,3 +1487,347 @@ class DB:
         return datablock_class
      
         
+class _DB:
+    class Request(Request):
+        def __init__(self, request, labels):
+            self.request = request
+            self.labels = labels
+        
+        def __getattribute__(self, __name: str):
+            if __name == '__tag__':
+                _ = object.__getattribute__(self, '__tag__')
+            else:
+                request = object.__getattribute__(self, 'request')
+                _ = request.__getattribute__(__name)
+            return _
+        
+        def __tag__(self):
+            labels = object.__getattribute__(self, 'labels')
+            tag = labels['tag']
+            return tag
+        
+        def __repr__(self):
+            labels = object.__getattribute__(self, 'labels')
+            repr = labels['repr']
+            return repr     
+    
+    @staticmethod
+    def list_classes(*, dataspace=DATABLOCKS_DATALAKE, pretty_print=True):
+        def _chase_anchors(_dataspace, _anchorchain=()):
+            filenames = _dataspace.list()
+            anchorchains = []
+            for filename in filenames:
+                if filename.startswith('.'):
+                    continue
+                elif dataspace.isfile(filename):
+                    continue
+                elif filename.startswith('version='):
+                    anchorchain = _anchorchain + (filename,)
+                    anchorchains.append(anchorchain)
+                else:
+                    dataspace_ = _dataspace.subspace(filename)
+                    anchorchain_ = _anchorchain+(filename,)
+                    _anchorchains = _chase_anchors(dataspace_, anchorchain_)
+                    anchorchains.extend(_anchorchains)
+            return anchorchains
+        
+        datablock_dataspace = dataspace.subspace('datablock')
+
+        anchorchains = _chase_anchors(datablock_dataspace)
+        datablocks = {'.'.join(anchorchain[:-1]): anchorchain[-1] for anchorchain in anchorchains}
+        if pretty_print:
+                for key, value in datablocks.items():
+                    print(f"{key}: {value}")
+        else:
+            return datablocks
+
+    def __new__(cls, impl_cls_or_clstr, alias=None, **scope):
+        if isinstance(impl_cls_or_clstr, str):
+            impl_clstr = impl_cls_or_clstr
+            impl_clstrparts = impl_clstr.split('.')
+            if len(impl_clstrparts) == 1:
+                module_name = __name__
+                impl_clsname = impl_clstrparts[0]
+            else:
+                module_name = '.'.join(impl_clstrparts[:-1])
+                impl_clsname = impl_clstrparts[-1]
+            mod = importlib.import_module(module_name)
+            impl_cls = getattr(mod, impl_clsname)
+        else:
+            impl_cls = impl_cls_or_clstr
+            module_name = impl_cls.__module__
+            impl_clstr = f"{module_name}.{impl_cls.__name__}"
+        
+        _repr = Tagger().repr_func(cls, impl_clstr, alias, **scope)
+        if alias is not None:
+            _tag = Tagger(tag_defaults=False).tag_func(cls, impl_clstr, alias, **scope)
+        else:
+            _tag = Tagger(tag_defaults=False).tag_func(cls, impl_clstr, **scope)
+
+        def __init__(self, impl_cls, alias=None, impl_settings={}, datablock_settings={}, **scope):
+            self.impl_cls = impl_cls
+            self.alias = alias
+            self.impl_settings = impl_settings
+            self.datablock_settings = datablock_settings
+            Datablock.__init__(self, alias, **datablock_settings)
+            self.impl_settings = impl_settings
+            self._validate_scope(**scope)
+            self.scope = scope
+
+        def __repr__(self):
+            return _repr
+
+        def __tag__(self):
+            return _tag
+
+        def with_impl(self, **impl_settings):
+            _ = self.clone(impl_settings, {}, self.scope)
+            return _
+        
+        def with_datablock(self, **datablock_settings):
+            _ = self.clone({}, datablock_settings, self.scope)
+            return _
+
+        def with_scope(self, **scope):
+            _ = self.clone({}, {}, scope)
+            return _
+
+        def _validate_scope(self, **scope):
+            # TODO: _records --> (journal)_entries
+            records = self.show_block_records()
+            if len(records) == 0:
+                msg = f"No journal entries for datablock {self} of version: {self.version}"
+                if self.verbose:
+                    print(msg)
+                _scope = scope
+            else:
+                if self.alias is None:
+                    rec = records.iloc[-1]
+                else:
+                    rec = records[records.alias == self.alias].iloc[-1]
+                # TODO?: fix serialization of version to record to remove `repr`
+                if rec['version'] != repr(self.version) and rec['version']:
+                    msg = f"Version mismatch for datablock {self} of version: {self.version} and journal entry with alias {alias}: {rec['version']}"
+                    if self.verbose:
+                        print(msg)
+                    raise ValueError(msg)
+                _scope = _eval(rec['scope'])
+            return _scope
+
+        def clone(self, impl_settings, datablock_settings, scope):
+            _impl_settings = copy.deepcopy(self.impl_settings)
+            _datablock_settings = copy.deepcopy(self.datablock_settings)
+            _scope = copy.deepcopy(self.scope)
+            _impl_settings.update(impl_settings)
+            _datablock_settings.update(datablock_settings)
+            _scope.update(scope)
+            clone = self.__class__(self.impl_cls, self.alias, _impl_settings, _datablock_settings, _scope)
+            return clone
+        
+        def __hash__(self):
+            _repr = repr(self)
+            _ =  int(hashlib.sha1(_repr.encode()).hexdigest(), 16)
+            return _
+    
+        @functools.lru_cache(maxsize=10)
+        def impl(self, root, filesystem):
+            try:
+                impl = self.impl_cls(root, filesystem, **self.impl_settings)
+            except Exception as e:
+                print(f"ERROR: failed to instantiate impl_cls {self.impl_cls} using impl_settings {self.impl_settings}")
+                raise(e)
+            return impl
+
+        def _build_batch_request_(self, tagshardscope, **shardscope):
+            _dataspace = self.versionspace
+            fs = _dataspace.filesystem
+            if not hasattr(self.impl_cls, 'topics'):
+                topic = None
+                _shardspace = self._shardspace_(_dataspace, topic, **tagshardscope)
+                impl = self.impl(_shardspace.root, fs)
+                if self.verbose:
+                        print(f"Building datablock using {impl}")
+                build_request = Request(impl.build, **shardscope)
+                if self.verbose:
+                    print(f"Built datablock in _shardspace {_shardspace}")
+                logging.debug(f"Built datablock in _shardspace {_shardspace}")
+            else:
+                _roots = {topic: self._shardspace_(_dataspace, topic, **tagshardscope).root for topic in self.topics}
+                
+                for topic in self.topics:
+                    impl = self.impl(_roots, fs)
+                    if self.verbose:
+                        print(f"Building datablock using {impl}")
+                    build_request = Request(impl.build, **shardscope)
+                    """
+                    if self.verbose:
+                        print(f"Built datablock in _shardspace {_shardspace}")
+                    """
+                    logging.debug(f"Built datablock in _shardspace {_shardspace}")
+            valid_request = Request(impl.valid, **shardscope)
+            extent_request = Request(self.extent_databook, **tagshardscope)
+            request = LAST(build_request, valid_request, extent_request)
+            return request
+
+        def _build_batch_(self, tagshardscope, **shardscope):
+            request = self._build_batch_request_(tagshardscope, **shardscope)
+            result = request.result()
+            return result
+
+        def _read_block_(self, tagshardscope, topic, **shardscope):
+            #_shardspace = self._load_shardspace(topic, **tagshardscope)
+            _shardspace = self._shardspace_(self.versionspace, topic, **tagshardscope)
+            _root = _shardspace.root
+            _fs = _shardspace.filesystem
+            if not hasattr(self.impl_cls, 'topics'):
+                _ = self.impl(_root, _fs).read(**shardscope)
+            else:
+                _ = self.impl(_root, _fs).read(topic, **shardscope)
+            return _
+
+        # TODO: pass in tagshardscope *and* shardscope, similar to _build_shard_, etc.
+        # TODO: do consistency check on shardpathset.
+        #RENAME -> _shard_valid_
+        def _extent_shard_valid_(self, shardpathset, topic, **scope):
+            #_shardspace = self._load_shardspace(topic, **scope)
+            _shardspace = self._shardspace_(self.versionspace, topic, **scope)
+            _root = _shardspace.root
+            _fs = _shardspace.filesystem
+            if not hasattr(impl_cls, 'topics'):
+                if topic != DEFAULT_TOPIC:
+                    raise ValueError(f"Unknown topic: {topic}")
+                valid = self.impl(_root, _fs).valid(**scope)
+            else:
+                valid = self.impl(_root, _fs).valid(topic, **scope)
+            return valid
+        
+        #RENAME: -> _shard_metric_ 
+        # TODO: pass in tagshardscope *and* shardscope, similar to _build_batch_, etc.
+        def _extent_shard_metric_(self, topic, **scope):
+            #_shardspace = self._load_shardspace(topic, **scope)
+            _shardspace = self._shardspace_(self.versionspace, topic, **scope)
+            _shardspace.root
+            _fs = _shardspace.filesystem
+            if not hasattr(impl_cls, 'topics'):
+                if topic != DEFAULT_TOPIC:
+                    raise ValueError(f"Unknown topic: {topic}")
+                metric = self.impl(_root, _fs).metric(**scope)
+            else:
+                metric = self.impl(_root, _fs).metric(topic, **scope)
+            return metric
+
+        """
+        scope_defaults = func_kwdefaults(impl_cls.build) 
+        scope_params = func_kwonly_parameters(impl_cls.build)
+        scope_docstr = ""
+        for scope_param in scope_params:
+            _scope_docstr = f"\t\t{scope_param}"
+            if scope_param in scope_defaults:
+                _scope_docstr += f"={scope_defaults[scope_param]}"
+            scope_docstr += "\n"+_scope_docstr
+        build_docstr = f"scope: {scope_docstr}\n{impl_cls.build.__doc__}"
+        #@docstr(build_docstr)
+        """
+
+        @functools.wraps(impl_cls.build)
+        def build(self, **scope):
+            _ = Datablock.build(self, **scope)
+            return _
+        
+        if hasattr(impl_cls, 'topics'):
+            topics = impl_cls.topics
+        else:
+            topics = [DEFAULT_TOPIC]
+        if hasattr(impl_cls, 'version'):
+            version = impl_cls.version
+        else:
+            version = DEFAULT_VERSION
+
+        datablocks_module_name = "DB."+module_name
+        try:
+            importlib.import_module(datablocks_module_name)
+        except:
+            spec = importlib.machinery.ModuleSpec(datablocks_module_name, None)
+            mod = importlib.util.module_from_spec(spec)
+
+        pimpl_clsdict = {
+                    '__module__': datablocks_module_name,
+                    'version': version,
+                    'topics': topics,
+                    'clone': clone,
+                    'block_keys': func_kwonly_parameters(impl_cls.build), 
+                    'block_defaults': func_kwdefaults(impl_cls.build), 
+                    'build': build,
+                    'impl': impl,
+                    '__init__': __init__,
+                    '__repr__': __repr__,
+                    '_validate_scope': _validate_scope,
+                    '_build_batch_': _build_batch_,
+                    '_read_block_': _read_block_,
+        }
+        if hasattr(impl_cls, 'valid'):
+            pimpl_clsdict['_extent_shard_valid_'] = _extent_shard_valid_
+        if hasattr(impl_cls, 'metric'):
+            pimpl_clsdict['_extent_shard_metric_'] = _extent_shard_metric_
+
+        pimpl_cls = type(impl_cls.__name__, 
+                               (Datablock,), 
+                               pimpl_clsdict,)
+        pimpl = pimpl_cls(alias, **scope)
+        return pimpl
+
+     
+        def reader(self, topic=None):
+            if self.scope is None:
+                raise ValueError(f"{self} of version {self.version} has not been built yet")
+            _request = self.read_databook_request(topic, **self.scope)\
+                .set(summary=lambda _: self.extent()[topic])
+            tagger = Tagger(tag_args=True, tag_kwargs=True, tag_defaults=False)
+            _funcrepr = f"{self.__tag__()}.reader"
+            if topic is None:
+                _repr = tagger.repr_func(_funcrepr)
+            else:
+                _repr = tagger.repr_func(_funcrepr, topic)
+            _tag = f"{self.impl_cls}"
+            if self.alias is not None:
+                _tag += f":{self.alias}"
+                if topic is not None:
+                    _tag += f":{topic}"
+            else:
+                if topic is not None:
+                    _tag += f"::{topic}"
+            request = self.Request(_request, labels=dict(tag=_tag, repr=_repr))
+            return request
+    
+    """
+    #REMOVE
+    def read(self, topic=None):
+        if self.scope is None:
+                raise ValueError(f"{self} of version {self.pimpl.version} has not been built yet")
+        _ = self.pimpl.read(topic, **self.scope)
+        return _
+    
+    def extent(self):
+        if self.scope is None:
+            raise ValueError(f"{self} of version {self.pimpl.version} has not been built yet")
+        _ = self.pimpl.extent(**self.scope)
+        return _
+
+    def extent_metric(self):
+        if self.scope is None:
+            raise ValueError(f"{self} of version {self.pimpl.version} has not been built yet")
+        _ = self.pimpl.extent_metric(**self.scope)
+        return _    
+
+    def UNSAFE_clear(self):
+        if self.scope is None:
+            raise ValueError(f"{self} of version {self.pimpl.version} has not been built yet")
+        _ = self.pimpl.UNSAFE_clear(**self.scope)
+        return _
+    
+    def __getattr__(self, attrname):
+        attr = getattr(self.pimpl, attrname)
+        return attr
+    """
+
+    

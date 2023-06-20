@@ -93,6 +93,9 @@ or in Python
     PDA.build()
     # etc
 ```
-
+# TEST
+```
+    python $HOME/datablocks/datablocks/test/datasets.py [{TEST_NAME}]
+```
 # DESIGN
 * Futures throw contained exceptions upon `result()`, Responses do not [#TODO: should they?]

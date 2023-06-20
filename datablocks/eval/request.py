@@ -334,6 +334,11 @@ class Request:
         return isinstance(other, self.__class__) and self.task == other.task and \
                self.args == other.args and self.kwargs == other.kwargs
 
+    def redefine(self, func, *args, **kwargs):
+        request = Request(func, *args, **kwargs)\
+                    .with_settings(**self.settings)
+        return request
+
     def rebind(self, *args, **kwargs):
         # rebind should preserve task
         request = Request(self.task, *args, **kwargs)\
@@ -812,7 +817,8 @@ class Closure(Response):
             self._result = response.result()
         return self._result
 
-
+"""
+#REMOVE 
 class FIRST(Request):
     def __init__(self, *args):
         self.args = args
@@ -839,6 +845,7 @@ class FIRST(Request):
             if isinstance(arg, Request):
                 response = arg.evaluate()
             else:
+                # FIX: ensure correctness of this Response() instantiation
                 response = Response(None, arg)
             if response.exception() is None:
                 return response
@@ -849,19 +856,32 @@ class FIRST(Request):
 class LAST(FIRST):
     def evaluate(self):
         for arg in self.args:
-            if isinstance(arg, Request):
-                response = arg.evaluate()
-            else:
-                response = Response(None, arg)
-            if response.exception() is not None:
-                return response
+            if not isinstance(arg, Request):
+                raise ValueError(f"Non-request arg: {args}")
+            response = arg.evaluate()
         return response
+"""
 
 
-@ALIAS
-class FirstSuccessRequest(FIRST):
-    pass
+def AND(first, func, *args, **kwargs):
+    # ignores `first`, but it gets evaluated before being fed in
+    _ = func(*args, **kwargs)
+    return _
 
+
+def SECOND(first: Request, second: Request):
+    request = second.redefine(AND, first, second.func, *second.args, **second.kwargs)
+    return request
+
+
+def LAST(head: Request, *tail: list[Request]):
+    if len(tail) == 0:
+        return head
+    else:
+        head_ = SECOND(head, tail[0])
+        _ = LAST(head_, *tail[1:])
+        return _
+    
 
 class BLOCK:
     # TODO: --> Requests
@@ -1179,6 +1199,10 @@ class Graph:
                 else:
                     s = s + f"\n{prefix}[{key}]:\n" + f"{kwarg}"
         return s
+    
+    def __getattr__(self, attrname):
+        attr = self.summary[attrname]
+        return attr
 
     def node(self, *links):
         g = self
@@ -1186,9 +1210,6 @@ class Graph:
             g = g[link]
         g_ = g.with_indent(0)
         return g_
-
-    def logpath(self):
-        return self.summary['logpath']
 
     def log(self, dataspace=None):
         if dataspace is None:

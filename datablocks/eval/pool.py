@@ -428,13 +428,16 @@ class Logging:
             return _
         """
 
-        """
+        def redefine(self, func, *args, **kwargs):
+            _request = self.request.redefine(func, *args, **kwargs)
+            request = self.__class__(_request, self.pool)
+            return request
+
         def rebind(self, *args, **kwargs):
             _request = self.request.rebind(*args, **kwargs)
             request = self.__class__(_request, self.pool)
-            request = super().rebind(*args, **kwargs)
+            #request = super().rebind(*args, **kwargs) # Why was this call necessary to begin with?
             return request
-        """
 
         def evaluate(self):
             r = self.pool.evaluate(self)
