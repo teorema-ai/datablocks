@@ -48,7 +48,7 @@ DBK_PREFIX = 'DBK'
 class Datamaker:
     VERSION = '0.0.0'
     DEFAULT_ROOT = os.getcwd()
-    DEFAULT_STORAGE_OPTIONS = dict(filesystem=fsspec.filesystem("file"))
+    DEFAULT_FILESYSTEM = fsspec.filesystem("file")
     DEFAULT_TOPIC = None
 
     @dataclass
@@ -69,7 +69,7 @@ class Datamaker:
         # Example:
         # verbose: bool = False
 
-    storage_options: dict = {}
+    filesystem: fsspec.AbstractFileSystem = DEFAULT_FILESYSTEM
     cfg: CFG = CFG()
 
     def build(self, blockscope, *roots):
@@ -1780,8 +1780,8 @@ class DBK:
 
         @property
         def datamaker(self):
-            datamaker_storage_options = self.versionspace.storage_options()
-            datamaker = self.__datablock.datamaker_cls(datamaker_storage_options, self.__datablock.cfg)
+            datamaker_filesystem = self.versionspace.filesystem
+            datamaker = self.__datablock.datamaker_cls(datamaker_filesystem, self.__datablock.cfg)
             return datamaker
 
         def datamaker_shardroots(self, tagscope):
@@ -1792,7 +1792,7 @@ class DBK:
 
         def _build_batch_(self, tagscope, batchscope):
             datamaker_batchscope = self.datamaker_cls.SCOPE(**batchscope)
-            datamaker_shard_roots = self.datamaker_shardroots(self, topic, **tagscope)
+            datamaker_shard_roots = self.datamaker_shardroots(self, **tagscope)
             datamaker.build(datamaker_batchscope, *datamaker_shard_roots)
             _ = self.extent_databook(**tagscope)
             return _
@@ -1844,9 +1844,8 @@ class DBK:
                     'batch_to_shard_keys': batch_to_shard_keys,
                     '__init__': __init__,
                     '__repr__': __repr__,
-                    'datamaker_shard_roots': datamaker_shard_roots,
+                    'datamaker_shard_roots': datamaker_shardroots,
                     'datamaker_scope': datamaker_scope,
-                    'datamaker_storage_options': datamaker_storage_options,
                     'datamaker': datamaker,
                     '_build_batch_': _build_batch_,
                     '_read_block_': _read_block_,
