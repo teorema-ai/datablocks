@@ -11,11 +11,7 @@ import regex
 
 from datablocks.config import DATABLOCKS_LOG_LEVEL
 logging.basicConfig(level=DATABLOCKS_LOG_LEVEL)
-# DEBUG
-#print(f"logging: logger: effectiveLevel: {logging.getLogger().getEffectiveLevel()}")
-# DEBUG
-from datablocks.eval.request import Request
-from datablocks.datablock import DB
+
 
 '''
 #def regex_kv_pairs(text, item_sep=r"\s", value_sep="="):

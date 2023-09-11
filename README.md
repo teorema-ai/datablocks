@@ -1,4 +1,10 @@
 # datablocks
+> SUMMARY 
+datablocks is a Python package that manages Datasets built out of Datablocks and residing in Dataspaces.
+
+A Datablock build data on demand in batches, while a Dataset uses a Datablock to fill build #...
+
+
 Numerical experiment dataset management toolkit.
 Manages lifestages of a dataset encapsulated in a `Databuilder` class.  
 `Databuilder` is not formally specified but at a minimum should implement the following interface:
