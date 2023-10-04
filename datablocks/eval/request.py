@@ -439,6 +439,53 @@ class Request:
             self.lifecycle_callback(Task.Lifecycle.BEGIN, self, response)
         return response
 
+
+class Proxy(Request):
+    def __init__(self, request):
+        self.request = request
+
+    def __ne__(self, other):
+        return self.request.__ne__(other)
+    
+    def set(self, **settings):
+        raise ValueError(f"Cannot 'set' on a Proxy request")
+
+    def get(self, key):
+        return self.request.get(key)
+    
+    def __eq__(self, other):
+        return self.request.__eq__(other)
+
+    def redefine(self, func, *args, **kwargs):
+        raise ValueError("Cannot redefine a Proxy request")
+
+    def rebind(self, *args, **kwargs):
+        raise ValueError("Cannot rebind a Proxy request")
+    
+    def __str__(self):
+        return self.request.__str__()
+    
+    def __repr__(self):
+        return self.request.__repr__()
+
+    def __tag__(self):
+        return self.request.__tag__()
+    
+    def apply(self, functor, *args, **kwargs):
+        request = self.request.apply(functor, *args, **kwargs)
+        wrapper = self.__class__(request)
+        return wrapper
+
+    def through(self, functor, *args, **kwargs):
+        request = self.request.through(functor, *args, **kwargs)
+        wrapper = self.__class__(request)
+        return wrapper
+
+    def evaluate(self):
+        _ = self.request.evaluate()
+        return _
+
+
 # TODO: make an extension of dict for easy serdes, including RPC
 class Report:
     class STATUS(enum.IntEnum):
@@ -1085,9 +1132,9 @@ class BLOCK:
 
 
 class Graph:
-    def __init__(self, report_or_summary, indent=0, *, request_max_len=None, result_max_len=None, print=()):
+    def __init__(self, report_or_summary, indent=0, *, request_max_len=None, result_max_len=None, show=()):
         """
-            print: tuple that can include 'logpath', 'exception', 'traceback'
+            show: tuple that can include 'logpath', 'exception', 'traceback'
         """
         if isinstance(report_or_summary, Report):
             summary = report_or_summary.summary
@@ -1099,11 +1146,11 @@ class Graph:
         self.indent = indent
         self.request_max_len = request_max_len
         self.result_max_len = result_max_len
-        self.print = print
+        self.show = show
         self.logspace = _eval(self.summary['logspace']) if 'logspace' in self.summary else None
 
     def clone(self):
-        clone = self.__class__(self.summary, self.indent, request_max_len=self.request_max_len, result_max_len=self.result_max_len, print=self.print)
+        clone = self.__class__(self.summary, self.indent, request_max_len=self.request_max_len, result_max_len=self.result_max_len, show=self.show)
         return clone
 
     @property
@@ -1124,7 +1171,7 @@ class Graph:
         if 'args_summaries' in self.summary:
             _args = []
             for arg in self.summary['args_summaries']:
-                _arg = self.__class__(arg, self.indent+1, request_max_len=self.request_max_len, result_max_len=self.result_max_len, print=self.print)
+                _arg = self.__class__(arg, self.indent+1, request_max_len=self.request_max_len, result_max_len=self.result_max_len, show=self.show)
                 _args.append(_arg)
         return _args
 
@@ -1134,9 +1181,12 @@ class Graph:
         if 'kwargs_summaries' in self.summary:
             _kwargs = {}
             for key, kwarg in self.summary['kwargs_summaries'].items():
-                _kwarg = self.__class__(kwarg, self.indent+1, request_max_len=self.request_max_len, result_max_len=self.result_max_len, print=self.print)
+                _kwarg = self.__class__(kwarg, self.indent+1, request_max_len=self.request_max_len, result_max_len=self.result_max_len, show=self.show)
                 _kwargs[key] = _kwarg
         return _kwargs
+    
+    def print(self):
+        print(self)
 
     @property
     def simple(self):
@@ -1153,9 +1203,9 @@ class Graph:
         graph.result_max_len = result_max_len
         return graph
 
-    def with_print(self, *print):
+    def with_show(self, *show):
         graph = self.clone()
-        graph.print = print
+        graph.show = show
         return graph
 
     def with_indent(self, indent):
@@ -1185,19 +1235,19 @@ class Graph:
             s = \
                 f"{prefix}request: {self.request}" + \
                 f"\n{prefix}result:  {self.result}"
-            for attr in self.print:
+            for attr in self.show:
                 s = s + f"\n{prefix}{attr}: {self.summary[attr]}"
             for i, arg in enumerate(self.args):
                 if arg.simple:
-                    s = s + f"\n{prefix}[{i}]: " + f"{arg}"
+                    s = s + f"\n{prefix}args[{i}]: " + f"{arg}"
                 else:
-                    s = s + f"\n{prefix}[{i}]:\n" + f"{arg}"
+                    s = s + f"\n{prefix}args[{i}]:\n" + f"{arg}"
 
             for key, kwarg in self.kwargs.items():
                 if kwarg.simple:
-                    s = s + f"\n{prefix}[{key}]: " + f"{kwarg}"
+                    s = s + f"\n{prefix}kwargs[{key}]: " + f"{kwarg}"
                 else:
-                    s = s + f"\n{prefix}[{key}]:\n" + f"{kwarg}"
+                    s = s + f"\n{prefix}kwargs[{key}]:\n" + f"{kwarg}"
         return s
     
     def __getattr__(self, attrname):

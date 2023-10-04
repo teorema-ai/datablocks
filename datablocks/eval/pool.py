@@ -7,6 +7,7 @@ import json
 import logging
 import multiprocessing
 import os
+import pdb
 import pickle
 import shutil
 import sys
@@ -87,9 +88,9 @@ class ConstFuture:
 def logging_context(logspace, logpath):
     if logspace is None:
         yield None
-    elif logspace.is_local():
-        logfile = open(logpath, 'w', 1)
-        yield logfile
+    #elif logspace.is_local():
+    #    logfile = open(logpath, 'w', 1)
+    #    yield logfile
     else:
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
@@ -105,6 +106,7 @@ class Logging:
     # TODO: guard for datablocks version mismatch
     class Task(Task):
         def __init__(self, pool, request):
+            #>>> request -> func
             self._init_((pool, request, None))
 
         # TODO: remove ray_set_trace (or move to Ray.Task?)
@@ -113,7 +115,7 @@ class Logging:
                 ray.util.pdb.set_trace()
             pool, request, logname = state
             self.pool = pool
-            self.request = request
+            self.request = request #>... request -> func
             self.logname = logname
             self.signature = signature.func_signature(self.func)
             self.__defaults__ = signature.func_defaults(self.func)
@@ -123,7 +125,7 @@ class Logging:
             # TODO: - which contains all of the request/functor specificity. Input evaluation is being done using
             # TODO: - polymorphism of the *input* requests via their '.evaluate()' methods.
             # TODO: YES! We do need request, since it may need to encapsulate inner functors.
-            self.key = repr(request)
+            self.key = repr(request) #>... repr(Request(func, *args, **kwargs))
             # TODO: deprecate `tag'?
             # TODO: - `id` is used both to create validate tasks and create `logname`
             ## TODO: clarify relationship between id and tag;
@@ -132,8 +134,8 @@ class Logging:
             ## TODO: - `tag` seems to be "more unique" -- one per invocation, hence, one per task
             ## TODO: - determines logname together with date 'now' and self.pool.timeus()
             self.id = pool.key_id(self.key)
-            self.request_tag = signature.tag(request)# TODO: --> str(request)?
-            self.request_repr = repr(request) # needed for logging when request itself might not be available (but why?)
+            self.request_tag = signature.tag(request)# TODO: --> str(request)? Use key alone?
+            self.request_repr = repr(request) # needed for logging when request itself might not be available (but why?) REMOVE?
             self.__iargs_kargs_kwargs__ = request.iargs_kargs_kwargs()
             if self.pool.log_to_file:
                 self.logspace = pool.anchorspace.ensure()
@@ -144,9 +146,12 @@ class Logging:
                 now = datetime.datetime.now()
                 badge = f"{now.strftime('%Y-%m-%d')}-{self.pool.timeus()}"
                 self.logname = f"task-{self.id:028d}-{badge}.log"
+                #DEBUG
+                print(f">>>>>>>> Task: created self.loganame: {self.logname}")
+                pdb.set_trace()
 
         def __repr__(self):
-            _ = signature.Tagger().repr_ctor(self.__class__, self.pool, self.request)
+            _ = signature.Tagger().repr_ctor(self.__class__, self.pool, self.request) #>... request -> func
             return _
 
         def __setstate__(self, state):
@@ -156,14 +161,14 @@ class Logging:
             return self.pool, self.request, self.logname
 
         @property
-        def func(self):
+        def func(self): #>... REMOVE
             return self.request.task.func
 
         @DEPRECATED 
         def clone(self):
             # TODO: reuse self.key and self.id so that no calls to self.pool.key() etc.
             #  are involved. This way cloning won't require talking to the db.
-            clone = self.__class__(self.pool, self.request)
+            clone = self.__class__(self.pool, self.request) #>... request -> func
             return clone
 
         @property
@@ -174,6 +179,7 @@ class Logging:
             return logpath
 
         def __eq__(self, other):
+            #>... request -> func
             return isinstance(other, self.__class__) and \
                    self.pool == other.pool and \
                    self.request.task == other.request.task and \
@@ -196,9 +202,9 @@ class Logging:
             self.pool.authenticate_task(self.id,
                                     self.key,
                                     self.request_tag,
-                                    self.request_repr)
+                                    self.request_repr)  #>... REMOVE request_tag and request_repr
             _logger = None
-            _logging_.debug(f">>>>>>>> {self.id}: BEGAN executing request called {str(self.request)}")
+            _logging_.debug(f">>>>>>>> {self.id}: BEGAN executing request called {str(self.request)}") #>... request -> func
 
             #logger = logging.getLogger(log_file)
             # cannot add handler to a named logger since functions
@@ -232,8 +238,9 @@ class Logging:
                         _logger = self.func.__globals__['logger']
                         self.func.__globals__['logger'] = logger
                     logger.addHandler(handler)
-            logger.debug(f"START: Executing request called {str(self.request)} with task id {self.id}")
+            logger.debug(f"START: Executing request called {str(self.request)} with task id {self.id}") #>... request -> func
             try:
+                #>... self.func(*args, **kwargs)
                 _ = self.request.task(*args, **kwargs)
             finally:
                 logger.debug(f"STOP: Executing request called {str(self.request)} with task id {self.id}")
@@ -251,7 +258,7 @@ class Logging:
                         logcontext.__exit__(None, None, None)
                         _logging_.debug(f"Removed logger handler recording to {self.logpath} in {self.logspace}")
                     logger.setLevel(_log_level)
-                    _logging_.debug(f"<<<<<<<< {self.id}: ENDED executing request called {str(self.request)}")
+                    _logging_.debug(f"<<<<<<<< {self.id}: ENDED executing request called {str(self.request)}") #>... request -> func
             return _
         
     '''
@@ -387,7 +394,6 @@ class Logging:
 
         def __repr__(self):
             return str(self)
-
         
     class Request(Request):
         def __init__(self, request, pool):
@@ -680,6 +686,8 @@ class Logging:
 
     def _delay_request(self, request):
         _args, _kwargs = self._delay_request_args_kwargs(request)
+        #DEBUG
+        pdb.set_trace()
         delayed = request.rebind(*_args, **_kwargs)
         return delayed
 

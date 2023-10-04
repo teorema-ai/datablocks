@@ -1,35 +1,40 @@
 # datablocks
 > SUMMARY 
-datablocks is a Python package that manages Datasets built out of Datablocks and residing in Dataspaces.
+datablocks is a Python package that manages datasets built out of Datablocks and residing in Dataspaces.
+It is an experiment dataset management toolkit.
 
-A Datablock build data on demand in batches, while a Dataset uses a Datablock to fill build #...
-
-
-Numerical experiment dataset management toolkit.
-Manages lifestages of a dataset encapsulated in a `Databuilder` class.  
-`Databuilder` is not formally specified but at a minimum should implement the following interface:
+`datablocks.datablock.DBX` manages lifestages of a dataset encapsulated in a `Datablock` class.  
+* `Datablock` interface at a minimum should implement the following interface:
 ```
-    class Databuilder:
-        def __init__(self, root:str, filesystem: fsspec.AbastractFileSystem, **kwargs):
+    class Datablock:
+        @dataclass
+        def SCOPE:
             ...
-        def build(**scope):
+        
+        def build(scope: SCOPE, filesystem: fsspec.AbstractFileSystem, *roots):
             ...
-        def read():
+        def read(scope: SCOPE, filesystem: fsspec.AbstractFileSystem, *roots):
             ...
 ```
-then `datablocks.datablock.DB(Databuilder, 'alias')` or `datablocks.datablock.DB('path.to.Databuilder`, 'alias')`
-generates a `Datablock` class that can be used to 
+* Optionally, it is recommended that the following additional members methods be implemented.
+    - `VERSION` [member]
+    - `valid(scope: SCOPE, filesystem: fsspec.AbstractFileSystem, *roots)` 
+        . [`scope` can be ignored here if the validation can be done solely based on `roots` and `filesystem`]
+    - `metric(scope: SCOPE, filesystem: fsspec.AbstractFileSystem, *roots) -> Float 
+        . [`scope` can be ignored here if the metric can be computed solely based on `root` and `filesystem`]
+*`datablocks.datablock.DBX(Datablock, 'alias')` or `datablocks.datablock.DBX('path.to.Datablock', 'alias')`
+can be used to 
 * build and cache a dataset
 * interrogate its build history, 
 * debug logging failures
 * read the data
 
-If `**scope` includes the result of other `DB` as input specified as follows
+If `**scope` includes the result of other `DBX` as input specified as follows
 ```
     dbarray10 = DB(datablocks.test.datasets.PandasArray, 'dbarray10')
     DB(datablocks.test.datasets.PandasMultiplier, 'dbmult10_3').build(input=dbarray10.reader(), multiplier=3.0)
 ```
-then `DB` builds a lazy execution graph, whose nodes include (1) reading `dbarray10`, (2) building `dbmult10_3` from the inputs.
+then `DBX` builds a lazy execution graph, whose nodes include (1) reading `dbarray10`, (2) building `dbmult10_3` from the inputs.
 The graph is evaluated in an evaluation pool, potentially remotely, potentially in parallel, depending on the pool type.
 
 More details below.
@@ -38,11 +43,11 @@ More details below.
 ## Basic
 * Build a dataset 
 ```
->datablocks.exec "datablocks.datablock.DB('datablocks.test.datasets.PandasDataset', verbose=True, build_delay_secs=10).build(size=100)"
+>datablocks.exec "DBX('datablocks.test.datasets.PandasDataset').DATABLOCK(verbose=True, build_delay_secs=10).SCOPE(size=100)"
 ```
 * Read a dataset
 ```
->datablocks.exec "datablocks.datablock.DB('datablocks.test.datasets.PandasDataset', verbose=True, build_delay_secs=10).read()"
+>datablocks.exec "DBX('datablocks.test.datasets.PandasDataset').SCOPE(size=100).read()"
 ```
 
 
@@ -51,20 +56,17 @@ More details below.
     _ `init(root: str, filesystem: fsspec: AbstractFileSystem)
     - `build(**scope)`
     - `read(**scope)` [`scope` can be ignored here if the reading can be done solely from `root` and `filesystem`]
-* Optionally, it is recommended that the following additional members methods be implemented.
-    - `version` [member]
-    - `valid(**scope)` [`scope` can be ignored here if the validation can be done solely based on `root` and `filesystem`]
-    - `metric(**scope) -> Tuple[Union[Float, Int]]` [`scope` can be ignored here if the metric can be computed solely based on `root` and `filesystem`]
+
 
 ## Debugging
 ```
-    export PDA="DB('datablocks.test.datasets.PandasArray', 'pda')" 
+    export PDA="DBX('datablocks.test.datasets.PandasArray', 'pda')" 
     datablocks.exec "$PDA.build()"
     #
     # Show all block build records:
-    datablocks.exec "$PDA.show_block_records"
+    datablocks.exec "$PDA.show_build_records"
     # See the last record's graph:
-    datablocks.exec "$PDA.show_block_graph()" # See the overall state, take note of exceptions and logs
+    datablocks.exec "$PDA.show_build_graph()" # See the overall state, take note of exceptions and logs
     # or
     datablocks.exec "$PDA.show_block_graph(record=3)" # use record index from output of `show_block_records`
     # Most of the `show_*` methods below take a record index and default to the last record.
