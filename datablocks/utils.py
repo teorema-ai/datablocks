@@ -474,7 +474,7 @@ def datetime_now_key():
     return key
 
 
-def key_id(key):
+def key_to_id(key):
     namespace_bytes = key.encode()
     """
     #namespace_uuid = uuid.UUID(bytes=namespace_bytes[:16]).int

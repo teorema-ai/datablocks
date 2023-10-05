@@ -974,7 +974,7 @@ class Databook(Anchored, Scoped):
 
 
 
-class DBX(request.Proxy):
+class DBX:
     """
         DBX instantiates a Databook class on demand, in particular, different instances depending on the build(**kwargs),
             . pool=Ray()
@@ -982,7 +982,40 @@ class DBX(request.Proxy):
         Not inheriting from Databook also has the advantage of hiding the varable scope API that Databook.build/read/etc presents.
         DBX is by definition a fixed scope block.
     """
+
+    class Reader(request.Proxy):
+        def __init__(self, dbx, topic=DEFAULT_TOPIC):
+            self.dbx = dbx
+            self.topic = topic
+
+        @property
+        def request(self):
+            _ = self.dbx.read_request(topic=self.topic)
+            return _
+
+        def __tag__(self):
+            tag = f"{DBX_PREFIX}.{self.dbx.datablock_clstr}@{self.dbx.alias}"
+            if self.topic != DEFAULT_TOPIC:
+                tag += f":{self.topic}"
+
+        def __repr__(self):
+            _ = Tagger(tag_defaults=False).tag_ctor(self.__class__, self.dbx, self.topic)
+            return _
     
+    @staticmethod
+    def loader(reader_tag: str, **datablock_kwargs):
+        head, topic = reader_tag.split(":")
+        datablock_clstr, alias = head.split('@')
+        dbx = DBX(datablock_clstr, alias, **datablock_kwargs)
+        _ = dbx.reader(topic=topic)
+        return _
+    
+    @staticmethod
+    def load(reader_tag: str, **datablock_kwargs):
+        reader = DBX.loader(reader_tag, **datablock_kwargs)
+        _ = reader.compute()
+        return _
+
     @staticmethod
     def show_datablocks(*, dataspace=DATABLOCKS_DATALAKE, pretty_print=True):
         def _chase_anchors(_dataspace, _anchorchain=()):
@@ -1091,6 +1124,7 @@ class DBX(request.Proxy):
         databook = databook_cls(self.alias, **self.databook_kwargs)
         return databook
 
+    @property
     def scope(self):
         # TODO: _records --> (journal)_entries
         records = self.databook.show_build_records()
@@ -1119,32 +1153,24 @@ class DBX(request.Proxy):
                     raise ValueError(msg)
                 _scope = _eval(rec['scope'])
         return _scope
-    
-    @property
-    def request(self):
-        """
-            For request.Proxy protocol.
-        """
-        return self.read_request()
 
     def build_request(self):
         build_request = self.databook.build_request(**self.scope())
         return build_request
 
     def build(self):
-        build_request = self.build_request()
-        result = build_request.compute()
+        result = self.databook.build(**self.scope)
         return result
 
     def read_request(self, topic=DEFAULT_TOPIC):
         if self.scope is None:
             raise ValueError(f"{self} of version {self.version} has not been built yet")
-        request = self.databook.read_databook_request(topic, **self.scope())\
+        request = self.databook.read_databook_request(topic, **self.scope)\
             .set(summary=lambda _: self.extent()[topic])
         return request
 
     def reader(self, topic=DEFAULT_TOPIC):
-        reader = self.read_request(topic)
+        reader = DBX.Reader(self, topic)
         return reader
     
     def read(self, topic=DEFAULT_TOPIC):

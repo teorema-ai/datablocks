@@ -23,7 +23,7 @@ setuptools.setup(
     classifiers=[
         "Programming Language :: Python :: 3",
     ],
-    entry_points={'console_scripts': ['dbk=datablocks:exec',
+    entry_points={'console_scripts': ['dbx=datablocks:exec',
                                       'datablocks.exec=datablocks:exec']},
     python_requires='>=3.8',
     install_requires=get_requirements(),

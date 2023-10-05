@@ -88,9 +88,9 @@ class ConstFuture:
 def logging_context(logspace, logpath):
     if logspace is None:
         yield None
-    #elif logspace.is_local():
-    #    logfile = open(logpath, 'w', 1)
-    #    yield logfile
+    elif logspace.is_local():
+        logfile = open(logpath, 'w', 1)
+        yield logfile
     else:
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
@@ -105,17 +105,16 @@ def logging_context(logspace, logpath):
 class Logging:
     # TODO: guard for datablocks version mismatch
     class Task(Task):
-        def __init__(self, pool, request):
-            #>>> request -> func
-            self._init_((pool, request, None))
+        def __init__(self, pool, func, cookie):
+            self._init_((pool, func, cookie, None))
 
         # TODO: remove ray_set_trace (or move to Ray.Task?)
         def _init_(self, state, *, ray_set_trace=False):
             if ray_set_trace:
                 ray.util.pdb.set_trace()
-            pool, request, logname = state
+            pool, func, cookie, logname = state
             self.pool = pool
-            self.request = request #>... request -> func
+            self.func = func
             self.logname = logname
             self.signature = signature.func_signature(self.func)
             self.__defaults__ = signature.func_defaults(self.func)
@@ -125,7 +124,8 @@ class Logging:
             # TODO: - which contains all of the request/functor specificity. Input evaluation is being done using
             # TODO: - polymorphism of the *input* requests via their '.evaluate()' methods.
             # TODO: YES! We do need request, since it may need to encapsulate inner functors.
-            self.key = repr(request) #>... repr(Request(func, *args, **kwargs))
+            # TODO: NO! Tasks encapsulate functors
+            self.cookie = cookie
             # TODO: deprecate `tag'?
             # TODO: - `id` is used both to create validate tasks and create `logname`
             ## TODO: clarify relationship between id and tag;
@@ -133,10 +133,8 @@ class Logging:
             ## TODO: - unique per request, more precisely, uniquely determined by `key`
             ## TODO: - `tag` seems to be "more unique" -- one per invocation, hence, one per task
             ## TODO: - determines logname together with date 'now' and self.pool.timeus()
-            self.id = pool.key_id(self.key)
-            self.request_tag = signature.tag(request)# TODO: --> str(request)? Use key alone?
-            self.request_repr = repr(request) # needed for logging when request itself might not be available (but why?) REMOVE?
-            self.__iargs_kargs_kwargs__ = request.iargs_kargs_kwargs()
+            self.id = pool.key_to_id(self.cookie)
+            
             if self.pool.log_to_file:
                 self.logspace = pool.anchorspace.ensure()
             else:
@@ -147,28 +145,24 @@ class Logging:
                 badge = f"{now.strftime('%Y-%m-%d')}-{self.pool.timeus()}"
                 self.logname = f"task-{self.id:028d}-{badge}.log"
                 #DEBUG
-                print(f">>>>>>>> Task: created self.loganame: {self.logname}")
-                pdb.set_trace()
+                print(f">>>>>>>> Task: created self.loganame: {self.logname}, self.func: {self.func}")
+                #pdb.set_trace()
 
         def __repr__(self):
-            _ = signature.Tagger().repr_ctor(self.__class__, self.pool, self.request) #>... request -> func
+            _ = signature.Tagger().repr_ctor(self.__class__, self.pool, self.func, self.cookie)
             return _
 
         def __setstate__(self, state):
             self._init_(state, ray_set_trace=False)
 
         def __getstate__(self):
-            return self.pool, self.request, self.logname
-
-        @property
-        def func(self): #>... REMOVE
-            return self.request.task.func
+            return self.pool, self.func, self.cookie, self.logname
 
         @DEPRECATED 
         def clone(self):
-            # TODO: reuse self.key and self.id so that no calls to self.pool.key() etc.
+            # TODO: reuse self.cookie and self.id so that no calls to self.pool.key() etc.
             #  are involved. This way cloning won't require talking to the db.
-            clone = self.__class__(self.pool, self.request) #>... request -> func
+            clone = self.__class__(self.pool, self.func, self.cookie)
             return clone
 
         @property
@@ -179,14 +173,11 @@ class Logging:
             return logpath
 
         def __eq__(self, other):
-            #>... request -> func
             return isinstance(other, self.__class__) and \
                    self.pool == other.pool and \
-                   self.request.task == other.request.task and \
-                   self.key == other.key and \
+                   self.func == other.func and \
+                   self.cookie == other.cookie and \
                    self.id == other.id and \
-                   self.request_tag == other.request_tag and \
-                   self.request_repr == other.request_repr and \
                    self.logspace == other.logspace and \
                    self.logname == other.logname
 
@@ -200,11 +191,10 @@ class Logging:
             _logging_ = logging
             # FIX: ensure authenticate_task arguments are as expected
             self.pool.authenticate_task(self.id,
-                                    self.key,
-                                    self.request_tag,
-                                    self.request_repr)  #>... REMOVE request_tag and request_repr
+                                    self.cookie,
+                                    )
             _logger = None
-            _logging_.debug(f">>>>>>>> {self.id}: BEGAN executing request called {str(self.request)}") #>... request -> func
+            _logging_.debug(f">>>>>>>> {self.id}: BEGAN executing task\ncookie: {self.cookie}, id:{self.id}\nargs: {args}\nkwargs: {kwargs}")
 
             #logger = logging.getLogger(log_file)
             # cannot add handler to a named logger since functions
@@ -238,12 +228,13 @@ class Logging:
                         _logger = self.func.__globals__['logger']
                         self.func.__globals__['logger'] = logger
                     logger.addHandler(handler)
-            logger.debug(f"START: Executing request called {str(self.request)} with task id {self.id}") #>... request -> func
+            logger.debug(f"START: Executing task:\ncookie: {self.cookie}, id: {self.id}")
             try:
-                #>... self.func(*args, **kwargs)
-                _ = self.request.task(*args, **kwargs)
+                #DEBUG
+                #pdb.set_trace()
+                _ = self.func(*args, **kwargs)
             finally:
-                logger.debug(f"STOP: Executing request called {str(self.request)} with task id {self.id}")
+                logger.debug(f"END: Executing task:\ncookie: {self.cookie}, id: {self.id}")
                 if logstream is not None:
                     if self.pool.redirect_stdout:
                         _logging_.debug(f"Restoring stdout from {self.logpath} in {self.logspace}")
@@ -258,105 +249,18 @@ class Logging:
                         logcontext.__exit__(None, None, None)
                         _logging_.debug(f"Removed logger handler recording to {self.logpath} in {self.logspace}")
                     logger.setLevel(_log_level)
-                    _logging_.debug(f"<<<<<<<< {self.id}: ENDED executing request called {str(self.request)}") #>... request -> func
+                    _logging_.debug(f"<<<<<<<<< {self.id}: ENDED executing task\ncookie: {self.cookie}, id:{self.id}\nargs: {args}\nkwargs: {kwargs}")
             return _
         
-    '''
-    @REMOVE
-    class Future:
-        """
-            Future "dynamically extends" request.Future to override its result() method.
-            We are avoiding "statically" extending it as a subclass, since we cannot supply arguments
-            to request.Future ctor
-        """
-        def __init__(self, response):
-            self._response = response
-        
-        @property
-        def response(self):
-            response = object.__getattribute__(self, '_response')
-            return response
-        
-        def result(self):
-            report = self.response.future.result()
-            result = report.result()
-            return result
-        
-        def __repr__(self):
-            return signature.Tagger().repr_ctor(self.__class__, self.response)
-
-        def __str__(self):
-            return signature.Tagger().str_ctor(self.__class__, self.response)
-        
-        def __getattr__(self, attr):
-            _ = getattr(self.response.future, attr)
-            return _
-    '''
-
-    '''
-    @REMOVE
-    class TaskFuture(ConstFuture):
-        def __init__(self, report, *, exception=None, traceback=None):
-            super().__init__(report, exception=exception, traceback=traceback)
-            self.report = report
-
-        def __repr__(self):
-            return signature.Tagger().repr_ctor(self.__class__,
-                                             self.report,
-                                             exception=self._exception,
-                                             traceback=self._traceback)
-
-        def report(self):
-            return self.report
-
-        def result(self):
-            exception = self.exception()
-            if exception is not None:
-                traceback = self.traceback()
-                if traceback is not None:
-                    logger.error(f"Error evaluating request:\n{traceback}")
-                    raise exception.with_traceback(traceback)
-                else:
-                    raise exception
-            return self.report.result
-
-        def exception(self):
-            exception = super().exception()
-            if exception is None:
-                exception = self.report.exception
-            return exception
-
-        def traceback(self):
-            exception = super().exception()
-            traceback = super().traceback()
-            if exception is None:
-                traceback = self.report.traceback
-            return traceback
-    '''
 
     class TaskExecutor:
         def __init__(self, *, throw=False):
             self.throw = throw
 
         def submit(self, request):
-            """
-            report = None
-            e = None
-            tb = None
-            try:
-                report = request.task(*request.args, **request.kwargs) # Task returns Report to its contained Request
-            except:
-                exc_type, exc_value, exc_traceback = sys.exc_info()
-                if self.throw:
-                    raise exc_value.with_traceback(exc_traceback)
-                tb_lines = traceback.format_tb(exc_traceback)
-                tb = '\n'.join(tb_lines)
-                logger.error(f"\n{tb}{exc_type}: {exc_value}")
-                e = exc_value
-            future = Logging.TaskFuture(report, exception=e, traceback=tb)
-            #future = Logging.TaskFuture(request)
-            """
-            response = Request.evaluate(request)
+            #DEBUG
+            #pdb.set_trace()
+            response = Request.evaluate(request) #using super-class's basic evaluation at the innermost level
             future = response.future
             return future
 
@@ -396,53 +300,32 @@ class Logging:
             return str(self)
         
     class Request(Request):
-        def __init__(self, request, pool):
-            self.request = request # only for __repr__ and __str__
+        def __init__(self, pool, cookie, func, *args, **kwargs):
             self.pool = pool
-            if isinstance(request.task, pool.Task):
-                self.task = request.task
+            self.cookie = cookie
+            self.func = func
+            if isinstance(func, pool.Task):
+                task = func
             else:
-                self.task = pool.Task(pool, request)
-            super().__init__(self.task, *request.args, **request.kwargs)
+                task = pool.Task(pool, func, cookie=cookie)
+            super().__init__(task, *args, **kwargs)
 
-        # Use super()'s magic methods
-        """
-        def __tag__(self):
-            _ = signature.tag(self.request)
-            _ = signature.tag(self)
-            return _
-        """
         def __repr__(self):
-            _ = signature.Tagger().repr_ctor(self.__class__, self.request, self.pool)
+            _ = signature.Tagger().repr_ctor(self.__class__, self.pool, self.cookie, self.func, *self.args, **self.kwargs)
             return _
 
         def __str__(self):
-            _request_str = str(self.request)
+            super_str = super().__str__()
             pool_str = str(self.pool)
-            _ = f"{_request_str}.apply({pool_str})"
+            _ = f"{super_str}.apply({pool_str})"
             return _
-
-        """
-        def with_lifecycle_callback(self, lifecycle_callback):
-            self.request = self.request.with_lifecycle_callback(lifecycle_callback)
-            _ = super().with_lifecycle_callback(lifecycle_callback)
-            return _
-
-        def with_throw(self, throw=True):
-            self.request = self.request.with_throw(throw)
-            _ = super().with_throw(throw)
-            return _
-        """
 
         def redefine(self, func, *args, **kwargs):
-            _request = self.request.redefine(func, *args, **kwargs)
-            request = self.__class__(_request, self.pool)
+            request = self.__class__(self.pool, self.cookie, func, *args, **kwargs)
             return request
-
+        
         def rebind(self, *args, **kwargs):
-            _request = self.request.rebind(*args, **kwargs)
-            request = self.__class__(_request, self.pool)
-            #request = super().rebind(*args, **kwargs) # Why was this call necessary to begin with?
+            request = self.__class__(self.pool, self.cookie, self.task, *args, **kwargs)
             return request
 
         def evaluate(self):
@@ -455,7 +338,7 @@ class Logging:
 
         @property        
         def key(self):
-            return self.task.key
+            return self.task.cookie
 
         @property
         def logpath(self):
@@ -546,19 +429,6 @@ class Logging:
     def __eq__(self, other):
         return isinstance(other, self.__class__) and \
             self.__getstate__() == other.__getstate__()
-        """
-            self.name == other.name and \
-            self.dataspace == other.dataspace and \
-            self.priority == other.priority and \
-            self.return_none == other.return_none and \
-            self.authenticate_tasks == other.authenticate_tasks and \
-            self.throw == other.throw and\
-            self.log_level == other.log_level and\
-            self.log_prefix == other.log_prefix and \
-            self.log_format == other.log_format and\
-            self.log_to_file == other.log_to_file and \
-            self.redirect_stdout == other.redirect_stdout
-        """
 
     def __tag__(self):
         _ = f"{signature.Tagger().ctor_name(self.__class__)}({self.name}, " +\
@@ -588,14 +458,15 @@ class Logging:
         self.executor.restart()
 
     def apply(self, request):
-        return self.Request(request, self)
+        cookie = repr(request)
+        return self.Request(self, cookie, request.task, *request.args, **request.kwargs)
 
-    def key_id(self, key, *, version=VERSION, unique_hash=True):
+    def key_to_id(self, key, *, version=VERSION, unique_hash=True):
         if self.authenticate_tasks:
             key_ = self.ids.sanitize_value(key, quote=False)
             id = self.ids.get_id(key_, version, unique_hash=unique_hash)  # TODO: do we need to have a unique hash?
         else:
-            id = utils.key_id(key)
+            id = utils.key_to_id(key)
         return id
 
     @staticmethod
@@ -607,15 +478,7 @@ class Logging:
         tus = int(ts * 1e+6 + us)
         return tus
 
-    # TODO: deprecate?
-    def tag(self, key, *, version=None, unique_hash=False):
-        if version is None:
-            tus = self.timeus()
-            version = tus
-        tag = self.id(key, version=version, unique_hash=unique_hash)
-        return tag
-
-    def authenticate_task(self, id, key, request_tag, request_repr):
+    def authenticate_task(self, id, key):
         if not self.authenticate_tasks:
             return
         from ..config import CONFIG
@@ -632,12 +495,12 @@ class Logging:
         _dataspace, _key, _version = ids.lookup_id(id)
         if _dataspace != dataspace_:
             raise ValueError(
-                f"Task id {id} pool dataspace mismatch in task for request {request_repr}\n\ttag: {request_tag}:\n\tkey: {key}\n\texpected:  {dataspace_}\n\tlooked up: {_dataspace} in db {db}")
+                f"Task id {id} pool dataspace mismatch: key: {key}\n\texpected:  {dataspace_}\n\tlooked up: {_dataspace} in db {db}")
         if _key != key_:
             raise ValueError(
-                f"Task id {id} normalized key mismatch in task for request {request_repr}\n\ttag {request_tag}:\n\texpected: {key_}\n\tlooked up:{_key} in db {self.db}")
+                f"Task id {id} normalized key mismatch: \texpected: {key_}, looked up:{_key} in db {self.db}")
         logging.info(
-            f"Validated task id {id} from db {self.db} for request {request_repr}\n\ttag {request_tag}\n\tdataspace: {_dataspace}\n\tkey: {_key}\n\tversion: {_version}")
+            f"Validated task id {id} from db {self.db}, dataspace: {_dataspace}, key: {_key}, version: {_version}")
 
     # TODO: move to ctor or REMOVE: use ids instead?
     @property
@@ -656,6 +519,8 @@ class Logging:
 
         delayed = self._delay_request(request.with_throw(self.throw))
         start_time = datetime.datetime.now()
+        #DEBUG
+        #pdb.set_trace()
         future = self._submit_delayed(delayed)
         logger.debug(f"Submitted delayed request based on task "
                      f"with id {request.task.id} "
@@ -669,13 +534,6 @@ class Logging:
                                  done_callback=self._execution_done_callback)
         return response
 
-    """
-    def compute(self, request):
-        response = self.evaluate(request)
-        result = response.result()
-        return result
-    """
-
     def as_completed(self, responses):
         for p in responses:
             yield p
@@ -687,7 +545,7 @@ class Logging:
     def _delay_request(self, request):
         _args, _kwargs = self._delay_request_args_kwargs(request)
         #DEBUG
-        pdb.set_trace()
+        #pdb.set_trace()
         delayed = request.rebind(*_args, **_kwargs)
         return delayed
 

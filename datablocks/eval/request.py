@@ -5,6 +5,7 @@ import enum
 import importlib
 import inspect
 import logging
+import pdb
 import time
 
 from .. import utils
@@ -41,9 +42,13 @@ class Future:
             try:
                 args = [self._arg_result(arg_response) for arg_response in self.args_responses]
                 kwargs = {key: self._arg_result(kwarg_response) for key, kwarg_response in self.kwargs_responses.items()}
+                #DEBUG
+                #pdb.set_trace()
                 self._result = self.func(*args, **kwargs)
+            except KeyboardInterrupt as k:
+                raise(k)
             except Exception as e:
-                exc_type, exc_value, exc_traceback = utils.exc_info()
+                _, exc_value, exc_traceback = utils.exc_info()
                 self._exception = exc_value
                 self._traceback = exc_traceback
             finally:
@@ -90,7 +95,7 @@ class Task:
         END = 1
 
     def __init__(self, func):
-        self._func = func
+        self.func = func
         self.key = None
         self.id = None
         self.logspace = None
@@ -101,16 +106,12 @@ class Task:
         _ = self.func(*args, **kwargs)
         return _
 
-    @property
-    def func(self):
-        return self._func
-
-    def repr(self):
-        repr = signature.Tagger().repr_ctor(self.__init__)
+    def __repr__(self):
+        repr = signature.Tagger().repr_ctor(self.__class__, self.func)
         return repr
 
     def __str__(self):
-        str = signature.Tagger().str_ctor(self.__init__)
+        str = signature.Tagger().str_ctor(self.__class__, self.func)
         return str
     
 
@@ -260,6 +261,8 @@ class URL_RPC(RPC):
 
 class Request:
     def __init__(self, func, *args, **kwargs):
+        #DEBUG
+        #pdb.set_trace()
         if isinstance(func, Task): # implement rebind without changing task to preserve key, id, logname, etc.
             self.task = func
         else:
@@ -335,13 +338,13 @@ class Request:
                self.args == other.args and self.kwargs == other.kwargs
 
     def redefine(self, func, *args, **kwargs):
-        request = Request(func, *args, **kwargs)\
+        request = self.__class__(func, *args, **kwargs)\
                     .with_settings(**self.settings)
         return request
 
     def rebind(self, *args, **kwargs):
         # rebind should preserve task
-        request = Request(self.task, *args, **kwargs)\
+        request = self.__class__(self.task, *args, **kwargs)\
                     .with_settings(**self.settings)
         return request
 
