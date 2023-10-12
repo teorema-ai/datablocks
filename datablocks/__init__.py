@@ -88,6 +88,11 @@ def print_usage(*, console):
         print(f"""Usage:\n{__name__}.exed("--help")  |\n{__name__}.exec("{{package.module.Class}}({{key}}={{val}},...).{{method}}({{key}}={{val}},...)""")
 
 
+def echo():
+    argstr = sys.argv[1]
+    print(argstr)
+
+
 def exec(argstr=None):
     import datablocks.datablock
     def import_mod(path):

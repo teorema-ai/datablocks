@@ -489,6 +489,9 @@ class Dataspace:
         return r
 
     def listdir(self, path):
+        """
+            Returns a list of basenames of files at `path`.
+        """
         prefix = path if path.endswith('/') else path+'/'
         infolist = self.filesystem.listdir(path)
         pathlist_ = [info['name'] for info in infolist if 'name' in info]

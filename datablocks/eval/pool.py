@@ -145,7 +145,7 @@ class Logging:
                 badge = f"{now.strftime('%Y-%m-%d')}-{self.pool.timeus()}"
                 self.logname = f"task-{self.id:028d}-{badge}.log"
                 #DEBUG
-                print(f">>>>>>>> Task: created self.loganame: {self.logname}, self.func: {self.func}")
+                #print(f">>>>>>>> Task: created self.loganame: {self.logname}, self.func: {self.func}")
                 #pdb.set_trace()
 
         def __repr__(self):
@@ -230,9 +230,8 @@ class Logging:
                     logger.addHandler(handler)
             logger.debug(f"START: Executing task:\ncookie: {self.cookie}, id: {self.id}")
             try:
-                #DEBUG
-                #pdb.set_trace()
-                _ = self.func(*args, **kwargs)
+                request = Request(self.func, *args, **kwargs)
+                _ = request.compute()
             finally:
                 logger.debug(f"END: Executing task:\ncookie: {self.cookie}, id: {self.id}")
                 if logstream is not None:
@@ -289,15 +288,17 @@ class Logging:
 
             future.promise = self
 
-        def __str__(self):
-            tag = signature.Tagger().str_ctor(self.__class__,
-                                           pool=self.pool,
+        def __repr__(self):
+            tag = signature.Tagger().repr_ctor(self.__class__,
                                            request=self.request,
-                                           future=self.future)
+                                           pool=self.pool,
+                                           future=self.future,
+                                           start_time=start_time,
+                                           done_callback=done_callback)
             return tag
 
-        def __repr__(self):
-            return str(self)
+        def __str__(self):
+            return repr(self)
         
     class Request(Request):
         def __init__(self, pool, cookie, func, *args, **kwargs):
@@ -1023,8 +1024,8 @@ class HTTP(Logging):
         return delayed
 
 
-DATABLOCKS_LOGGING_POOL = Logging(dataspace=DATABLOCKS_DATALAKE)
-DATABLOCKS_LOGGING_REDIRECT_POOL = Logging(dataspace=DATABLOCKS_DATALAKE, redirect_stdout=True)
+DATABLOCKS_STDOUT_LOGGING_POOL = Logging(dataspace=DATABLOCKS_DATALAKE)
+DATABLOCKS_FILE_LOGGING_POOL = Logging(dataspace=DATABLOCKS_DATALAKE, redirect_stdout=True)
 
 
 def print_all_promises(tasks):

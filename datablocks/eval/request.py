@@ -96,7 +96,7 @@ class Task:
 
     def __init__(self, func):
         self.func = func
-        self.key = None
+        self.cookie = None
         self.id = None
         self.logspace = None
         self.logpath = None
@@ -299,7 +299,7 @@ class Request:
     # Use .set()
     @DEPRECATED
     def with_settings(self, **settings):
-        request = copy.deepcopy(self)
+        request = copy.copy(self)
         request.settings.update(**settings)
         return request
 
@@ -371,31 +371,25 @@ class Request:
                                         **self.kwargs)
         return iargs, kargs, kwargs
 
-    def evaluate_args_kwargs(self, args, kwargs):
-        _args = [self._evaluate_arg(a, i) for i, a in enumerate(args)]
-        _kwargs = {k: self._evaluate_kwarg(a, k) for k, a in kwargs.items()}
+    @staticmethod
+    def evaluate_args_kwargs(args, kwargs):
+        _args = [Request._evaluate_arg(a, i) for i, a in enumerate(args)]
+        _kwargs = {k: Request._evaluate_kwarg(a, k) for k, a in kwargs.items()}
         return _args, _kwargs
 
-    def _evaluate_arg(self, arg, index):
-        '''
-            logger.debug(f"Computing args[{index}] for request tagged\n\t{self.tag}\n"
-                        f"\t\targs[{index}] {arg}")
-                    '''
-        r = self._evaluate_argument(arg)
-        '''logger.debug(f"\n\t\tDone with args[{index}]")'''
+    @staticmethod
+    def _evaluate_arg(arg, index):
+        r = Request._evaluate_argument(arg)
         return r
 
-    def _evaluate_kwarg(self, kwarg, key):
-        '''
-            logger.debug(f"Computing kwargs[{key}] for request tagged\n\t{self.tag}\n"
-                        f"\t\tkwargs[{key}]  {kwarg}")
-                    '''
-        r = self._evaluate_argument(kwarg)
-        '''logger.debug(f"\n\t\tDone with kwargs[{key}]")'''
+    @staticmethod
+    def _evaluate_kwarg(kwarg, key):
+        r = Request._evaluate_argument(kwarg)
         return r
 
-    # TODO: eliminate 'report' option?  It doesn't seem to be use5
-    def _evaluate_argument(self, arg):
+    # TODO: eliminate 'report' option?  It doesn't seem to be used
+    @staticmethod
+    def _evaluate_argument(arg):
         response = \
                     arg.evaluate() if isinstance(arg, BLOCK.Request) else \
                     arg.evaluate() if isinstance(arg, Request) else \
@@ -550,12 +544,12 @@ class Report:
         self.settings.update(**settings)
         return self
 
-    def summary(self):
+    def transcript(self):
         tagger = signature.Tagger()
         report = self
-        args_summaries = [report._arg_summary(r) for r in report.args_reports]
-        kwargs_summaries = {k: report._arg_summary(v) for k, v in report.kwargs_reports.items()}
-        summary = dict(id=f"id:{report.id}",
+        args_transcripts = [report._arg_transcript(r) for r in report.args_reports]
+        kwargs_transcripts = {k: report._arg_transcript(v) for k, v in report.kwargs_reports.items()}
+        transcript = dict(id=f"id:{report.id}",
                        completed=(report.status in [Report.STATUS.SUCCEEDED, Report.STATUS.FAILED]),
                        success=(report.status in [Report.STATUS.SUCCEEDED]),
                        status=str(report.status),
@@ -566,74 +560,74 @@ class Report:
                        logpath=report.logpath,
                        logspace_url=report.logspace_url,
                        logspace=str(report.logspace),
-                       args_summaries=args_summaries,
-                       kwargs_summaries=kwargs_summaries,
+                       args_transcripts=args_transcripts,
+                       kwargs_transcripts=kwargs_transcripts,
                        #request=tagger.str_object(report.request),
                        request=tagger.repr_object(report.request),
                        )
         total_logs = 0
-        total_logs += sum([s['logs_total'] for s in args_summaries if 'logs_total' in s])
-        total_logs += sum([s['logs_total'] for s in kwargs_summaries.values() if 'logs_total' in s])
+        total_logs += sum([s['logs_total'] for s in args_transcripts if 'logs_total' in s])
+        total_logs += sum([s['logs_total'] for s in kwargs_transcripts.values() if 'logs_total' in s])
         valid_logs = 0
-        valid_logs += sum([s['logs_valid'] for s in args_summaries if 'logs_valid' in s])
-        valid_logs += sum([s['logs_valid'] for s in kwargs_summaries.values() if 'logs_valid' in s])
+        valid_logs += sum([s['logs_valid'] for s in args_transcripts if 'logs_valid' in s])
+        valid_logs += sum([s['logs_valid'] for s in kwargs_transcripts.values() if 'logs_valid' in s])
         
         if report.request.has('summary'):
-            summary['result'] = f"SUMMARY: {report.request.get('summary')(report.result)}"
+            transcript['result'] = f"SUMMARY: {report.request.get('summary')(report.result)}"
         else:
-            summary['result'] = report.result
+            transcript['result'] = report.result
         if report.logspace and report.logpath:
             total_logs += 1
-            summary['logpath_status'] = 'VALID' if report.logspace.exists(summary['logpath']) else 'MISSING'
-            if summary['logpath_status'] == 'VALID':
+            transcript['logpath_status'] = 'VALID' if report.logspace.exists(transcript['logpath']) else 'MISSING'
+            if transcript['logpath_status'] == 'VALID':
                 valid_logs += 1
 
         else:
-            summary['logpath_status'] = None
-        summary['logs_total'] = total_logs
-        summary['logs_valid'] = valid_logs
-        summary['logs_missing'] = total_logs - valid_logs
+            transcript['logpath_status'] = None
+        transcript['logs_total'] = total_logs
+        transcript['logs_valid'] = valid_logs
+        transcript['logs_missing'] = total_logs - valid_logs
 
-        return summary
+        return transcript
     
-    @DEPRECATED # use 'logpath_status', 'total_logs' and 'valid_logs' fields in summary/graph
+    @DEPRECATED # use 'logpath_status', 'total_logs' and 'valid_logs' fields in transcript/graph
     @staticmethod
-    def validate_logs(report_or_summary, *, request_max_len=50):
-        def _summary_validate_logs(summary, *, _validations, _valids=0, _invalids=0):
-            logspace = _eval(summary['logspace']) if 'logspace' in summary else None
+    def validate_logs(report_or_transcript, *, request_max_len=50):
+        def _transcript_validate_logs(transcript, *, _validations, _valids=0, _invalids=0):
+            logspace = _eval(transcript['logspace']) if 'logspace' in transcript else None
             validations = copy.copy(_validations)
             valids = _valids
             invalids = _invalids
             if logspace:
                 logspace.filesystem.invalidate_cache() # TODO: do this to a clone of logspace
-                if 'logpath' in summary and summary['logpath'] is not None:
-                    valid = logspace.exists(summary['logpath'])
+                if 'logpath' in transcript and transcript['logpath'] is not None:
+                    valid = logspace.exists(transcript['logpath'])
                     ivalid = 1 if valid else 0
                     valids += ivalid
                     invalids += (1-ivalid)
                     status = 'EXISTS' if valid else 'MISSING'
                     validation = {
-                        'logpath': summary['logpath'],
+                        'logpath': transcript['logpath'],
                         'logspace': str(logspace),
                         'status': status,
                         'valid':  valid,
-                        'request': f"{summary['request'][:request_max_len]}..."
+                        'request': f"{transcript['request'][:request_max_len]}..."
                     }
                     validations.append(validation)
-            if 'args_summaries' in summary:
-                for arg_summary in summary['args_summaries']:
+            if 'args_transcripts' in transcript:
+                for arg_transcript in transcript['args_transcripts']:
                     validations, valids, invalids = \
-                        _summary_validate_logs(arg_summary, _validations=validations, _valids=valids, _invalids=invalids)
-            if 'kwargs_summaries' in summary:
-                for kwarg_summary in summary['kwargs_summaries']:
+                        _transcript_validate_logs(arg_transcript, _validations=validations, _valids=valids, _invalids=invalids)
+            if 'kwargs_transcripts' in transcript:
+                for kwarg_transcript in transcript['kwargs_transcripts']:
                     validations, valids, invalids = \
-                        _summary_validate_logs(kwarg_summary, _validations=validations, _valids=valids, _invalids=invalids)
+                        _transcript_validate_logs(kwarg_transcript, _validations=validations, _valids=valids, _invalids=invalids)
             return validations, valids, invalids
-        if isinstance(report_or_summary, Report):
-            summary = report_or_summary.summary
+        if isinstance(report_or_transcript, Report):
+            transcript = report_or_transcript.transcript
         else:
-            summary = report_or_summary
-        validations_, valids, invalids = _summary_validate_logs(summary, _validations=[])
+            transcript = report_or_transcript
+        validations_, valids, invalids = _transcript_validate_logs(transcript, _validations=[])
         validations = {i: v for i, v in enumerate(validations_)}
         return {"VALID_LOGS": valids, "INVALID_LOGS": invalids, "LOGS": validations}
 
@@ -667,12 +661,12 @@ class Report:
         return r
 
     @staticmethod
-    def _arg_summary(arg):
+    def _arg_transcript(arg):
         if isinstance(arg, Report):
-            summary = arg.summary()
+            transcript = arg.transcript()
         else:
-            summary = {"result": arg}
-        return summary
+            transcript = {"result": arg}
+        return transcript
 
     @staticmethod
     def _arg_report(arg):
@@ -920,7 +914,7 @@ def AND(first, func, *args, **kwargs):
 
 
 def SECOND(first: Request, second: Request):
-    request = second.redefine(AND, first, second.func, *second.args, **second.kwargs)
+    request = second.redefine(AND, first, second.task, *second.args, **second.kwargs)
     return request
 
 
@@ -932,6 +926,12 @@ def LAST(head: Request, *tail: list[Request]):
         _ = LAST(head_, *tail[1:])
         return _
     
+
+def NONE():
+    def none():
+        return None
+    return Request(none)
+
 
 class BLOCK:
     # TODO: --> Requests
@@ -1135,45 +1135,45 @@ class BLOCK:
 
 
 class Graph:
-    def __init__(self, report_or_summary, indent=0, *, request_max_len=None, result_max_len=None, show=()):
+    def __init__(self, report_or_transcript, indent=0, *, request_max_len=None, result_max_len=None, show=()):
         """
             show: tuple that can include 'logpath', 'exception', 'traceback'
         """
-        if isinstance(report_or_summary, Report):
-            summary = report_or_summary.summary
+        if isinstance(report_or_transcript, Report):
+            transcript = report_or_transcript.transcript
         else:
-            summary = report_or_summary
-        self.summary = summary
-        if isinstance(self.summary, str):
-            self.summary = _eval(self.summary)
+            transcript = report_or_transcript
+        self.transcript = transcript
+        if isinstance(self.transcript, str):
+            self.transcript = _eval(self.transcript)
         self.indent = indent
         self.request_max_len = request_max_len
         self.result_max_len = result_max_len
         self.show = show
-        self.logspace = _eval(self.summary['logspace']) if 'logspace' in self.summary else None
+        self.logspace = _eval(self.transcript['logspace']) if 'logspace' in self.transcript else None
 
     def clone(self):
-        clone = self.__class__(self.summary, self.indent, request_max_len=self.request_max_len, result_max_len=self.result_max_len, show=self.show)
+        clone = self.__class__(self.transcript, self.indent, request_max_len=self.request_max_len, result_max_len=self.result_max_len, show=self.show)
         return clone
 
     @property
     def request(self):
-        request = self.summary['request'] if 'request' in self.summary else None
+        request = self.transcript['request'] if 'request' in self.transcript else None
         requeststr = truncate_str(str(request), self.request_max_len, use_ellipsis=True) if request else None
         return requeststr
 
     @property
     def result(self):
-        result = self.summary['result'] if 'result' in self.summary else None
+        result = self.transcript['result'] if 'result' in self.transcript else None
         resultstr = truncate_str(str(result), self.result_max_len, use_ellipsis=True) if result else None
         return resultstr
 
     @property
     def args(self):
         _args = None
-        if 'args_summaries' in self.summary:
+        if 'args_transcripts' in self.transcript:
             _args = []
-            for arg in self.summary['args_summaries']:
+            for arg in self.transcript['args_transcripts']:
                 _arg = self.__class__(arg, self.indent+1, request_max_len=self.request_max_len, result_max_len=self.result_max_len, show=self.show)
                 _args.append(_arg)
         return _args
@@ -1181,9 +1181,9 @@ class Graph:
     @property
     def kwargs(self):
         _kwargs = None
-        if 'kwargs_summaries' in self.summary:
+        if 'kwargs_transcripts' in self.transcript:
             _kwargs = {}
-            for key, kwarg in self.summary['kwargs_summaries'].items():
+            for key, kwarg in self.transcript['kwargs_transcripts'].items():
                 _kwarg = self.__class__(kwarg, self.indent+1, request_max_len=self.request_max_len, result_max_len=self.result_max_len, show=self.show)
                 _kwargs[key] = _kwarg
         return _kwargs
@@ -1239,7 +1239,7 @@ class Graph:
                 f"{prefix}request: {self.request}" + \
                 f"\n{prefix}result:  {self.result}"
             for attr in self.show:
-                s = s + f"\n{prefix}{attr}: {self.summary[attr]}"
+                s = s + f"\n{prefix}{attr}: {self.transcript[attr]}"
             for i, arg in enumerate(self.args):
                 if arg.simple:
                     s = s + f"\n{prefix}args[{i}]: " + f"{arg}"
@@ -1254,7 +1254,7 @@ class Graph:
         return s
     
     def __getattr__(self, attrname):
-        attr = self.summary[attrname]
+        attr = self.transcript[attrname]
         return attr
 
     def node(self, *links):
@@ -1269,12 +1269,12 @@ class Graph:
             dataspace = self.logspace
         if dataspace is None:
             return None
-        file = dataspace.filesystem.open(self.summary['logpath'], 'r')
+        file = dataspace.filesystem.open(self.transcript['logpath'], 'r')
         log = ''.join(file.readlines())
         return log
     
     def validate_logs(self, *, request_max_len=50):
-        _ = Report.validate_logs(self.summary, request_max_len=request_max_len)
+        _ = Report.validate_logs(self.transcript, request_max_len=request_max_len)
         return _
 
 
@@ -1287,34 +1287,34 @@ class ReportSummaryGraph(Graph):
 
 
 @ALIAS
-def report_summary_graph(*args, **kwargs):
+def report_transcript_graph(*args, **kwargs):
     return report_graph(*args, **kwargs) 
 
 
 @DEPRECATED
-def report_summary_truncate(summary, *, result_max_len=50, request_max_len=50):
-    if isinstance(summary, dict):
-        summary_ = {}
-        for key, val in summary.items():
+def report_transcript_truncate(transcript, *, result_max_len=50, request_max_len=50):
+    if isinstance(transcript, dict):
+        transcript_ = {}
+        for key, val in transcript.items():
             if key == 'result':
                 resultstr = str(val)
-                summary_['result'] = f"\"\"\"{truncate_str(resultstr, result_max_len, use_ellipsis=True)}...\"\"\""
+                transcript_['result'] = f"\"\"\"{truncate_str(resultstr, result_max_len, use_ellipsis=True)}...\"\"\""
             elif key == 'request':
                 requeststr = str(val)
-                summary_['request'] = f"\"\"\"{truncate_str(requeststr, request_max_len, use_ellipsis=True)}...\"\"\""
+                transcript_['request'] = f"\"\"\"{truncate_str(requeststr, request_max_len, use_ellipsis=True)}...\"\"\""
             else:
-                summary_[key] = copy.copy(val)
-            if key == 'args_summaries':
-                summary_['args_summaries'] = []
-                for arg_summary in val:
-                    arg_summary_ = report_summary_truncate(arg_summary, request_max_len=request_max_len, result_max_len=result_max_len)
-                    summary_['args_summaries'].append(arg_summary_)
-            if key == 'kwargs_summaries':
-                summary_['kwargs_summaries'] = {}
-                for kwarg, kwarg_summary in val.items():
-                    kwarg_summary_ = report_summary_truncate(kwarg_summary, request_max_len=request_max_len, result_max_len=result_max_len)
-                    summary_['kwargs_summaries'][kwarg] = kwarg_summary_
+                transcript_[key] = copy.copy(val)
+            if key == 'args_transcripts':
+                transcript_['args_transcripts'] = []
+                for arg_transcript in val:
+                    arg_transcript_ = report_transcript_truncate(arg_transcript, request_max_len=request_max_len, result_max_len=result_max_len)
+                    transcript_['args_transcripts'].append(arg_transcript_)
+            if key == 'kwargs_transcripts':
+                transcript_['kwargs_transcripts'] = {}
+                for kwarg, kwarg_transcript in val.items():
+                    kwarg_transcript_ = report_transcript_truncate(kwarg_transcript, request_max_len=request_max_len, result_max_len=result_max_len)
+                    transcript_['kwargs_transcripts'][kwarg] = kwarg_transcript_
 
     else:
-        summary_ = summary
-    return summary_
+        transcript_ = transcript
+    return transcript_

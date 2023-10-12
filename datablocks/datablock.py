@@ -8,8 +8,10 @@ import hashlib
 import importlib
 import logging
 import os
+import pdb
+import traceback
 
-from typing import Any, TypeVar, Generic, Tuple
+from typing import Any, TypeVar, Generic, Tuple, Union, List, Dict
 
 import fsspec
 
@@ -17,17 +19,27 @@ import fsspec
 import pyarrow.parquet as pq
 import pandas as pd
 
+
 from . import signature as tag
 from .signature import Signature, ctor_name
 from .signature import Tagger
 from .utils import DEPRECATED, OVERRIDE, microseconds_since_epoch, datetime_to_microsecond_str
 from .eval import request
-from .eval.request import Request, Report, LAST, Graph
-from .eval.pool import DATABLOCKS_LOGGING_POOL, DATABLOCKS_LOGGING_REDIRECT_POOL
+from .eval.request import Request, Report, LAST, NONE, Graph
+from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL, DATABLOCKS_FILE_LOGGING_POOL
 from .dataspace import Dataspace, DATABLOCKS_DATALAKE
 
 
-_eval = __builtins__['eval']
+def _eval(string):
+    """
+        Eval in the context of impoirted datablocks.datablock.
+    """
+    import datablocks.datablock
+    _eval = __builtins__['eval']
+    _ = _eval(string)
+    return _
+
+
 _print = __builtins__['print']
 
 
@@ -182,7 +194,7 @@ class Scoped:
 
         for key in scope.keys():
             if key not in self.shard_keys and key not in self.block_to_shard_keys:
-                raise ValueError(f"Unknown key {key} is not in databook keys {list(self.shard_keys)}"
+                raise ValueError(f"Unknown key '{key}' is not in databook keys {list(self.shard_keys)} "
                                  f"or among the plurals of any known key {list(self.block_to_shard_keys.keys())}")
             if key in self.block_to_shard_keys and not isinstance(scope[key], collections.Iterable):
                 raise ValueError(f"Value for plural key {key} is not iterable: {scope[key]}")
@@ -264,12 +276,14 @@ class KeyValHandle(tuple):
 
 DEFAULT_TOPIC = None
 DEFAULT_VERSION = '0.0.0'
-RECORD_SCHEMA_VERSION = '0.0.0'
+
 class Databook(Anchored, Scoped): 
     # TODO: implement support for multiple batch_to_shard_keys
-    record_schema = RECORD_SCHEMA_VERSION
-    topics = []
+    version = DEFAULT_VERSION
+    topics = [DEFAULT_TOPIC]
     signature = Signature((), ('dataspace', 'version',)) # extract these attrs and use in __tag__
+
+    RECORD_SCHEMA_VERSION = '0.2.0'
 
     # TODO: make dataspace, version position-only and adjust Signature
     def __init__(self,
@@ -277,26 +291,22 @@ class Databook(Anchored, Scoped):
                  *,
                  dataspace=DATABLOCKS_DATALAKE,
                  tmpspace=None,
-                 version=DEFAULT_VERSION,
-                 topics=None,
                  lock_pages=False,
                  throw=True,
                  rebuild=False,
                  verbose=False,
-                 pool=DATABLOCKS_LOGGING_REDIRECT_POOL):
+                 debug=False,
+                 pool=DATABLOCKS_FILE_LOGGING_POOL):
         Anchored.__init__(self)
         Scoped.__init__(self)
-        self.version = version
         self.alias = alias
         self.dataspace = dataspace
         self._tmpspace = tmpspace
         self.anchorspace = dataspace.subspace(*self.anchorchain)
         self.versionspace = self.anchorspace.subspace(f"version={str(self.version)}",)
-        #self.logspace = self.versionspace.subspace(*pool.anchorchain)
         self.lock_pages = lock_pages
         self.verbose = verbose
-        if topics is None:
-            self.topics = [DEFAULT_TOPIC]
+        self.debug = debug
         self.pool = pool
         self.reload = rebuild
         self.throw = throw
@@ -317,6 +327,8 @@ class Databook(Anchored, Scoped):
                                for key in self.shard_keys]
         else:
             raise ValueError("`scope_keys` or `shard_keys` must be specified")
+        #DEBUG
+        #print(f"Databook: -------> self.topics: {self.topics}")
 
     def __repr__(self):
         return self.__tag__()
@@ -368,7 +380,7 @@ class Databook(Anchored, Scoped):
 
     @OVERRIDE
     #RENAME: -> _shard_page_extent_valid_?
-    def _extent_shard_valid_(self, topic, **tagshardscope):
+    def _extent_shard_valid_(self, topic, tagshardscope):
         pathset = self._shardspace_(topic, **tagshardscope).root
         valid = self.versionspace.filesystem.isdir(pathset)
         return valid
@@ -381,7 +393,7 @@ class Databook(Anchored, Scoped):
         extent_datapage = {}
         for kvhandle, shard_pathset in intent_datapage.items():
             shardscope = self._kvchain_to_scope_(topic, kvhandle)
-            valid = self._extent_shard_valid_(topic, **shardscope)
+            valid = self._extent_shard_valid_(topic, shardscope)
             if valid:
                 extent_datapage[kvhandle] = shard_pathset
         return extent_datapage
@@ -465,7 +477,7 @@ class Databook(Anchored, Scoped):
         _shortfall_databook = self._databook_kvchain_to_scope(shortfall_databook)
         return _shortfall_databook
 
-    def _extent_shard_metric_(self, topic, **shardscope):
+    def _extent_shard_metric_(self, topic, shardscope):
         extent_datapage = self.extent_datapage(topic, **shardscope)
         if len(extent_datapage) != 1:
             raise ValueError(f"Too many shards in extent_datapage: {extent_datapage}")
@@ -486,7 +498,7 @@ class Databook(Anchored, Scoped):
         for topic, scope_pathset in extent.items():
             if len(scope_pathset) == 2:
                 scope, _ = scope_pathset
-                shard_metric = self._extent_shard_metric_(topic, **blockscope)
+                shard_metric = self._extent_shard_metric_(topic, blockscope)
             else:
                 shard_metric = None
             if topic not in extent_metric_databook:
@@ -511,6 +523,11 @@ class Databook(Anchored, Scoped):
     
     @OVERRIDE
     def _shardspace_(self, topic, **shard):
+        #TODO: ensure topic=None is handled correctly: `topic == None` must only be allowed when `self.topics == None` 
+        #TODO: disallow the current default `self.topics == [None]` -> `self.topic = None`
+        #TODO: when `self.topics is not None` it must be a list of valid str
+        #TODO: `self.topics == None` must mean that `_shardspace_` generates a unique space corresponding to an `hvchain` with no topic head
+        #TODO: `scopt_to_hvchain` with topic==None must generate an hvchain with no topic head
         tagshard = self._tagscope_(**shard)
         hvchain = self._scope_to_hvchain_(topic, **tagshard)
         subspace = self.versionspace.subspace(*hvchain).ensure()
@@ -571,7 +588,7 @@ class Databook(Anchored, Scoped):
             self.versionspace.subspace(*hivechain).release()
 
     def _recordspace_(self):
-        subspace = self.anchorspace.subspace('.records')
+        subspace = self.anchorspace.subspace('.records', f'schema={self.RECORD_SCHEMA_VERSION}')
         return subspace
 
     #REMOVE: unroll inplace where necessary
@@ -590,7 +607,7 @@ class Databook(Anchored, Scoped):
     
     BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'version', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
 
-    def show_build_records(self, *, print=False, full=False, columns=None, all=False, tail=5):
+    def show_build_records(self, *, full=False, columns=None, all=False, tail=5):
         """
         All build records for a given Databook class, irrespective of alias and version (see `list()` for more specific).
         'all=True' forces 'tail=None'
@@ -600,10 +617,25 @@ class Databook(Anchored, Scoped):
 
         frame = None
         try:
-            parquet_dataset = pq.ParquetDataset(recordspace.root, use_legacy_dataset=False, filesystem=recordspace.filesystem)
-            table = parquet_dataset.read()
-            frame = table.to_pandas()
-        except:
+            #DEBUG
+            #print(f">>> recordspace: {recordspace}")
+            #DEBUG
+            filepaths = [recordspace.join(recordspace.root, filename) for filename in recordspace.list()]
+            frames = [pd.read_parquet(filepath, storage_options=recordspace.filesystem.storage_options) for filepath in filepaths]
+            #DEBUG
+            #for i, frame in enumerate(frames):
+                #print(f"frame: {i} {frame}")
+
+            frame = pd.concat(frames) if len(frames) > 0 else pd.DataFrame()
+
+            #DEBUG
+            #print(f"_frame: {_frame}")
+
+            #parquet_dataset = pq.ParquetDataset(recordspace.root, use_legacy_dataset=False, filesystem=recordspace.filesystem)
+            #table = parquet_dataset.read()
+            #frame = table.to_pandas()
+        except FileNotFoundError as e:
+            #TODO: ensure it is exactly recordspace.root that is missing
             pass
     
         if frame is not None and len(frame) > 0:
@@ -629,8 +661,6 @@ class Databook(Anchored, Scoped):
         else:
             __frame = _frame
         
-        if print:
-            __builtins__['print'](__frame)
         return __frame
 
     def show_build_record_columns(self, *, full=True, **ignored):
@@ -652,46 +682,59 @@ class Databook(Anchored, Scoped):
             _record = records.iloc[-1]
         return _record
 
+    def show_named_record(self, *, alias=None, version=None, full=False):
+        import datablocks
+        try:
+            records = self.show_build_records(full=full)
+        except:
+            return None
+        if len(records) == 0:
+            return None
+        if alias is not None:
+            records0 = records.loc[records.alias == alias]
+        else:
+            records0 = records
+        if version is not None:
+            records1 = records0[records0.version == version]
+        else:
+            records1 = records0
+        if len(records1) > 0:
+            record = records1[-1]
+        else:
+            record = None
+        return record
+
     def show_build_graph(self, *, record=None, node=tuple(), show=('logpath', 'logpath_status', 'exception'), _show=tuple(), **kwargs):
         _record = self.show_build_record(record=record, full=True)
-        _summary = _record['report_summary']
+        if _record is None:
+            return None
+        _transcript = _record['report_transcript']
+        if _transcript is None:
+            return None
         if isinstance(show, str):
             show=(show,)
         if isinstance(_show, str):
             _show=(_show,)
         show = show + _show
-        _graph = Graph(_summary, show=show, **kwargs)
+        _graph = Graph(_transcript, show=show, **kwargs)
         if node is not None:
             graph = _graph.node(*node)
         else:
             graph = _graph
         return graph
     
-    def show_build_batch_count(self, *, record=None, print=True):
-        g = self.show_build_graph(record=record, node=(1,)) # inner `collate_databooks()`, aka 2nd arg to outer `collate_databooks` (top of the graph)
-        nbatches = len(g.args)
-        if print:
-            _print(nbatches)
-        else:
-            return nbatches
+    def show_build_batch_count(self, *, record=None):
+        g = self.show_build_graph(record=record) 
+        nbatches = len(g.args)-1 # number of arguments less one to the outermost Request AND(batch_request[, batch_request, ...], extent_request)
+        return nbatches
     
     def show_build_batch_graph(self, *, record=None, batch=0, **kwargs):
-        g = self.show_build_graph(record=record, node=(1,batch), **kwargs) # inner `collate_databooks()`, aka 2nd arg to outer `collate_databooks` (top of the graph)
+        g = self.show_build_graph(record=record, node=(batch,), **kwargs) # argument number `batch` to the outermost Request AND
         return g
-
-    def show_build_batch_log(self, *, record=None, batch=0, **kwargs):
-        g = self.show_build_graph(record=record, node=(1,batch), **kwargs) # inner `collate_databooks()`, aka 2nd arg to outer `collate_databooks` (top of the graph)
-        log = g.log()
-        return log
     
-    def show_build_batch_logpath(self, *, record=None, batch=0):
-        g = self.show_build_graph(record=record, node=(1,batch)) # inner `collate_databooks()`, aka 2nd arg to outer `collate_databooks` (top of the graph)
-        logpath = g.logpath()
-        return logpath
-    
-    def show_build_summary(self, *, record=None, **ignored):
+    def show_build_transcript(self, *, record=None, **ignored):
         _record = self.show_build_record(record=record, full=True)
-        summary = _record['report_summary']
+        summary = _record['report_transcript']
         return summary
 
     def show_build_scope(self, *, record=None, **ignored):
@@ -699,59 +742,6 @@ class Databook(Anchored, Scoped):
         scopestr = _record['scope']
         scope = _eval(scopestr)
         return scope
-
-    def show_build_logspace(self, *, record=None, **ignored):
-        _record = self.show_build_record(record=record, full=True)
-        _logspace = _record['logspace']
-        logspace = _eval(_logspace)
-        return logspace
-    
-    def show_build_logname(self, *, record=None, **kwargs):
-        record = self.show_build_record(record=record, full=True)
-        _ = record['logname']
-        return _
-    
-    def show_build_logpath(self, *, record=None, **kwargs):
-        logspace = self.show_build_logspace(record=record)
-        logname = self.show_build_logname(record=record)
-        if logspace and logname:
-            logpath = logspace.join(logspace.root, logname+'.log')
-            return logpath
-
-    @DEPRECATED # USE show_build_graph()
-    def show_build_logs(self, *, record=None, request_max_len=50, **kwargs):
-        g = self.show_build_graph(record=record, **kwargs)
-        if g is not None:
-            _ = g.validate_logs(request_max_len=request_max_len)
-            return _
-        
-    @DEPRECATED # USE show_build_graph()
-    def show_build_request(self, *, record=None, max_len=None, **kwargs):
-        kwargs[f'request_max_len'] = max_len
-        g = self.show_build_graph(record=record, **kwargs)
-        # Build graph looks like this: collate({extent}, collate(build_shard, ...)) 
-        # and we want the outer collate's arg 1 (inner collate)'s arg 0 -- build_shard 
-        if g is None:
-            return None
-        _ = g.request
-        return _
-    
-    @DEPRECATED # Use show_build_graph()
-    def show_build_result(self, *, record=None, max_len=None, **kwargs):
-        kwargs[f'request_max_len'] = max_len
-        g = self.show_build_graph(record=record, **kwargs)
-        # Build graph looks like this: collate({extent}, collate(build_shard, ...)) 
-        # and we want the outer collate's arg 1 (inner collate)'s arg 0 -- build_shard 
-        if g is None:
-            return None
-        _ = g.result
-        return _
-
-    def show_build_log(self, *, record=None, node=None, **kwargs):
-        g = self.show_build_graph(record=record, node=None, **kwargs)
-        if g is not None:
-            _ = g.log()
-            return _
 
     def _build_databook_request_lifecycle_callback_(self, **blockscope):
         #tagscope = self._tagscope_(**blockscope)
@@ -766,13 +756,13 @@ class Databook(Anchored, Scoped):
         recordspace = self._recordspace_().ensure()
 
         def _write_record_lifecycle_callback(lifecycle_stage, request, response):
-            # TODO: report_summary should be just a repr(report.to_dict()), ideally, repr(report)
+            # TODO: report_transcript should be just a repr(report.to_dict()), ideally, repr(report)
             # TODO: however, we may rewrite report.result
             task = request.task
             timestamp = int(microseconds_since_epoch())
             datestr = datetime_to_microsecond_str()
             blockscopestr = repr(blockscope)
-            _record = dict(record_schema=Databook.record_schema,
+            _record = dict(schema=Databook.RECORD_SCHEMA_VERSION,
                            alias=alias,
                            stage=lifecycle_stage.name,
                            classname=classname,
@@ -781,14 +771,14 @@ class Databook(Anchored, Scoped):
                             date=datestr,
                             timestamp=timestamp,
                             runtime_secs='',
-                            key=str(task.key),
+                            cookie=str(task.cookie),
                             id=str(task.id),
                             logspace=str(task.logspace),
                             logname=str(task.logname),
                             status='',
                             success='',
                             metric='',
-                            report_summary='',
+                            report_transcript='',
             )
         
             if self.verbose:
@@ -805,7 +795,7 @@ class Databook(Anchored, Scoped):
                     runtime_secs = str(None)
                 report = response.report()
                 task_id = response.id
-                report_summary = report.summary()
+                report_transcript = report.transcript() 
                 #args_reports = report.args_reports
                 #kwargs_reports = report.kwargs_reports
                 #args_results = [arg_report.result if isinstance(arg_report, Report) else arg_report for arg_report in args_reports]
@@ -815,20 +805,20 @@ class Databook(Anchored, Scoped):
                 if logpath is not None:
                     _, logname_ext = os.path.split(logpath)
                     logname, ext = logname_ext.split('.')
-                summarystr = repr(report_summary)
+                transcriptstr = repr(report_transcript)
                 """
                 if self.verbose:
-                    print(f"[BUILD] summary: {summarystr}, logpath: {logpath}, logname: {logname}")
+                    print(f"[BUILD] transcript: {transcriptstr}, logpath: {logpath}, logname: {logname}")
                 """
-                logging.debug(f"[BUILD] summary: {summarystr}, logpath: {logpath}, logname: {logname}")
+                logging.debug(f"[BUILD] transript: {transcriptstr}, logpath: {logpath}, logname: {logname}")
                 _record.update(dict(
                                     task_id=str(task_id),
                                     runtime_secs=f"{runtime_secs}",
-                                    status=report_summary['status'],
-                                    success=report_summary['success'],
+                                    status=report_transcript['status'],
+                                    success=report_transcript['success'],
                                     logspace=repr(logspace),
                                     logname=logname,
-                                    report_summary=summarystr,
+                                    report_transcript=transcriptstr,
                             ))
             records = []
             shard_list = self.scope_to_shards(**blockscope)
@@ -836,7 +826,7 @@ class Databook(Anchored, Scoped):
                 for topic in self.topics:
                     record = copy.deepcopy(_record)
                     if response is not None:
-                        metric = self._extent_shard_metric_(topic, **shard)
+                        metric = self._extent_shard_metric_(topic, shard)
                         record['metric'] = str(metric)
                     record['topic'] = topic
                     record['shardscope'] = repr(shard)
@@ -848,6 +838,8 @@ class Databook(Anchored, Scoped):
             if self.verbose:
                 print(f"[BUILD] Writing build record at lifecycle_stage {lifecycle_stage.name} to {record_filepath}")
             logging.debug(f"[BUILD] Writing build record at lifecycle_stage {lifecycle_stage.name} to {record_filepath}")
+            #DEBUG
+            #print(f"DEBUG: writing record_frame:\n{record_frame}\n\tto record_filepath {record_filepath}")
             record_frame.to_parquet(record_filepath, storage_options=recordspace.storage_options)
         return _write_record_lifecycle_callback
 
@@ -865,9 +857,10 @@ class Databook(Anchored, Scoped):
             return True
         # TODO: consistency check: sha256 alias must be unique for a given version or match scope
         blockscope = self._blockscope_(**scope)
-        if self.show_build_record() is not None:
-            _scope = self.show_build_scope()
-            if not equal_scopes(blockscope, _scope):
+        record = self.show_named_record(alias=self.alias, version=self.version) 
+        if record is not None:
+            _scope = eval(record['scope'])
+            if _scope is not None and not equal_scopes(blockscope, _scope):
                 raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.__class__} alias {self.alias}")
         """
         pool_key = utils.datetime_now_key()
@@ -883,7 +876,7 @@ class Databook(Anchored, Scoped):
 
     # TODO: build_databook_* -> build_block_*?
     @OVERRIDE
-    def build_databook_request(self, **scope):
+    def provide_databook_request(self, **scope):
         blockscope = self._blockscope_(**scope)
         if self.reload:
             shortfall_databook = self.intent_databook(**blockscope)
@@ -912,15 +905,47 @@ class Databook(Anchored, Scoped):
         build_databook_request = \
             Request(self.collate_databooks, extent_databook, collated_shortfall_batch_request)
         return build_databook_request
+    
+    @OVERRIDE
+    def build_databook_request(self, **scope):
+        blockscope = self._blockscope_(**scope)
+        if self.reload:
+            shortfall_databook = self.intent_databook(**blockscope)
+        else:
+            shortfall_databook = self.shortfall_databook(**blockscope)
+        shortfall_databook_kvhandles_lists = [list(shortfall_databook[topic].keys()) for topic in self.topics]
+        shortfall_databook_kvhandles_list = [_ for __ in shortfall_databook_kvhandles_lists for _ in __]
+        shortfall_databook_kvhandles = list(set(shortfall_databook_kvhandles_list))
+
+        shortfall_batchscope_list = \
+            self._kvchains2batches_(*shortfall_databook_kvhandles)
+        shortfall_batchscope_list = \
+            [{k: blockscope[k] for k in tscope.keys()} for tscope in shortfall_batchscope_list]
+        logger.debug(f"Requesting build of shortfall_tagbatch_list: {shortfall_batchscope_list}")
+        shortfall_batch_requests = \
+            [self._build_batch_request_(self._tagscope_(**shortfall_batchscope_list[i]), **shortfall_batchscope_list[i])
+                            .apply(self.pool) for i in range(len(shortfall_batchscope_list))]
+        shortfall_batch_requests_str = "[" + \
+                                          ", ".join(str(_) for _ in shortfall_batch_requests) + \
+                                          "]"
+        logger.debug(f"shortfall_batch_requests: " + shortfall_batch_requests_str)
+
+        tagscope = self._tagscope_(**blockscope)
+        extent_request = Request(self.extent, **tagscope)
+        requests = shortfall_batch_requests + [extent_request]
+        build_databook_request = LAST(*requests)
+        #TODO: #FIX
+        #build_databook_request = LAST(*shortfall_batch_requests) if len(shortfall_batch_requests) > 0 else NONE()
+        return build_databook_request
 
     @OVERRIDE
     # tagscope is necessary since batchscope will be expanded before being passed to _build_batch_
-    def _build_batch_request_(self, tagscope, batchscope):
+    def _build_batch_request_(self, tagscope, **batchscope):
         self.versionspace.ensure()
-        return Request(self._build_batch_, tagscope, batchscope)
+        return Request(self._build_batch_, tagscope, **batchscope)
 
     @OVERRIDE
-    def _build_batch_(self, tagscope, batchscope):
+    def _build_batch_(self, tagscope, **batchscope):
         raise NotImplementedError()
 
     def read(self, topic=None, **blockscope):
@@ -984,35 +1009,48 @@ class DBX:
     """
 
     class Reader(request.Proxy):
-        def __init__(self, dbx, topic=DEFAULT_TOPIC):
-            self.dbx = dbx
-            self.topic = topic
+        def __init__(self, *, locator):
+            """
+                locator: str | tuple[DBX, topic:str]
+            """
+            if isinstance(locator, dict):
+                self.dbx, self.topic = locator['dbx'], locator['topic']
+            elif isinstance(locator, str):
+                self.dbx, self.topic = DBX.parse_locator(locator)
 
         @property
         def request(self):
             _ = self.dbx.read_request(topic=self.topic)
             return _
-
+        
+        def __ne__(self, other):
+            return not isinstance(other, self.__class__) or \
+                self.request != other.request
+        
+        def __eq__(self, other):
+            return not self.__ne__(other)
+ 
         def __tag__(self):
-            tag = f"{DBX_PREFIX}.{self.dbx.datablock_clstr}@{self.dbx.alias}"
+            _tag = f"{DBX_PREFIX}.{self.dbx.datablock_clstr}@{self.dbx.alias}"
             if self.topic != DEFAULT_TOPIC:
-                tag += f":{self.topic}"
+                _tag += f":{self.topic}"
+            tag = f'"{_tag}"'
+            return tag
 
         def __repr__(self):
-            _ = Tagger(tag_defaults=False).tag_ctor(self.__class__, self.dbx, self.topic)
+            _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, locator=dict(dbx=self.dbx, topic=self.topic))
             return _
     
     @staticmethod
-    def loader(reader_tag: str, **datablock_kwargs):
-        head, topic = reader_tag.split(":")
+    def parse_locator(locator: str, **datablock_kwargs):
+        parts = locator.split(":")
         datablock_clstr, alias = head.split('@')
         dbx = DBX(datablock_clstr, alias, **datablock_kwargs)
-        _ = dbx.reader(topic=topic)
-        return _
+        return dbx, topic
     
     @staticmethod
     def load(reader_tag: str, **datablock_kwargs):
-        reader = DBX.loader(reader_tag, **datablock_kwargs)
+        reader = DBX.reader(reader_tag, **datablock_kwargs)
         _ = reader.compute()
         return _
 
@@ -1049,8 +1087,13 @@ class DBX:
     def __init__(self, 
                 datablock_cls_or_clstr, 
                 alias=None,
-                **datablock_kwargs,):
+                *,
+                debug=False,
+                verbose=False,):
         self.alias = alias
+        self.debug = debug
+        self.verbose = verbose
+
         #DBX_dataspace = dataspace.subspace(DBX_PREFIX)
         if isinstance(datablock_cls_or_clstr, str):
             self.datablock_clstr = datablock_cls_or_clstr
@@ -1067,7 +1110,13 @@ class DBX:
             self.datablock_cls = datablock_cls_or_clstr
             self.datablock_module_name = self.datablock_cls.__module__
             self.datablock_clstr = f"{self.datablock_module_name}.{self.datablock_cls.__name__}"
-        self.datablock_kwargs = datablock_kwargs
+
+        self.datablock_kwargs = {}
+        @functools.wraps(self.datablock_cls)
+        def update_datablock_kwargs(**datablock_kwargs):
+            self.datablock_kwargs.update(**datablock_kwargs)
+            return self
+        self.Datablock = update_datablock_kwargs
 
         self._scope = {} # initialize to default scope
         @functools.wraps(self.datablock_cls.SCOPE)
@@ -1079,12 +1128,13 @@ class DBX:
 
         self.databook_kwargs = dict(
             dataspace=DATABLOCKS_DATALAKE,
-            pool=DATABLOCKS_LOGGING_REDIRECT_POOL,
+            pool=DATABLOCKS_FILE_LOGGING_POOL,
             tmpspace=None, # derive from dataspace?
             lock_pages=False,
             throw=True, # fold into `pool`?
             rebuild=False, # move to build()?
             verbose=False,
+            debug=False,
         )
         @functools.wraps(Databook)
         def update_databook_kwargs(**kwargs):
@@ -1100,14 +1150,15 @@ class DBX:
             _ = Tagger().repr_func(self.__class__, self.datablock_clstr)
         """
         #FIX: do not make default self.alias None explicit
-        _ =  Tagger().repr_func(self.__class__, self.datablock_clstr, self.alias)
+        _ =  Tagger().repr_func(self.__class__, self.datablock_clstr, self.alias, debug=self.debug, verbose=self.verbose)
         return _
 
     # TODO: spell out `.DATABOOK()` and `.SCOPE()` modifications?
     def __tag__(self):
-        tag = f"{self.datablock_clstr}"
+        _tag = f"{DBX_PREFIX}.{self.datablock_clstr}"
         if self.alias is not None:
-            tag += f"@{self.alias}"
+            _tag += f"@{self.alias}"
+        tag = f"'{_tag}'"
         return tag
 
     def __hash__(self):
@@ -1127,6 +1178,7 @@ class DBX:
     @property
     def scope(self):
         # TODO: _records --> (journal)_entries
+        #REWRITE: using show_named_record(alias=self.alias, version=self.version)
         records = self.databook.show_build_records()
         if len(records) == 0:
             msg = f"No journal entries for databook {self.databook} of version: {self.databook.version}"
@@ -1143,15 +1195,25 @@ class DBX:
                 if self.verbose:
                     print(msg)
                 _scope = self._scope
+            
             else:
-                rec = recs.iloc[-1]
                 # TODO?: fix serialization of version to record to remove `repr`
+                rec = recs.iloc[-1]
                 if rec['version'] != repr(self.databook.version) and rec['version']:
+                    _scope = self._scope
+                    if self.debug:
+                        print(f"Version mismatch: databook {self.databook.version}, journal entry with alias {self.databook.alias}: {rec['version']}: using scope: {_scope}")
+                else:
+                    """
+                    #TODO: REMOVE?
                     msg = f"Version mismatch for databook {self.databook} of version: {self.databook.version} and journal entry with alias {self.databook.alias}: {rec['version']}"
                     if self.verbose:
                         print(msg)
                     raise ValueError(msg)
-                _scope = _eval(rec['scope'])
+                    """
+                    _scope = _eval(rec['scope'])
+                    if self.debug:
+                        print(f"For databook with alias {self.databook.alias} using journal record scope {_scope}")
         return _scope
 
     def build_request(self):
@@ -1168,9 +1230,13 @@ class DBX:
         request = self.databook.read_databook_request(topic, **self.scope)\
             .set(summary=lambda _: self.extent()[topic])
         return request
+    
+    def data(self, topic=None):
+        reader = self.reader(topic)
+        return reader
 
     def reader(self, topic=DEFAULT_TOPIC):
-        reader = DBX.Reader(self, topic)
+        reader = DBX.Reader(locator=dict(dbx=self, topic=topic))
         return reader
     
     def read(self, topic=DEFAULT_TOPIC):
@@ -1178,12 +1244,12 @@ class DBX:
         result = read_request.compute()
         return result
     
-    def extent(self, topic=None):
-        _ = self.databook.extent(topic, **self.scope())
+    def extent(self):
+        _ = self.databook.extent(**self.scope)
         return _
     
     def extent_metric(self, topic=None):
-        _ = self.databook.extent_metric(self, topic, **self.scope())
+        _ = self.databook.extent_metric(self, topic, **self.scope)
         return _    
     
     def _validate_subscope(self, **subscope):
@@ -1195,10 +1261,16 @@ class DBX:
             Using 'dbx' instead of 'self' here to avoid confusion of the meaning of 'self' in different scopes: as a DBX instance and a Databook subclass instance.
             This Databook subclass factory using `datablock_cls` as implementation of the basic `build()`, `read()`, `valid()`, `metric()` methods.
             >. databook gets block_to_shard_keys and batch_to_shard_keys according to datablock_scope and datablock_cls.SCOPE RANGE annotations.
+
+            NB: `not hasattr(Databook, 'TOPICS')` <=> `Databook.topics == [DEFAULT_TOPIC] == [None]` 
         """ 
         def __init__(self, *args, **kwargs):
             Databook.__init__(self, *args, **kwargs)
             self._datablock = None
+
+        def __repr__(self):
+            _ = f"{repr(dbx)}.databook"
+            return _
 
         @property
         def __datablock(self):
@@ -1206,46 +1278,68 @@ class DBX:
                 self._datablock = self.datablock_cls(**self.datablock_kwargs)
             return self._datablock
 
-        def __datablock_shardroots__(self, topics=None, **tagscope):
-            if topics is None:
-                topics = self.topics
+        def __datablock_shardroots(self, **tagscope) -> Union[str, Dict[str, str]]:
             shardscope_list = self.scope_to_shards(**tagscope)
-            shardspace_list = [self._shardspace_(topic, **shardscope) for topic in topics for shardscope in shardscope_list]
-            shardspace_roots = [shardspace.root for shardspace in shardspace_list]
-            return shardspace_roots
+            assert len(shardscope_list) == 1
+            shardscope = shardscope_list[0]
+            if hasattr(self.datablock_cls, 'TOPICS'):
+                    shardroots = {_topic : self._shardspace_(_topic, **shardscope).root for _topic in self.datablock_cls.TOPICS}
+            else:
+                    shardroots = self._shardspace_(None, **shardscope).root
+            return shardroots
 
-        def __build_batch__(self, tagscope, batchscope):
+        def __datablock_blockroots(self, **tagscope) -> Union[Union[str, List[str]], Dict[str, Union[str, List[str]]]]:
+            #TODO: implement blocking: return a dict from topic to str|List[str] according to whether this is a shard or a block
+            if len(self.block_to_shard_keys) > 0:
+                raise NotImplementedError(f"Batching not supported at the moment: topic: tagscope: {tagscope}")
+            blockroots = self.datablock_shardroots(**tagscope)
+            return blockroots
+
+        def __datablock_batchroots(self, **tagscope) -> Union[Union[str, List[str]], Dict[str, Union[str, List[str]]]]:
+            #TODO: implement batching: return a dict from topic to str|List[str] according to whether this is a shard or a batch
+            if len(self.batch_to_shard_keys) > 0:
+                raise NotImplementedError(f"Batching not supported at the moment: topic: tagscope: {tagscope}")
+            batchroots = self.datablock_shardroots(**tagscope)
+            return batchroots
+
+        def __build_batch__(self, tagscope, **batchscope):
             datablock_batchscope = self.datablock_cls.SCOPE(**batchscope)
-            datablock_shard_roots = self.datablock_shardroots(**tagscope)
-            self.datablock.build(datablock_batchscope, self.dataspace.filesystem, *datablock_shard_roots)
+            datablock_shardroots = self.datablock_batchroots(**tagscope)
+            #DEBUG
+            #print(f"__build_batch__: datablock_shardroots: {datablock_shardroots}")
+            self.datablock.build(scope=datablock_batchscope, filesystem=self.dataspace.filesystem, roots=datablock_shardroots)
             _ = self.extent_databook(**tagscope)
             return _
 
         def __read_block__(self, tagscope, topic, **blockscope):
+            # tagscope can be a list, opaque to the Request evaluation mechanism, but batchscope must be **-expanded to allow Request mechanism to evaluate the kwargs
             datablock_blockscope = self.datablock_cls.SCOPE(**blockscope)
-            datablock_shard_roots = self.datablock_shardroots(topics=[topic], **tagscope)
-            if topic == DEFAULT_TOPIC and not hasattr(self.datablock, 'TOPICS') and not hasattr(self.datablock, 'topics'):
-                _ = self.datablock.read(datablock_blockscope, self.dataspace.filesystem, *datablock_shard_roots)
+            datablock_blockroots = self.datablock_blockroots(**tagscope)
+            if topic == None:
+                assert not hasattr(self.datablock, 'TOPICS'), f"__read_block__: None topic when datablock.TOPICS == {self.datablock.TOPICS} "
+                _ = self.datablock.read(scope=datablock_blockscope, filesystem=self.dataspace.filesystem, roots=datablock_blockroots)
             else:
-                _ = self.datablock.read(topic, datablock_blockscope, self.dataspace.filesystem, *datablock_shard_roots)
+                _ = self.datablock.read(scope=datablock_blockscope, filesystem=self.dataspace.filesystem, roots=datablock_blockroots, topic=topic)
             return _
 
-        def __extent_shard_valid__(self, topic, **tagshardscope):
+        def __extent_shard_valid__(self, topic, tagshardscope):
             datablock_tagshardscope = self.datablock_cls.SCOPE(**tagshardscope)
-            datablock_shard_roots = self.datablock_shardroots(topics=[topic], **tagshardscope)
-            if topic == DEFAULT_TOPIC and not hasattr(self.datablock, 'TOPICS') and not hasattr(self.datablock, 'topics'):
-                _ = self.datablock.valid(datablock_tagshardscope, self.dataspace.filesystem, *datablock_shard_roots)
+            datablock_shardroots = self.datablock_shardroots(topic, **tagshardscope)
+            if topic == None:
+                assert not hasattr(self.datablock, 'TOPICS'), f"__extent_shard_valid__: None topic when datablock.TOPICS == {getattr(self.datablock, 'TOPICS')} "
+                _ = self.datablock.valid(scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem, roots=datablock_shardroots)
             else:
-                _ = self.datablock.valid(topic, datablock_tagshardscope, self.dataspace.filesystem, *datablock_shard_roots)
+                _ = self.datablock.valid(scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem, roots=datablock_shardroots, topic=topic)
             return _
         
-        def __extent_shard_metric__(self, topic, **tagshardscope):
+        def __extent_shard_metric__(self, topic, tagshardscope):
             datablock_tagshardscope = self.datablock_cls.SCOPE(**tagshardscope)
-            datablock_shard_roots = self.datablock_shardroots(topics=[topic], **tagshardscope)
-            if topic == DEFAULT_TOPIC and not hasattr(self.datablock, 'TOPICS') and not hasattr(self.datablock, 'topics'):
-                _ = self.datablock.metric(datablock_tagshardscope, self.dataspace.filesystem, *datablock_shard_roots)
+            datablock_shardroots = self.datablock_shardroots(topic, **tagshardscope)
+            if topic == None:
+                assert hasattr(self.datablock, 'TOPICS'), f"__extent_shard_metric__: None topic when datablock.TOPICS == {self.datablock.TOPICS} "
+                _ = self.datablock.metric(scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem, roots=datablock_shardroots)
             else:
-                _ = self.datablock.metric(topic, datablock_tagshardscope, self.dataspace.filesystem, *datablock_shard_roots)
+                _ = self.datablock.metric(scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem, roots=datablock_shardroots, topic=topic)
             return _
 
         scope_fields = dataclasses.fields(dbx.datablock_cls.SCOPE)
@@ -1263,13 +1357,16 @@ class DBX:
         '''
 
         __module_name = DBX_PREFIX + "." + dbx.datablock_module_name
-        __cls_name = DBX_PREFIX + "." + dbx.datablock_clstr
+        __cls_name = dbx.datablock_cls.__name__
         __datablock_cls = dbx.datablock_cls
         __datablock_kwargs = dbx.datablock_kwargs
         if hasattr(dbx.datablock_cls, 'TOPICS'):
             __topics = dbx.datablock_cls.TOPICS
         else:
             __topics = [DEFAULT_TOPIC]
+
+        #DEBUG
+        #print(f"------> __topics: {__topics}")
         if hasattr(dbx.datablock_cls, 'VERSION'):
             __version = dbx.datablock_cls.VERSION
         else:
@@ -1280,12 +1377,15 @@ class DBX:
                     'block_defaults': __block_defaults,
                     'batch_to_shard_keys': __batch_to_shard_keys,
                     '__init__': __init__,
+                    '__repr__': __repr__,
                     'version': __version,
                     'topics': __topics,
                     'datablock_cls': __datablock_cls,
                     'datablock_kwargs': __datablock_kwargs,
                     'datablock': __datablock,
-                    'datablock_shardroots': __datablock_shardroots__,
+                    'datablock_blockroots': __datablock_blockroots,
+                    'datablock_batchroots': __datablock_batchroots,
+                    'datablock_shardroots': __datablock_shardroots,
                     '_build_batch_': __build_batch__,
                     '_read_block_':  __read_block__,
         }

@@ -24,7 +24,8 @@ setuptools.setup(
         "Programming Language :: Python :: 3",
     ],
     entry_points={'console_scripts': ['dbx=datablocks:exec',
-                                      'datablocks.exec=datablocks:exec']},
+                                      'dbx.exec=datablocks:exec',
+                                      'dbx.echo=datablocks:echo']},
     python_requires='>=3.8',
     install_requires=get_requirements(),
 )
