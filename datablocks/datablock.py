@@ -1287,17 +1287,17 @@ class DBX:
             assert len(shardscope_list) == 1
             shardscope = shardscope_list[0]
             if hasattr(self.datablock_cls, 'TOPICS'):
-                    shardroots = {}
-                    for _topic in self.datablock_cls.TOPICS:
-                        shardspace = self._shardspace_(_topic, **shardscope)
-                        if ensure:
-                            shardspace.ensure()
-                        shardroots[_topic] = shardspace.root
-            else:
-                    shardspace = self._shardspace_(None, **shardscope)
+                shardroots = {}
+                for _topic in self.datablock_cls.TOPICS:
+                    shardspace = self._shardspace_(_topic, **shardscope)
                     if ensure:
                         shardspace.ensure()
-                    shardroots = shardspace.root
+                    shardroots[_topic] = shardspace.root
+            else:
+                shardspace = self._shardspace_(None, **shardscope)
+                if ensure:
+                    shardspace.ensure()
+                shardroots = shardspace.root
             return shardroots
 
         def __datablock_blockroots(self, tagscope, ensure=False) -> Union[Union[str, List[str]], Dict[str, Union[str, List[str]]]]:
@@ -1319,7 +1319,7 @@ class DBX:
             datablock_shardroots = self.datablock_batchroots(tagscope, ensure=True)
             #DEBUG
             #print(f"__build_batch__: datablock_shardroots: {datablock_shardroots}")
-            self.datablock.build(datablock_batchscope, self.dataspace.filesystem, datablock_shardroots)
+            self.datablock.build(datablock_shardroots, scope=datablock_batchscope, filesystem=self.dataspace.filesystem)
             _ = self.extent_databook(**tagscope)
             return _
 
@@ -1329,9 +1329,9 @@ class DBX:
             datablock_blockroots = self.datablock_blockroots(tagscope)
             if topic == None:
                 assert not hasattr(self.datablock, 'TOPICS'), f"__read_block__: None topic when datablock.TOPICS == {self.datablock.TOPICS} "
-                _ = self.datablock.read(datablock_blockscope, self.dataspace.filesystem, datablock_blockroots)
+                _ = self.datablock.read(datablock_blockroots, scope=datablock_blockscope, filesystem=self.dataspace.filesystem)
             else:
-                _ = self.datablock.read(topic, datablock_blockscope, self.dataspace.filesystem, datablock_blockroots)
+                _ = self.datablock.read(datablock_blockroots, topic=topic, scope=datablock_blockscope, filesystem=self.dataspace.filesystem)
             return _
 
         def __extent_shard_valid__(self, topic, tagshardscope):
@@ -1416,7 +1416,7 @@ class DBX:
         return _
 
     @staticmethod
-    def transcribe_build(*dbxs, verbose=False, with_home=False, with_linenos=False):
+    def transcribe(*dbxs, verbose=False, with_home=False, with_linenos=False, with_display=False):
         """
             Assume dbxs are ordered in the dependency order and all have unique aliases that can be used as variable prefixes.
             TODO: build the dependency graph and reorder, if necessary.
@@ -1427,8 +1427,9 @@ class DBX:
         if with_home:
             imports += "import os\n"
         imports += "import fsspec\n"
-        
 
+        #TODO: collect and preload all arg.dbxs
+        
         if with_home:
             script += "HOME = os.getenv('HOME')\n\n"
         for dbx in dbxs:
@@ -1445,26 +1446,36 @@ class DBX:
                     _argdatablock = Tagger().tag_ctor(arg.dbx.datablock_cls, **arg.dbx.datablock_kwargs)
                     _argblockscope = arg.dbx.scope
                     _argtagscope = arg.dbx.databuilder._tagscope_(**_argblockscope)
+                    _argprotocol = arg.dbx.databuilder.dataspace.protocol
+                    _argprotocol = _argprotocol if _argprotocol else "file"
+                    _argstorage_options = arg.dbx.databuilder.dataspace.script_storage_options()
+                    _argfilesystem = signature.Tagger().tag_func("fsspec.filesystem", _argprotocol, **_argstorage_options)
                     _blockscope_val += f"\t{key}={_argdatablock}.read(\n" + \
+                                       f"{repr(arg.topic)}),\n" + \
                                        f"{_argtagscope}),\n" + \
-                                       f"topic={repr(arg.topic)}),\n" + \
+                                       f"{_argfilesystem}),\n" + \
+                                       f"{repr(_argtagscope)},\n" + \
                                        f")\n"
                 else:
                     _blockscope_val += f"\t{key}={repr(arg)},\n"
             _blockscope_val += ")\n"
             
             blockroots = dbx.databuilder.datablock_blockroots(tagscope)
-            if not hasattr(dbx.datablock_cls, 'TOPICS'):
-                blockroots = [blockroots]
             _filesystem_name = f"{dbx.alias}_filesystem"
             _protocol = dbx.databuilder.dataspace.protocol
             _protocol = _protocol if _protocol else "file"
             _storage_options = dbx.databuilder.dataspace.script_storage_options()
             _filesystem_val = signature.Tagger().tag_func("fsspec.filesystem", _protocol, **_storage_options)
             script += f"{_filesystem_name} = {_filesystem_val}\n"
-            for blockroot in blockroots:
-                script += f"{_filesystem_name}.mkdirs({repr(blockroot)}, exist_ok=True)\n"
-            _blockroots = ", ".join([repr(blockroot) for blockroot in blockroots])
+            if isinstance(blockroots, str):
+                blockroots_list = [blockroots]
+            if isinstance(blockroots, dict):
+                blockroots_list = list(blockroots.values())
+            if isinstance(blockroots, list):
+                blockroots_list = blockroots
+            for blockroot in blockroots_list:
+                    script += f"{_filesystem_name}.mkdirs({repr(blockroot)}, exist_ok=True)\n"
+            _blockroots = repr(blockroots)
 
             script += f"\n{_blockscope_name} = {_blockscope_val}"
             script += f"\n{_datablock}.build(\n"  +\
