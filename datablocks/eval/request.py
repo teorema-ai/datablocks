@@ -460,13 +460,18 @@ class Proxy(Request):
         raise ValueError("Cannot rebind a Proxy request")
     
     def __str__(self):
-        return self.request.__str__()
+        _ = self.request.__str__()
+        return _
     
     def __repr__(self):
-        return self.request.__repr__()
+        _ = self.request.__repr__()
+        return _
 
     def __tag__(self):
-        return self.request.__tag__()
+        _ = self.request.__tag__()
+        #DEBUG
+        print(f"Proxy: __tag__: {_}")
+        return _
     
     def apply(self, functor, *args, **kwargs):
         request = self.request.apply(functor, *args, **kwargs)
@@ -1158,15 +1163,27 @@ class Graph:
 
     @property
     def request(self):
-        request = self.transcript['request'] if 'request' in self.transcript else None
+        #DEBUG
+        #print(f"request: {self}")
+        request_reprstr = self.transcript['request'] if 'request' in self.transcript else None
+        if request_reprstr is None:
+            return None
+        requestrepr = eval(request_reprstr)
+        request = eval(requestrepr)
+        return request
+        '''
         requeststr = truncate_str(str(request), self.request_max_len, use_ellipsis=True) if request else None
         return requeststr
+        '''
 
     @property
     def result(self):
         result = self.transcript['result'] if 'result' in self.transcript else None
+        return result
+        '''
         resultstr = truncate_str(str(result), self.result_max_len, use_ellipsis=True) if result else None
         return resultstr
+        '''
 
     @property
     def args(self):
@@ -1248,9 +1265,9 @@ class Graph:
 
             for key, kwarg in self.kwargs.items():
                 if kwarg.simple:
-                    s = s + f"\n{prefix}kwargs[{key}]: " + f"{kwarg}"
+                    s = s + f"\n{prefix}kwargs[{repr(key)}]: " + f"{kwarg}"
                 else:
-                    s = s + f"\n{prefix}kwargs[{key}]:\n" + f"{kwarg}"
+                    s = s + f"\n{prefix}kwargs[{repr(key)}]:\n" + f"{kwarg}"
         return s
     
     def __getattr__(self, attrname):
@@ -1277,11 +1294,12 @@ class Graph:
         _ = Report.validate_logs(self.transcript, request_max_len=request_max_len)
         return _
 
-
+'''
 @DEPRECATED
 @ALIAS
 class ReportSummaryGraph(Graph):
     pass
+'''
 
 
 

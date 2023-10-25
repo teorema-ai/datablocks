@@ -105,5 +105,23 @@ or in Python
 ```
     python $HOME/datablocks/datablocks/test/datasets.py [{TEST_NAME}]
 ```
+
+# EXAMPLES
+## MICRON
+```
+# Define
+export MIRCOHN="datablocks.DBX('datablocks.test.micron.datasets.miRCoHN')"
+export MIRCOS="datablocks.DBX('datablocks.test.micron.datasets.miRCoStats').SCOPE(mirco=$MIRCOHN.data('counts'))"
+# Examine
+dbx.echo "$MIRCOS"
+dbx "$MIRCOS"
+dbx "$MIRCOS.scope"
+dbx "$MIRCOS.intent()"
+dbx "$MIRCOS.extent()"
+# Build
+
+
+```
+
 # DESIGN
 * Futures throw contained exceptions upon `result()`, Responses do not [#TODO: should they?]

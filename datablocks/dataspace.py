@@ -87,8 +87,21 @@ class Dataspace:
     def __init__(self,
                  url,
                  *,
-                 storage_options={}):
-        self.__setstate__((url, storage_options))
+                 storage_options={}, 
+                 pic={}):
+        self.__setstate__((url, storage_options, pic))
+
+    def clone(self, 
+              url=None,
+              *,
+              storage_options=None,
+              pic=None):
+        url = url or self.url
+        kwargs = dict(storage_options=storage_options or self.storage_options,
+                      pic=pic or self.pic
+        )   
+        clone = Dataspace(url, **kwargs)
+        return clone
 
     def __delete__(self):
         if isinstance(self._temporary, tempfile.TemporaryDirectory):
@@ -109,6 +122,22 @@ class Dataspace:
     def fs(self):
         fs = FS(self.filesystem)
         return fs
+
+    def script_url(self):
+        if 'url' in self.pic:
+            keystr = self.pic['url'][0]
+            valstr = "{" + self.pic['url'][1] + "}"
+            _ = self.url.replace(keystr, valstr)
+        else:
+            _ = self.url
+        return _
+
+    def script_storage_options(self):
+        if 'storage_options' in self.pic:
+            _ = self.pic['storage_options']
+        else:
+            _ = self.storage_options
+        return _
 
     @staticmethod
     def filesystem_protocol(filesystem):
@@ -144,10 +173,10 @@ class Dataspace:
     def __getstate__(self):
        if self._temporary:
             raise ValueError(f"Cannot __getstate__ of  temporary Dataspace {self}")
-       return self.url, self.storage_options
+       return self.url, self.storage_options, self.pic
 
     def __setstate__(self, state):
-        self.url, self.storage_options = state
+        self.url, self.storage_options, self.pic = state
         self._temporary = None
         p = self.url.find('://')
         if p != -1:
@@ -386,7 +415,7 @@ class Dataspace:
 
     @property
     def locker(self):
-        from ..config import CONFIG
+        from .config import CONFIG
         from .. import db
         if self._locker is None:
             self._locker = db.Locker(user=CONFIG.USER, postgres=CONFIG.POSTGRES)
@@ -451,7 +480,7 @@ class Dataspace:
         return lock
 
     def wait_acquire_lock(self, waitfile, *, wait_secs, wait_interval_secs, timeout_millis):
-        from ..db import AcquireFailure
+        from .db import AcquireFailure
         t = 0
         if not os.path.isfile(waitfile):
             if wait_secs != 0:

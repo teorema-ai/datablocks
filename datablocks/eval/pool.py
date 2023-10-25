@@ -441,19 +441,21 @@ class Logging:
               f"dataspace={self.dataspace})"
         return s
 
+    #TODO: -> repr_ctor
     def __repr__(self):
-        repr = f"{signature.Tagger().ctor_name(self.__class__)}({self.name}, " + \
-               f"dataspace={self.dataspace}, " + \
-               f"priority={self.priority}, " + \
-               f"return_none={self.return_none}, " + \
-               f"authenticate_tasks={self.authenticate_tasks}, " + \
-               f"throw={self.throw}, " + \
-               f"log_to_file={self.log_to_file}, " + \
-               f"log_level={self.log_level}, "+ \
-               f"log_prefix={self.log_prefix}, "+ \
-               f"log_format={self.log_format}, "+ \
-               f"redirect_stdout={self.redirect_stdout})"
-        return repr
+        _ = f"{signature.Tagger().ctor_name(self.__class__)}(" +\
+               f"{repr(self.name)}, " + \
+               f"dataspace={repr(self.dataspace)}, " + \
+               f"priority={repr(self.priority)}, " + \
+               f"return_none={repr(self.return_none)}, " + \
+               f"authenticate_tasks={repr(self.authenticate_tasks)}, " + \
+               f"throw={repr(self.throw)}, " + \
+               f"log_to_file={repr(self.log_to_file)}, " + \
+               f"log_level={repr(self.log_level)}, "+ \
+               f"log_prefix={repr(self.log_prefix)}, "+ \
+               f"log_format={repr(self.log_format)}, "+ \
+               f"redirect_stdout={repr(self.redirect_stdout)})"
+        return _
 
     def restart(self):
         self.executor.restart()
