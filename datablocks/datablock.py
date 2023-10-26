@@ -100,7 +100,6 @@ class Anchored:
     @property
     def anchorchain(self):
         if not hasattr(self, 'anchor'):
-            #print(f"DEBUG: self.anchor: self.__class__.__module__: {self.__class__.__module__}, self.__class__.__qualname__: {self.__class__.__qualname__}")
             modchain = tuple(str(self.__class__.__module__).split('.'))
             anchorclassname = self.__class__.__qualname__.split('.')[-1]
             anchorclasschain = modchain + (anchorclassname,)
@@ -110,7 +109,6 @@ class Anchored:
             anchorchain = anchorclasschain + self.namechain
         else:
             anchorchain = anchorclasschain
-        #print(f"DEBUG: anchorchain: {anchorchain}")
         return anchorchain
 
 
@@ -331,8 +329,6 @@ class Databuilder(Anchored, Scoped):
                                for key in self.shard_keys]
         else:
             raise ValueError("`scope_keys` or `shard_keys` must be specified")
-        #DEBUG
-        #print(f"Databuilder: -------> self.topics: {self.topics}")
 
     def __repr__(self):
         return self.__tag__()
@@ -633,23 +629,11 @@ class Databuilder(Anchored, Scoped):
 
         frame = None
         try:
-            #DEBUG
-            #print(f">>> recordspace: {recordspace}")
-            #DEBUG
             filepaths = [recordspace.join(recordspace.root, filename) for filename in recordspace.list()]
             frames = [pd.read_parquet(filepath, storage_options=recordspace.filesystem.storage_options) for filepath in filepaths]
-            #DEBUG
-            #for i, frame in enumerate(frames):
-                #print(f"frame: {i} {frame}")
 
             frame = pd.concat(frames) if len(frames) > 0 else pd.DataFrame()
 
-            #DEBUG
-            #print(f"_frame: {_frame}")
-
-            #parquet_dataset = pq.ParquetDataset(recordspace.root, use_legacy_dataset=False, filesystem=recordspace.filesystem)
-            #table = parquet_dataset.read()
-            #frame = table.to_pandas()
         except FileNotFoundError as e:
             #TODO: ensure it is exactly recordspace.root that is missing
             pass
@@ -1320,8 +1304,6 @@ class DBX:
         def __build_batch__(self, tagscope, **batchscope):
             datablock_batchscope = self.datablock_cls.SCOPE(**batchscope)
             datablock_shardroots = self.datablock_batchroots(tagscope, ensure=True)
-            #DEBUG
-            #print(f"__build_batch__: datablock_shardroots: {datablock_shardroots}")
             self.datablock.build(datablock_shardroots, scope=datablock_batchscope, filesystem=self.dataspace.filesystem)
             _ = self.extent_databook(**tagscope)
             return _
@@ -1379,8 +1361,6 @@ class DBX:
         else:
             __topics = [DEFAULT_TOPIC]
 
-        #DEBUG
-        #print(f"------> __topics: {__topics}")
         if hasattr(dbx.datablock_cls, 'VERSION'):
             __version = dbx.datablock_cls.VERSION
         else:
@@ -1423,92 +1403,141 @@ class DBX:
         """
             Assume dbxs are ordered in the dependency order and all have unique aliases that can be used as variable prefixes.
             TODO: build the dependency graph and reorder, if necessary.
+            Examples:
+            * Bash definitions (pic dataspace HOMELAKE)
+            ```
+            export MIRCOHN="datablocks.DBX('datablocks.test.micron.datasets.miRCoHN', 'mircohn').Databuilder(dataspace=datablocks.HOMELAKE).Datablock(verbose=True)"
+            export MIRCOS="datablocks.DBX('datablocks.test.micron.datasets.miRCoStats', 'mircoshn').Databuilder(dataspace=datablocks.HOMELAKE).Datablock(verbose=True).SCOPE(mirco=$MIRCOHN.reader('counts'))"
+            ```
+            * Echo expanded definitions
+            ```
+            dbx.echo "$MIRCOS"
+            ```
+            * Print transcript with line numbers:
+            ```
+            dbx "datablocks.DBX.transcribe($MIRCOS.Databuilder(dataspace=datablocks.HOMELAKE).Datablock(verbose=True), with_env=['HOME'], with_linenos=True)" 
+            ```
+            * Execute transcript (no line numbers allowed)
+                . Note the stderr redirect -- it is necessary as some transcript seems to be output via stderr
+            ```
+            dbx "datablocks.DBX.transcribe($MIRCOS.Databuilder(dataspace=datablocks.HOMELAKE).Datablock(verbose=True), with_env=['HOME'])" 2>&1 | python -
+            ```
         """
-        def repr_roots(filesystem, roots, *, name=None, prefix=''):
+        def transcribe_roots(filesystem, roots, *, prefix=''):
             _roots = ""
             if isinstance(roots, dict):
                 _roots += f"{prefix}{{\n"
                 for key, val in roots.items():
                     prefix_ = prefix + '\t\t'
-                    _roots += f"{prefix}\t{repr(key)}: {repr_roots(filesystem, val, prefix=prefix_)},\n"
+                    _roots += f"{prefix}\t{repr(key)}: {transcribe_roots(filesystem, val, prefix=prefix_)},\n"
                 _roots += f"{prefix}}}"
             elif isinstance(roots, list):
-                _roots += "[" + ", ".join(repr_roots(filesystem, r) for r in roots) + "]"
+                _roots += "[" + ", ".join(transcribe_roots(filesystem, r) for r in roots) + "]"
             else:
-                _roots = f"f{repr(roots)}"
+                _roots = f"f'{roots}'"
             return _roots
 
+        def transcribe_reader(arg):
+            transcript = f"# {tag(arg.dbx)}\n"
 
-        script = ""
+            argfilesystem = arg.dbx.databuilder.dataspace.filesystem
+            if argfilesystem.protocol != "file":
+                argstorage_options = arg.dbx.databuilder.dataspace.storage_options
+                _argfilesystem = signature.Tagger().tag_func("fsspec.filesystem", argfilesystem.protocol, **argstorage_options)
+                transcript += f"{arg.dbx.alias}_filesystem = {_argfilesystem}\n"
+
+            argtagscope = arg.dbx.databuilder._tagscope_(**arg.dbx.scope)
+            if len(argtagscope):
+                transcript += f"{arg.dbx.alias}_scope = {argtagscope}"
+
+            argblockroots = arg.dbx.databuilder.datablock_blockroots(argtagscope)
+            _argblockroots = transcribe_roots(argfilesystem, argblockroots)
+            transcript += f"{arg.dbx.alias}_roots = " + _argblockroots + "\n"
+
+            _argdatablock = Tagger().tag_ctor(arg.dbx.datablock_cls, **arg.dbx.datablock_kwargs)
+            transcript += f"{arg.dbx.alias} = {_argdatablock}\n"
+            argscript =  f"{arg.dbx.alias}_roots, " +\
+                        (f"scope={repr(argtagscope)}), " if len(argtagscope) else "") + \
+                        (f"filesystem={arg.dbx.alias}_filesystem), " if argfilesystem.protocol != 'file' else "")
+            return transcript, argscript
+
         imports = ""
+        env = ""
+        read = ""
+        build = ""
+
         if with_env:
             imports += "import os\n"
         imports += "import fsspec\n"
-
-        #TODO: collect and preload all arg.dbxs
         
         if with_env:
             for ekey in with_env:
-                script += f"{ekey} = os.getenv('{ekey}')\n"
-            if len(with_env):
-                script += "\n"
+                env += f"{ekey} = os.getenv('{ekey}')\n"
+
+        readers = {}
+        readerargs = {}
+
         for dbx in dbxs:
             imports += f"import {dbx.datablock_module_name}\n"
-
-            _datablock = Tagger().tag_ctor(dbx.datablock_cls, **dbx.datablock_kwargs)
-            script += f"# {tag(dbx)}\n"
-            blockscope = dbx.databuilder._blockscope_(**dbx.scope)
-            tagscope = dbx.databuilder._tagscope_(**blockscope)
-            _blockscope_name = f"{dbx.alias}_scope"
-            _blockscope_val  = f"{dbx.datablock_clstr}.SCOPE(\n"
             for key, arg in dbx.scope.items():
                 if isinstance(arg, DBX.Reader):
-                    argdatablock = Tagger().tag_ctor(arg.dbx.datablock_cls, **arg.dbx.datablock_kwargs)
-                    argblockscope = arg.dbx.scope
-                    argfilesystem = arg.dbx.databuilder.dataspace.filesystem
-                    argtagscope = arg.dbx.databuilder._tagscope_(**argblockscope)
-                    argprotocol = arg.dbx.databuilder.dataspace.protocol
-                    argprotocol = argprotocol if argprotocol else "file"
-                    argstorage_options = arg.dbx.databuilder.dataspace.storage_options
-                    _argfilesystem = signature.Tagger().tag_func("fsspec.filesystem", argprotocol, **argstorage_options)
-                    argblockroots = arg.dbx.databuilder.datablock_blockroots(argtagscope)
-                    _blockscope_val += f"\t{key}={argdatablock}.read(\n" + \
-                                       f"\t\t{repr_roots(argfilesystem, argblockroots)},\n" + \
-                                       f"\t\ttopic={repr(arg.topic)}),\n" if arg.topic else '' + \
-                                       f"\t\tscope={repr(argtagscope)}),\n" if len(argtagscope) else '' + \
-                                       f"\t\tfilesystem={repr(_argfilesystem)}),\n" if argprotocol else '' +\
-                                       f")\n"
-                else:
-                    _blockscope_val += f"\t{key}={repr(arg)},\n"
-            _blockscope_val += ")\n"
+                    if arg.dbx.alias is None:
+                        raise ValueError(f"None alias for reader DBX {arg.dbx}")
+                    if arg.dbx.alias not in readers:
+                        readers[arg.dbx.alias] = arg
+
+        for arg in readers.values():
+            _transcript, argscript = transcribe_reader(arg)
+            read += _transcript + "\n"
+            readerargs[arg.dbx.alias] = argscript            
+
+        for dbx in dbxs:
+            _datablock = Tagger().tag_ctor(dbx.datablock_cls, **dbx.datablock_kwargs)
+            build += f"# {tag(dbx)}\n"
+            blockscope = dbx.databuilder._blockscope_(**dbx.scope)
+            tagscope = dbx.databuilder._tagscope_(**blockscope)
+
+            if len(dbx.scope):
+                _blockscope  = f"{dbx.datablock_clstr}.SCOPE(\n"
+                for key, arg in dbx.scope.items():
+                    if isinstance(arg, DBX.Reader):
+                        _blockscope += f"\t{key}={arg.dbx.alias}.read({readerargs[arg.dbx.alias]}topic={repr(arg.topic)}),\n"
+                    else:
+                        _blockscope += f"\t{key}={repr(arg)},\n"
+                _blockscope += ")\n"
+                build += f"{dbx.alias}_scope = {_blockscope}"
             
             blockroots = dbx.databuilder.datablock_blockroots(tagscope)
+
             filesystem = dbx.databuilder.dataspace.filesystem
             if filesystem.protocol != "file":
-                _filesystem_name = f"{dbx.alias}_filesystem"
                 protocol = dbx.databuilder.dataspace.protocol
                 storage_options = dbx.databuilder.dataspace.storage_options
-                _filesystem_val = signature.Tagger().tag_func("fsspec.filesystem", protocol, **storage_options)
-                script += f"{_filesystem_name} = {_filesystem_val}\n"
-        
-            _blockroots = repr_roots(filesystem, blockroots)
-
-            script += f"\n{_blockscope_name} = {_blockscope_val}"
-            script += f"\n{_datablock}.build(\n"  +\
-                      f"\t{_blockroots},\n"  +\
-                      f"\tscope={_blockscope_name},\n" +\
-                      (f"\tfilesystem={_filesystem_name},\n" if filesystem.protocol != "file" else "") +\
+                _filesystem = signature.Tagger().tag_func("fsspec.filesystem", protocol, **storage_options)
+                build += f"{dbx.alias}_filesystem = {_filesystem}\n"
+            _blockroots = transcribe_roots(filesystem, blockroots)
+            build += f"{dbx.alias}_roots = " + _blockroots + "\n"
+            
+            build += f"{_datablock}.build(\n"  +\
+                      f"\t{dbx.alias}_roots,\n"  +\
+                      (f"\tscope={dbx.alias}_scope,\n" if len(dbx.scope) else "") +\
+                      (f"\tfilesystem={dbx.alias}_filesystem,\n" if filesystem.protocol != "file" else "") +\
                       f")\n"
-            script += "\n"
+            build += "\n"
 
-            s = imports + "\n\n" + script
+            script = imports + "\n\n"
+            if len(with_env):
+                script += env + "\n\n"
+            script += read + "\n"
+            script += build
+
             if with_linenos: 
-                lines = s.split('\n')
+                lines = script.split('\n')
                 #width = round(int(math.log(len(lines))))
-                ss = '\n'.join([f"{i:>4}: {ln}" for i, ln in enumerate(lines)]) #TODO: use width for padding
+                script_ = '\n'.join([f"{i:>4}: {ln}" for i, ln in enumerate(lines)]) #TODO: use width for padding
             else:
-                ss = s                 
-        return ss
+                script_ = script                 
+        return script_
             
             
 
