@@ -57,7 +57,7 @@ class miRCoHN:
         scope = scope or self.SCOPE()
 
         if self.verbose:
-            print("Building miRCoHN")
+            print(">>> Building miRCoHN")
 
         framepaths = {}
 
@@ -188,7 +188,7 @@ class miRCoHN:
         topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
         topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
         if self.verbose:
-            print(f"Wrote dataframe to {topic_tgt_path}")
+            print(f">>> Wrote dataframe to {topic_tgt_path}")
         framepaths[topic] = topic_tgt_path
 
         #https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/bin/NIHMS1644540-supplement-4.docx
@@ -201,6 +201,8 @@ class miRCoHN:
              scope: Optional[SCOPE] = None, 
              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),  
     ):
+        if self.verbose:
+            print(f">>> Reading miRCoHN topic {topic}")
         topic_tgt_root = roots[topic] if roots is not None else os.getcwd()
         topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
         topic_frame = pd.read_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
@@ -232,10 +234,10 @@ class miRCoStats:
         """
             Generate a pandas dataframe of miRCo statistics.
         """
-        root = roots or os.getcwd()
+        root = root or os.getcwd()
         
         if self.verbose:
-            print("Building miRCo stats")
+            print(">>> Building miRCo stats")
 
         mc = scope.mirco
         mcmad = (mc - mc.mean()).abs().mean().sort_values(ascending=False)
@@ -243,7 +245,7 @@ class miRCoStats:
         mcmadf_path = root + "/" + self.TGT_FILENAME      
         mcmadf.to_parquet(mcmadf_path, storage_options=filesystem.storage_options)
         if self.verbose:
-            print(f"Wrote dataframe to {mcmadf_path}")
+            print(f">>> Wrote dataframe to {mcmadf_path}")
         return mcmadf_path
     
     def read(self, 

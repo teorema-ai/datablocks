@@ -12,7 +12,7 @@ import os
 import pdb
 import traceback
 
-from typing import Any, TypeVar, Generic, Tuple, Union, List, Dict
+from typing import Any, TypeVar, Generic, Tuple, Union, List, Dict, Optional
 
 import fsspec
 
@@ -29,6 +29,9 @@ from .eval import request
 from .eval.request import Request, Report, LAST, NONE, Graph
 from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL, DATABLOCKS_FILE_LOGGING_POOL
 from .dataspace import Dataspace, DATABLOCKS_DATALAKE
+
+POOL = DATABLOCKS_STDOUT_LOGGING_POOL
+DATALAKE = DATABLOCKS_DATALAKE
 
 
 def _eval(string):
@@ -1416,22 +1419,34 @@ class DBX:
         return _
 
     @staticmethod
-    def transcribe(*dbxs, verbose=False, with_home=False, with_linenos=False, with_display=False):
+    def transcribe(*dbxs, verbose=False, with_env: Optional[list] = None, with_linenos=False, with_display=False):
         """
             Assume dbxs are ordered in the dependency order and all have unique aliases that can be used as variable prefixes.
             TODO: build the dependency graph and reorder, if necessary.
         """
+        def repr_roots(filesystem, roots):
+            if isinstance(roots, dict):
+                _roots = {key: repr_roots(filesystem, val) for key, val in roots.items()}
+            elif isinstance(roots, list):
+                _roots = [repr_roots(filesystem, r) for r in roots]
+            else:
+                _roots = f"f{repr(roots)}"
+            return _roots
+
 
         script = ""
         imports = ""
-        if with_home:
+        if with_env:
             imports += "import os\n"
         imports += "import fsspec\n"
 
         #TODO: collect and preload all arg.dbxs
         
-        if with_home:
-            script += "HOME = os.getenv('HOME')\n\n"
+        if with_env:
+            for ekey in with_env:
+                script += f"{ekey} = os.getenv('{ekey}')\n"
+            if len(with_env):
+                script += "\n"
         for dbx in dbxs:
             imports += f"import {dbx.datablock_module_name}\n"
 
@@ -1443,29 +1458,31 @@ class DBX:
             _blockscope_val  = f"{dbx.datablock_clstr}.SCOPE(\n"
             for key, arg in dbx.scope.items():
                 if isinstance(arg, DBX.Reader):
-                    _argdatablock = Tagger().tag_ctor(arg.dbx.datablock_cls, **arg.dbx.datablock_kwargs)
-                    _argblockscope = arg.dbx.scope
-                    _argtagscope = arg.dbx.databuilder._tagscope_(**_argblockscope)
-                    _argprotocol = arg.dbx.databuilder.dataspace.protocol
-                    _argprotocol = _argprotocol if _argprotocol else "file"
-                    _argstorage_options = arg.dbx.databuilder.dataspace.script_storage_options()
-                    _argfilesystem = signature.Tagger().tag_func("fsspec.filesystem", _argprotocol, **_argstorage_options)
-                    _blockscope_val += f"\t{key}={_argdatablock}.read(\n" + \
-                                       f"{repr(arg.topic)}),\n" + \
-                                       f"{_argtagscope}),\n" + \
-                                       f"{_argfilesystem}),\n" + \
-                                       f"{repr(_argtagscope)},\n" + \
+                    argdatablock = Tagger().tag_ctor(arg.dbx.datablock_cls, **arg.dbx.datablock_kwargs)
+                    argblockscope = arg.dbx.scope
+                    argfilesystem = arg.dbx.databuilder.dataspace.filesystem
+                    argtagscope = arg.dbx.databuilder._tagscope_(**argblockscope)
+                    argprotocol = arg.dbx.databuilder.dataspace.protocol
+                    argprotocol = argprotocol if argprotocol else "file"
+                    argstorage_options = arg.dbx.databuilder.dataspace.storage_options
+                    _argfilesystem = signature.Tagger().tag_func("fsspec.filesystem", argprotocol, **argstorage_options)
+                    argblockroots = arg.dbx.databuilder.datablock_blockroots(argtagscope)
+                    _blockscope_val += f"\t{key}={argdatablock}.read(\n" + \
+                                       f"\t\t{repr_roots(_argfilesystem, argblockroots)},\n" + \
+                                       f"\t\ttopic={repr(arg.topic)}),\n" if arg.topic else '' + \
+                                       f"\t\tscope={repr(argtagscope)}),\n" if len(argtagscope) else '' + \
+                                       f"\t\tfilesystem={repr(_argfilesystem)}),\n" if argprotocol else '' +\
                                        f")\n"
                 else:
                     _blockscope_val += f"\t{key}={repr(arg)},\n"
             _blockscope_val += ")\n"
             
             blockroots = dbx.databuilder.datablock_blockroots(tagscope)
+            filesystem = dbx.databuilder.dataspace.filesystem
             _filesystem_name = f"{dbx.alias}_filesystem"
-            _protocol = dbx.databuilder.dataspace.protocol
-            _protocol = _protocol if _protocol else "file"
-            _storage_options = dbx.databuilder.dataspace.script_storage_options()
-            _filesystem_val = signature.Tagger().tag_func("fsspec.filesystem", _protocol, **_storage_options)
+            protocol = dbx.databuilder.dataspace.protocol
+            storage_options = dbx.databuilder.dataspace.storage_options
+            _filesystem_val = signature.Tagger().tag_func("fsspec.filesystem", protocol, **storage_options)
             script += f"{_filesystem_name} = {_filesystem_val}\n"
             if isinstance(blockroots, str):
                 blockroots_list = [blockroots]
@@ -1475,17 +1492,17 @@ class DBX:
                 blockroots_list = blockroots
             for blockroot in blockroots_list:
                     script += f"{_filesystem_name}.mkdirs({repr(blockroot)}, exist_ok=True)\n"
-            _blockroots = repr(blockroots)
+            _blockroots = repr_roots(filesystem, blockroots)
 
             script += f"\n{_blockscope_name} = {_blockscope_val}"
             script += f"\n{_datablock}.build(\n"  +\
-                      f"\t{_blockscope_name},\n" +\
-                      f"\t{_filesystem_name},\n" +\
-                      f"\t{_blockroots}\n"  +\
+                      f"\t{_blockroots},\n"  +\
+                      f"\tscope={_blockscope_name},\n" +\
+                      f"\tfilesystem={_filesystem_name},\n" +\
                       f")\n"
             script += "\n"
 
-            s = imports + "\n\n\n" + script
+            s = imports + "\n\n" + script
             if with_linenos: 
                 lines = s.split('\n')
                 #width = round(int(math.log(len(lines))))

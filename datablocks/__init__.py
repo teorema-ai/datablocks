@@ -13,7 +13,7 @@ from datablocks.config import DATABLOCKS_LOG_LEVEL
 logging.basicConfig(level=DATABLOCKS_LOG_LEVEL)
 
 from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL, DATABLOCKS_FILE_LOGGING_POOL
-from .dataspace import Dataspace, DATABLOCKS_DATALAKE
+from .dataspace import Dataspace, DATABLOCKS_DATALAKE, DATALAKE, HOMELAKE
 from .datablock import DBX
 
 

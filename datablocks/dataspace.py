@@ -87,21 +87,25 @@ class Dataspace:
     def __init__(self,
                  url,
                  *,
-                 storage_options={}, 
-                 pic={}):
+                 storage_options={},
+                 pic=False, 
+    ):
         self.__setstate__((url, storage_options, pic))
 
     def clone(self, 
               url=None,
               *,
               storage_options=None,
-              pic=None):
+              pic=False,
+    ):
         url = url or self.url
-        kwargs = dict(storage_options=storage_options or self.storage_options,
-                      pic=pic or self.pic
+        kwargs = dict(storage_options=storage_options or self.storage_options, pic=pic,
         )   
         clone = Dataspace(url, **kwargs)
         return clone
+
+    def with_pic(self, pic=True):
+        return self.clone(pic=pic)
 
     def __delete__(self):
         if isinstance(self._temporary, tempfile.TemporaryDirectory):
@@ -123,22 +127,6 @@ class Dataspace:
         fs = FS(self.filesystem)
         return fs
 
-    def script_url(self):
-        if 'url' in self.pic:
-            keystr = self.pic['url'][0]
-            valstr = "{" + self.pic['url'][1] + "}"
-            _ = self.url.replace(keystr, valstr)
-        else:
-            _ = self.url
-        return _
-
-    def script_storage_options(self):
-        if 'storage_options' in self.pic:
-            _ = self.pic['storage_options']
-        else:
-            _ = self.storage_options
-        return _
-
     @staticmethod
     def filesystem_protocol(filesystem):
         protocol = filesystem.protocol
@@ -149,7 +137,7 @@ class Dataspace:
     @staticmethod
     def filesystem_url(filesystem, path):
         protocol = Dataspace.filesystem_protocol(filesystem)
-        if not protocol:
+        if protocol == 'file':
             filesystem_url = path
         else:
             filesystem_url = f"{protocol}://{path}"
@@ -158,7 +146,7 @@ class Dataspace:
     @staticmethod
     def from_filesystem(filesystem):
         protocol = Dataspace.filesystem_protocol(filesystem)
-        url = f"{protocol}://" if protocol is not None else ""
+        url = f"{protocol}://" if protocol != 'file' else ""
         return Dataspace(url, storage_options=filesystem.storage_options)
 
     @staticmethod
@@ -166,32 +154,31 @@ class Dataspace:
         protocol = info['protocol']
         path = info['path']
         storage_options = info['storage_options']
-        url = f"{protocol}://{path}" if protocol is not None else path
+        url = f"{protocol}://{path}" if protocol != 'file' else path
         dataspace = Dataspace(url, storage_options=storage_options)
         return dataspace
 
     def __getstate__(self):
        if self._temporary:
             raise ValueError(f"Cannot __getstate__ of  temporary Dataspace {self}")
-       return self.url, self.storage_options, self.pic
+       return self.url, self.storage_options, self.pic,
 
     def __setstate__(self, state):
-        self.url, self.storage_options, self.pic = state
+        self.url, self.storage_options, self.pic, = state
         self._temporary = None
         p = self.url.find('://')
         if p != -1:
             protocol = self.url[:p]
             path = self.url[p+3:]
         else:
-            protocol = None
+            protocol = 'file'
             path = self.url
         self.protocol = protocol
 
-        if self.protocol is not None:
+        if self.protocol != 'file':
             logger.debug(f"Dataspace {self.url} using storage_options {self.storage_options}")
             self.filesystem = fsspec.filesystem(protocol=self.protocol, **self.storage_options)
         else:
-            #self.filesystem = fsspec.implementations.local.LocalFileSystem()
             self.filesystem = fsspec.filesystem('file')
         self.root = path
         self._path = self.root # DEPRECATE        self._lock = None
@@ -205,7 +192,7 @@ class Dataspace:
     def filesystem_from_info(self, info):
         protocol = info['protocol']
         storage_options = info['storage_options']
-        if protocol is not None:
+        if protocol != 'file':
             logger.debug(f"filesystem with protocol {protocol} using storage_options {storage_options}")
             filesystem = fsspec.filesystem(protocol=protocol, **storage_options)
         else:
@@ -224,7 +211,7 @@ class Dataspace:
         filesystem_info = self.get_filesystem_info()
         sub_filesystem_info = copy.deepcopy(filesystem_info)
         sub_filesystem_info['path'] = self.join(filesystem_info['path'], *args)
-        subspace = Dataspace.from_filesystem_info(sub_filesystem_info)
+        subspace = Dataspace.from_filesystem_info(sub_filesystem_info).with_pic(self.pic)
         subspace._temporary = None if self._temporary is None else True
         return subspace
 
@@ -539,3 +526,5 @@ class Dataspace:
 
 
 DATABLOCKS_DATALAKE = Dataspace(config.DATABLOCKS_DATALAKE_URL)
+DATALAKE = DATABLOCKS_DATALAKE
+HOMELAKE = DATALAKE.clone(url=os.path.join("{HOME}", ".cache", "datalake"), pic=True)
