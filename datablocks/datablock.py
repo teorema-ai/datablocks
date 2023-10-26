@@ -1424,11 +1424,16 @@ class DBX:
             Assume dbxs are ordered in the dependency order and all have unique aliases that can be used as variable prefixes.
             TODO: build the dependency graph and reorder, if necessary.
         """
-        def repr_roots(filesystem, roots):
+        def repr_roots(filesystem, roots, *, name=None, prefix=''):
+            _roots = ""
             if isinstance(roots, dict):
-                _roots = {key: repr_roots(filesystem, val) for key, val in roots.items()}
+                _roots += f"{prefix}{{\n"
+                for key, val in roots.items():
+                    prefix_ = prefix + '\t\t'
+                    _roots += f"{prefix}\t{repr(key)}: {repr_roots(filesystem, val, prefix=prefix_)},\n"
+                _roots += f"{prefix}}}"
             elif isinstance(roots, list):
-                _roots = [repr_roots(filesystem, r) for r in roots]
+                _roots += "[" + ", ".join(repr_roots(filesystem, r) for r in roots) + "]"
             else:
                 _roots = f"f{repr(roots)}"
             return _roots
@@ -1468,7 +1473,7 @@ class DBX:
                     _argfilesystem = signature.Tagger().tag_func("fsspec.filesystem", argprotocol, **argstorage_options)
                     argblockroots = arg.dbx.databuilder.datablock_blockroots(argtagscope)
                     _blockscope_val += f"\t{key}={argdatablock}.read(\n" + \
-                                       f"\t\t{repr_roots(_argfilesystem, argblockroots)},\n" + \
+                                       f"\t\t{repr_roots(argfilesystem, argblockroots)},\n" + \
                                        f"\t\ttopic={repr(arg.topic)}),\n" if arg.topic else '' + \
                                        f"\t\tscope={repr(argtagscope)}),\n" if len(argtagscope) else '' + \
                                        f"\t\tfilesystem={repr(_argfilesystem)}),\n" if argprotocol else '' +\
@@ -1479,26 +1484,20 @@ class DBX:
             
             blockroots = dbx.databuilder.datablock_blockroots(tagscope)
             filesystem = dbx.databuilder.dataspace.filesystem
-            _filesystem_name = f"{dbx.alias}_filesystem"
-            protocol = dbx.databuilder.dataspace.protocol
-            storage_options = dbx.databuilder.dataspace.storage_options
-            _filesystem_val = signature.Tagger().tag_func("fsspec.filesystem", protocol, **storage_options)
-            script += f"{_filesystem_name} = {_filesystem_val}\n"
-            if isinstance(blockroots, str):
-                blockroots_list = [blockroots]
-            if isinstance(blockroots, dict):
-                blockroots_list = list(blockroots.values())
-            if isinstance(blockroots, list):
-                blockroots_list = blockroots
-            for blockroot in blockroots_list:
-                    script += f"{_filesystem_name}.mkdirs({repr(blockroot)}, exist_ok=True)\n"
+            if filesystem.protocol != "file":
+                _filesystem_name = f"{dbx.alias}_filesystem"
+                protocol = dbx.databuilder.dataspace.protocol
+                storage_options = dbx.databuilder.dataspace.storage_options
+                _filesystem_val = signature.Tagger().tag_func("fsspec.filesystem", protocol, **storage_options)
+                script += f"{_filesystem_name} = {_filesystem_val}\n"
+        
             _blockroots = repr_roots(filesystem, blockroots)
 
             script += f"\n{_blockscope_name} = {_blockscope_val}"
             script += f"\n{_datablock}.build(\n"  +\
                       f"\t{_blockroots},\n"  +\
                       f"\tscope={_blockscope_name},\n" +\
-                      f"\tfilesystem={_filesystem_name},\n" +\
+                      (f"\tfilesystem={_filesystem_name},\n" if filesystem.protocol != "file" else "") +\
                       f")\n"
             script += "\n"
 

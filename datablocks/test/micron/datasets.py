@@ -55,6 +55,10 @@ class miRCoHN:
             Generate a pandas dataframe of TCGA HNSC mature MiRNA sequence samples.
         """
         scope = scope or self.SCOPE()
+        if roots is None and filesystem.protocol != 'file':
+            filesystem = fsspec.AbstractFileSystem = fsspec.filesystem("file")
+            if self.verbose:
+                print(f"Resetting filesystem to {filesystem} because None 'roots' default to 'os.getcwd()'")
 
         if self.verbose:
             print(">>> Building miRCoHN")
@@ -88,6 +92,7 @@ class miRCoHN:
             counts_frame.columns = mindex
 
             topic_tgt_root = roots[topic] if roots is not None else os.getcwd()
+            filesystem.mkdirs(topic_tgt_root, exist_ok=True)
             topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
             topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
             if self.verbose:
@@ -151,6 +156,7 @@ class miRCoHN:
         ]
         topic_frame = pivots_frame = pd.DataFrame({'pivots': pivot_list})
         topic_tgt_root = roots[topic] if roots is not None else os.getcwd()
+        filesystem.makedirs(topic_tgt_root, exist_ok=True)
         topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
         topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
         if self.verbose:
@@ -164,6 +170,7 @@ class miRCoHN:
         topic_frame = controlsf = pd.DataFrame({'is_control': controls})
 
         topic_tgt_root = roots[topic] if roots is not None else os.getcwd()
+        filesystem.makedirs(topic_tgt_root, exist_ok=True)
         topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
         topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
         if self.verbose:
@@ -185,6 +192,7 @@ class miRCoHN:
         topic_frame = downregulated_frame = pd.DataFrame.from_records([{'epithelial': ','.join(list(epithelial_downregulated_infixes)), 
                                                                         'stromal': ','.join(list(stromal_downregulated_infixes))}])
         topic_tgt_root = roots[topic] if roots is not None else os.getcwd()
+        filesystem.makedirs(topic_tgt_root, exist_ok=True)
         topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
         topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
         if self.verbose:
