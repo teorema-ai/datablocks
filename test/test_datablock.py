@@ -1,4 +1,8 @@
 import datablocks
+import datablocks.dataspace
+
+
+TESTLAKE = datablocks.dataspace.Dataspace.temporary()
 
 
 def test_micron():
@@ -11,10 +15,12 @@ def test_micron():
             print(dbx.read(topic))
         else:
             print(dbx.read())
-    
-    MIRCOHN = datablocks.DBX('datablocks.test.micron.datasets.miRCoHN', 'mircohn')
+    MIRCOHN = datablocks.DBX('datablocks.test.micron.datasets.miRCoHN', 'mircohn')\
+        .Databuilder(dataspace=TESTLAKE)
     _test(MIRCOHN, 'counts')
 
-    MIRCOSHN = datablocks.DBX('datablocks.test.micron.datasets.miRCoStats', 'mircoshn').SCOPE(mirco=MIRCOHN.data('counts'))
+    MIRCOSHN = datablocks.DBX('datablocks.test.micron.datasets.miRCoStats', 'mircoshn')\
+        .Databuilder(dataspace=TESTLAKE)\
+        .SCOPE(mirco=MIRCOHN.READ('counts'))
     _test(MIRCOSHN)
 

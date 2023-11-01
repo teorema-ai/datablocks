@@ -266,3 +266,108 @@ class miRCoStats:
         mcmadf_path = os.path.join(mcmadf_root, self.TGT_FILENAME)
         mcmadf_frame = pd.read_parquet(mcmadf_path, storage_options=filesystem.storage_options)
         return mcmadf_frame
+    
+
+class miRNA:
+    VERSION = "0.0.1"
+
+    @dataclass
+    class SCOPE:
+        train_fraction: int = 0.9
+
+    MIRNA_DATASET_URL = "https://mirbase.org/download"
+    MIRNA_DATASET_FILENAME = f"miRNA"
+
+    def __init__(self, verbose=False, debug=False, rm_tmp=True, ):
+        self.verbose = verbose
+        self.debug = debug
+        self.rm_tmp = rm_tmp
+    
+    def build(self,
+              root,
+              *,
+              scope: SCOPE = SCOPE(),
+              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
+        
+        root = root or os.getcwd()
+        fs = fsspec.filesystem('http')
+
+        remote_dat = self.MIRNA_DATASET_URL + '/' + f'{self.MIRNA_DATASET_FILENAME}.dat'
+        local_dat = os.path.join(root, f'{self.MIRNA_DATASET_FILENAME}.dat')
+        if not os.path.isfile(local_dat):
+            if self.verbose:
+                print(f"Downloading {remote_dat} to {local_dat}")
+            fs.get(remote_dat, local_dat, callback=TqdmCallback())
+        if self.verbose:
+            print(f"Parsing local copy {local_dat}")
+
+        if local_dat.endswith('.gz'):
+            with gzip.open(local_dat, 'r') as datfile:
+                datstr = datfile.read().decode()
+                frame = self._build_frame(datstr)
+        else:
+            with open(local_dat, 'r') as datfile:
+                datstr = datfile.read()
+                frame = self._build_frame(datstr)
+
+        path = self.path(root)
+        frame.to_parquet(path, storage_options=filesystem.storage_options)
+
+    def read(self,
+              root,
+              *,
+              scope: SCOPE = SCOPE(),
+              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")
+    ):
+        path = self.path(root)
+        frame = pd.read_parquet(path, storage_options=filesystem.storage_options)
+        return frame
+
+    def path(self, root):
+        path = os.path.join(root, f"{self.MIRNA_DATASET_FILENAME}.parquet",) 
+        return path
+
+    
+    def _build_frame(self, mdstr):
+        recs = miRNA._parse_records(mdstr)
+        f = pd.DataFrame.from_records(recs)
+        frame = f.sort_values('ID').reset_index(drop=True)
+        if self.verbose:
+            print(f"Built dataframe")
+        return frame
+
+    @staticmethod     
+    def _parse_records(mdstr):
+        _mdstrs = mdstr.split('\nID')
+        mdstrs = [f"ID{s}" for s in _mdstrs]
+        _prerecs = [miRNA._parse_prerecord(s) for s in mdstrs]
+        prerecs = [pr for pr in _prerecs if pr['DE'].find('sapiens') != -1]
+        recs = [miRNA._prerecord_to_record(pr) for pr in prerecs]
+        return recs
+
+    @staticmethod
+    def _parse_prerecord(recstr):
+        sqstart = recstr.find('SQ')+2
+        sqend = recstr.find('//')
+        sq = recstr[sqstart:sqend]
+        recstrs = recstr.split('\n')
+        rec_ = {s[:2]: s[3:] for s in recstrs}
+        _rec = {k: v.strip() for k, v in rec_.items() if k in ['ID', 'AC', 'DE']}
+        _rec['SQ'] = sq
+        return _rec
+
+    @staticmethod
+    def _prerecord_to_record(prerec):
+        rec = {}
+        _id = prerec['ID'].split(' ')[0]
+        rec['ID'] = _id
+        _ac = prerec['AC']
+        rec['Accession'] = _ac[:-1] if _ac[-1] == ';' else _ac
+        sq_ = prerec['SQ']
+        sq_strs_ = sq_.split('\n')[1:-1]
+        _sq = ''.join([s[:-2].strip() for s in sq_strs_])
+        sq = ''.join([s.strip() for s in _sq.split(' ')])
+        rec['sequence'] = ''.join([c for c in sq.upper() if c in ['A', 'C', 'G', 'U']])
+        return rec
+
+    

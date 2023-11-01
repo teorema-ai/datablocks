@@ -24,7 +24,7 @@ import pandas as pd
 from . import signature
 from .signature import Signature, ctor_name
 from .signature import tag, Tagger
-from .utils import DEPRECATED, OVERRIDE, microseconds_since_epoch, datetime_to_microsecond_str
+from .utils import ALIAS, DEPRECATED, OVERRIDE, microseconds_since_epoch, datetime_to_microsecond_str
 from .eval import request
 from .eval.request import Request, Report, LAST, NONE, Graph
 from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL, DATABLOCKS_FILE_LOGGING_POOL
@@ -402,6 +402,10 @@ class Databuilder(Anchored, Scoped):
             if valid:
                 extent_datapage[kvhandle] = shard_pathset
         return extent_datapage
+    
+    def extent_datapage_request(self, topic, **scope):
+        _ = Request(self.extent_datapage, topic, **scope)
+        return _
 
     #RENAME: -> block_page_shortfall
     def shortfall_datapage(self, topic, **scope):
@@ -959,6 +963,7 @@ class Databuilder(Anchored, Scoped):
 
     @OVERRIDE
     # tagbatchscope is necessary since batchscope will be expanded before being passed to _read_block_
+    #RENAME -> read_datapage_request
     def read_databook_request(self, topic, **blockscope):
         tagscope = self._tagscope_(**blockscope)
         request = Request(self._read_block_, tagscope, topic, **blockscope)
@@ -1011,14 +1016,33 @@ class DBX:
     """
 
     class Reader(request.Proxy):
-        def __init__(self, *, locator):
-            """
-                locator: str | tuple[DBX, topic:str]
-            """
-            if isinstance(locator, dict):
-                self.dbx, self.topic = locator['dbx'], locator['topic']
-            elif isinstance(locator, str):
-                self.dbx, self.topic = DBX.parse_locator(locator)
+        @staticmethod
+        def parse_url(url: str, **datablock_kwargs):
+            parts = url.split(":")
+            head = parts[0]
+            if len(parts) == 1:
+                topic = None
+            elif len(parts) == 2:
+                topic = parts[-1]
+            else:
+                raise ValueError(f"Malformed url: {url}")
+            hparts = head.split('@')
+            datablock_clstr = hparts[0]
+            if len(hparts) == 1:
+                alias = None
+            elif len(hparts) == 2:
+                alias = hparts[-1]
+            else:
+                raise ValueError(f"Malformed url: {url}")
+            dbx = DBX(datablock_clstr, alias, **datablock_kwargs)
+            return dbx, topic
+
+        def __init__(self, url=None, *, dbx, topic):
+            self.url = url
+            if self.url is None:
+                self.dbx, self.topic = dbx, topic
+            else:
+                self.dbx, self.topic, _ = self.parse_url(url)
 
         @property
         def request(self):
@@ -1031,28 +1055,69 @@ class DBX:
         
         def __eq__(self, other):
             return not self.__ne__(other)
- 
+        
+        def __str__(self):
+            _ = self.__repr__()
+            return _ 
+        
+        def __repr__(self):
+            if self.url is not None:
+                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, self.url)
+            else:
+                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, dbx=self.dbx, topic=self.topic)
+            return _
+
         def __tag__(self):
             tag__ = f"{DBX_PREFIX}.{self.dbx.datablock_clstr}"
             tag_ = tag__+f"@{self.dbx.alias}" if self.dbx.alias is not None else tag__
             tag = tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else tag_
             return tag
+    
+    class Extenter(request.Proxy):
+        @staticmethod
+        def parse_url(url: str, **datablock_kwargs):
+            if not url.startswith("[") or not url.startswith("]"):
+                raise ValueError(f"Malformed url: {url}")
+            _ = Reader.parse_url(url[1:-1], **datablock_kwargs)
+            return _
+        
+        def __init__(self, url=None, *, dbx, topic):
+            self.url = url
+            if self.url is None:
+                self.dbx, self.topic = dbx, topic
+            else:
+                self.dbx, self.topic = self.parse_url(url)
+
+        @property
+        def request(self):
+            _ = self.dbx.extent_request(topic=self.topic)
+            return _
+        
+        def __ne__(self, other):
+            return not isinstance(other, self.__class__) or \
+                self.request != other.request
+        
+        def __eq__(self, other):
+            return not self.__ne__(other)
         
         def __str__(self):
-            #TODO: .repr_ctor(..., locator=self.__tag__())
             _ = self.__repr__()
             return _ 
+        
         def __repr__(self):
-            _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, locator=dict(dbx=self.dbx, topic=self.topic))
+            if self.url is not None:
+                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, self.url)
+            else:
+                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, dbx=self.dbx, topic=self.topic)
             return _
-    
-    @staticmethod
-    def parse_locator(locator: str, **datablock_kwargs):
-        parts = locator.split(":")
-        datablock_clstr, alias = head.split('@')
-        dbx = DBX(datablock_clstr, alias, **datablock_kwargs)
-        return dbx, topic
 
+        def __tag__(self):
+            _tag__ = f"{DBX_PREFIX}.{self.dbx.datablock_clstr}"
+            _tag_ = _tag__+f"@{self.dbx.alias}" if self.dbx.alias is not None else _tag__
+            _tag = _tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else _tag_
+            tag = f"[{_tag}]"
+            return tag
+    
     @staticmethod
     def show_datablocks(*, dataspace=DATABLOCKS_DATALAKE, pretty_print=True):
         def _chase_anchors(_dataspace, _anchorchain=()):
@@ -1203,20 +1268,35 @@ class DBX:
         result = self.databuilder.build(**self.scope)
         return result
 
+    def extent_request(self, topic=DEFAULT_TOPIC):
+        if self.scope is None:
+            raise ValueError(f"{self} of version {self.version} has not been built yet")
+        request = self.databuilder.extent_datapage_request(topic, **self.scope)
+        return request
+
     def read_request(self, topic=DEFAULT_TOPIC):
         if self.scope is None:
             raise ValueError(f"{self} of version {self.version} has not been built yet")
         request = self.databuilder.read_databook_request(topic, **self.scope)\
-            .set(summary=lambda _: self.extent()[topic])
+            .set(summary=lambda _: self.extent()[topic]) # TODO: #REMOVE?
         return request
+
+    def EXTENT(self, topic=None):
+        _ = DBX.Extenter(dbx=self, topic=topic)
+        return _
+
+    def READ(self, topic=None):
+        _ = DBX.Reader(dbx=self, topic=topic)
+        return _
     
+    @ALIAS
     def data(self, topic=None):
-        reader = self.reader(topic)
-        return reader
+        _ = self.READ(topic)
+        return _
 
     def reader(self, topic=DEFAULT_TOPIC):
-        reader = DBX.Reader(locator=dict(dbx=self, topic=topic))
-        return reader
+        _ = self.READ(topic)
+        return _
     
     def read(self, topic=DEFAULT_TOPIC):
         read_request = self.read_request(topic)
