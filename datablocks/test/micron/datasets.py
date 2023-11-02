@@ -1,21 +1,29 @@
 from dataclasses import dataclass
+import os
 import tarfile
 import tempfile
 from typing import Optional, Dict
 
-import os
-
 import fsspec
 from fsspec.callbacks import TqdmCallback
 
-
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
+
+import matplotlib.pyplot as plt
+import umap
 
 import ray
 
 
 DATALAKE = os.path.join(os.environ['HOME'], '.cache', 'datalake', 'micron', 'dataset')
+
+
+class Dataset:
+    def print_verbose(self, s):
+        if self.verbose:
+            print(f">>> {self.__class__.__qualname__}: {s}")
 
 
 class miRCoHN:
@@ -44,6 +52,17 @@ class miRCoHN:
     def __init__(self, *, debug=False, verbose=False):
         self.debug = debug
         self.verbose = verbose
+
+    def display(
+             roots: Optional[Dict[str, str]] = None,
+             *, 
+             scope: Optional[SCOPE] = None, 
+             filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
+    ):
+        cof = self.read(roots, scope=scope, filesystem=filesystem)
+        ufit = umap.UMAP()
+        ucof = ufit.fit_transform(cof.fillna(0.0))
+        plt.scatter(ucof[:, 0], ucof[:, 1])
 
     def build(self, 
              roots: Optional[Dict[str, str]] = None,
@@ -206,7 +225,6 @@ class miRCoHN:
              roots: Optional[Dict[str, str]] = None,
              *, 
              topic: str,
-             scope: Optional[SCOPE] = None, 
              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),  
     ):
         if self.verbose:
@@ -259,7 +277,6 @@ class miRCoStats:
     def read(self, 
              root: Optional[str] = None,
              *, 
-             scope: Optional[SCOPE] = None, 
              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"), 
     ):
         mcmadf_root = root or os.getcwd()
@@ -273,7 +290,7 @@ class miRNA:
 
     @dataclass
     class SCOPE:
-        train_fraction: int = 0.9
+        pass
 
     MIRNA_DATASET_URL = "https://mirbase.org/download"
     MIRNA_DATASET_FILENAME = f"miRNA"
@@ -316,9 +333,9 @@ class miRNA:
     def read(self,
               root,
               *,
-              scope: SCOPE = SCOPE(),
               filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")
     ):
+        root = root or os.getcwd()
         path = self.path(root)
         frame = pd.read_parquet(path, storage_options=filesystem.storage_options)
         return frame
@@ -369,5 +386,102 @@ class miRNA:
         sq = ''.join([s.strip() for s in _sq.split(' ')])
         rec['sequence'] = ''.join([c for c in sq.upper() if c in ['A', 'C', 'G', 'U']])
         return rec
+
+
+class miRCoSeqs(Dataset):
+    """
+        Sequences sampled at count frequences
+    """
+    VERSION = "0.1.0"
+    
+    @dataclass
+    class SCOPE:
+        counts: pd.DataFrame
+        seqs: pd.DataFrame
+        nepochs: int = 5
+        nsamples_per_record: int = 200
+        npermutations: int = 1000
+
+    MIRCOSEQS_DATASET_FILENAME = f"miRCoSeqs"
+
+    def __init__(self, verbose=False, debug=False, rm_tmp=True, ):
+        self.verbose = verbose
+        self.debug = debug
+        self.rm_tmp = rm_tmp
+    
+    def build(self,
+              root: str,
+              *,
+              scope: SCOPE,
+              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
+        
+        root = root or os.getcwd()
+
+        cof = scope.counts
+        cofc1 = [c[5:] for c in cof.columns.get_level_values(1).tolist()]
+        _acof = np.exp(cof.copy()*np.log(2))
+        _acof.columns = cofc1
+
+        seqf = scope.seqs
+        accession = seqf.Accession.apply(lambda _: _[2:])
+        _seqf = seqf.copy()
+        _seqf['accession'] = accession
+        _aseqf = _seqf.set_index('accession')
+
+        acols = [i for i in _aseqf.index if i in _acof.columns]
+        acof = _acof[acols]
+
+        acof0 = acof[acols].fillna(0.0)
+        acof1 = acof0.div(acof0.sum(axis=1), axis=0)
+
+        rng = np.random.default_rng()
+        
+        aseqs = _aseqf.loc[acols, 'sequence']
+        aseqlist = aseqs.tolist()
+        rng = np.random.default_rng()
+        _samples = []
+        if self.verbose:
+            print(f">>> Generating samples from {scope.nepochs} epochs")
+        for epoch in range(scope.nepochs):
+            if self.verbose:
+                print(f">>> epoch {epoch}")
+            for _, rec in acof1.iterrows():
+                _samplecounts = rng.multinomial(scope.nsamples_per_record, rec)
+                for i, c in enumerate(_samplecounts):
+                    if c == 0: continue
+                    _samples += aseqlist[i:i+1]*c
+        self.print_verbose(f"Generated {len(_samples)} samples")
+        samples_ = np.array(_samples)
+        perm = rng.permutation(len(samples_))
+        samples = samples_
+        self.print_verbose(f"Randomizing {len(_samples)} samples using {scope.npermutations} permutations")
+        for i in range(scope.npermutations):
+            samples = samples[perm]
+
+        path = self.path(root)
+        with open(path, 'wb') as f:
+            if self.verbose:
+                print(f">>> Writing {len(samples)} to {path}")
+            f.writelines(samples)
+
+    def read(self,
+              root,
+              *,
+              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")
+    ):
+        root = root or os.getcwd()
+        path = self.path(root)
+        with open(path, 'rb') as f:
+            useqs = f.readlines()
+        self.print_verbose(f"Read {len(useqs)} from path")
+        return useqs
+
+    def path(self, root):
+        path = os.path.join(root, f"{self.MIRCOSEQS_DATASET_FILENAME}.txt",) 
+        return path
+
+    
+
+    
 
     

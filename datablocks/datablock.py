@@ -841,6 +841,9 @@ class Databuilder(Anchored, Scoped):
                 print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: Writing build record at lifecycle_stage {lifecycle_stage.name} to {record_filepath}")
             record_frame.to_parquet(record_filepath, storage_options=recordspace.storage_options)
         return _write_record_lifecycle_callback
+    
+    def display(self, **scope):
+        raise NotImplementedError
 
     def build_request(self, **scope):
         request = Request(self.build, **scope).apply(self.pool)
@@ -955,8 +958,7 @@ class Databuilder(Anchored, Scoped):
         raise NotImplementedError()
 
     def read(self, topic=None, **blockscope):
-        _blockscope = self._blockscope_(**blockscope)
-        request = self.read_databook_request(topic, **_blockscope)
+        request = self.read_databook_request(topic, **blockscope)
         response = request.evaluate()
         result = response.result()
         return result
@@ -965,12 +967,13 @@ class Databuilder(Anchored, Scoped):
     # tagbatchscope is necessary since batchscope will be expanded before being passed to _read_block_
     #RENAME -> read_datapage_request
     def read_databook_request(self, topic, **blockscope):
-        tagscope = self._tagscope_(**blockscope)
-        request = Request(self._read_block_, tagscope, topic, **blockscope)
+        _blockscope = self._blockscope_(**blockscope)
+        _tagscope = self._tagscope_(**_blockscope)
+        request = Request(self._read_block_, _tagscope, topic)
         return request
     
     @OVERRIDE
-    def _read_block_(self, tagscope, topic, blockscope):
+    def _read_block_(self, tagscope, topic):
         raise NotImplementedError()
     
     def UNSAFE_clear_records(self):
@@ -1267,7 +1270,11 @@ class DBX:
     def build(self):
         result = self.databuilder.build(**self.scope)
         return result
-
+    
+    def display(self):
+        _ = self.databuilder.display_batch(**self.scope)
+        return _ 
+    
     def extent_request(self, topic=DEFAULT_TOPIC):
         if self.scope is None:
             raise ValueError(f"{self} of version {self.version} has not been built yet")
@@ -1321,6 +1328,10 @@ class DBX:
 
     def metric(self, topic=None):
         _ = self.extent_metric()
+        return _
+    
+    def UNSAFE_clear(self):
+        _ = self.databuilder.UNSAFE_clear(**self.scope)
         return _
     
     def _validate_subscope(self, **subscope):
@@ -1388,15 +1399,22 @@ class DBX:
             _ = self.extent_databook(**tagscope)
             return _
 
-        def __read_block__(self, tagscope, topic, **blockscope):
+        def __display_batch__(self, tagscope, **batchscope):
+            if not hasattr(self.datablock, 'display'):
+                raise NotImplementedError(f"Class {self.datablock_clstr} does not implement '.display()'")
+            datablock_batchscope = self.datablock_cls.SCOPE(**batchscope)
+            datablock_shardroots = self.datablock_batchroots(tagscope, ensure=True)
+            _ = self.datablock.display(datablock_shardroots, scope=datablock_batchscope, filesystem=self.dataspace.filesystem)
+            return _
+
+        def __read_block__(self, tagscope, topic):
             # tagscope can be a list, opaque to the Request evaluation mechanism, but batchscope must be **-expanded to allow Request mechanism to evaluate the kwargs
-            datablock_blockscope = self.datablock_cls.SCOPE(**blockscope)
             datablock_blockroots = self.datablock_blockroots(tagscope)
             if topic == None:
                 assert not hasattr(self.datablock, 'TOPICS'), f"__read_block__: None topic when datablock.TOPICS == {self.datablock.TOPICS} "
-                _ = self.datablock.read(datablock_blockroots, scope=datablock_blockscope, filesystem=self.dataspace.filesystem)
+                _ = self.datablock.read(datablock_blockroots, filesystem=self.dataspace.filesystem)
             else:
-                _ = self.datablock.read(datablock_blockroots, topic=topic, scope=datablock_blockscope, filesystem=self.dataspace.filesystem)
+                _ = self.datablock.read(datablock_blockroots, topic=topic, filesystem=self.dataspace.filesystem)
             return _
 
         def __extent_shard_valid__(self, topic, tagshardscope):
@@ -1462,6 +1480,7 @@ class DBX:
                     'datablock_shardroots': __datablock_shardroots,
                     '_build_batch_': __build_batch__,
                     '_read_block_':  __read_block__,
+                    'display_batch': __display_batch__,
         }
         if hasattr(dbx.datablock_cls, 'valid'):
             databuilder_classdict['_extent_shard_valid_'] = __extent_shard_valid__
