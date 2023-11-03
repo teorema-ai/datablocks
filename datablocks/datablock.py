@@ -295,7 +295,8 @@ class Databuilder(Anchored, Scoped):
                  rebuild=False,
                  verbose=False,
                  debug=False,
-                 pool=DATABLOCKS_STDOUT_LOGGING_POOL):
+                 pool=DATABLOCKS_STDOUT_LOGGING_POOL,
+    ):
         Anchored.__init__(self)
         Scoped.__init__(self)
         self.alias = alias
@@ -355,9 +356,7 @@ class Databuilder(Anchored, Scoped):
         return self.topics
 
     #TODO: #MOVE -> DBX.show_version()
-    def get_version(self, print=False):
-        if print:
-            __build_class__['print'](self.topics)
+    def get_version(self):
         return self.version
 
     #RENAME: -> block_page_intent
@@ -1037,12 +1036,18 @@ class DBX:
             dbx = DBX(datablock_clstr, alias, **datablock_kwargs)
             return dbx, topic
 
-        def __init__(self, url=None, *, dbx, topic):
+        def __init__(self, url=None, *, dbx, topic, pic=False):
             self.url = url
             if self.url is None:
                 self.dbx, self.topic = dbx, topic
             else:
                 self.dbx, self.topic, _ = self.parse_url(url)
+            self.pic = pic
+            self.dbx = self.dbx.with_pic(pic=pic)
+
+        def with_pic(self, pic=True):
+            _ = DBX.Reader(self.url, dbx=self.dbx, topic=self.topic, pic=pic)
+            return _
 
         @property
         def request(self):
@@ -1078,15 +1083,20 @@ class DBX:
         def parse_url(url: str, **datablock_kwargs):
             if not url.startswith("[") or not url.startswith("]"):
                 raise ValueError(f"Malformed url: {url}")
-            _ = Reader.parse_url(url[1:-1], **datablock_kwargs)
+            _ = DBX.Extenter.parse_url(url[1:-1], **datablock_kwargs)
             return _
         
-        def __init__(self, url=None, *, dbx, topic):
+        def __init__(self, url=None, *, dbx, topic, pic=False):
             self.url = url
             if self.url is None:
                 self.dbx, self.topic = dbx, topic
             else:
                 self.dbx, self.topic = self.parse_url(url)
+            self.pic = pic
+
+        def with_pic(self, pic=True):
+            _ = DBX.Extenter(self.url, dbx=self.dbx, topic=self.topic, pic=pic)
+            return _
 
         @property
         def request(self):
@@ -1210,6 +1220,45 @@ class DBX:
             self.databuilder_kwargs.update(**kwargs)
             return self
         self.Databuilder = update_databuilder_kwargs
+
+    def clone(self, 
+              *,
+              debug=None,
+              verbose=None,
+              pic=None,
+    ):
+        kwargs = dict(debug=self.debug,
+                      verbose=self.verbose,
+                      pic=self.pic
+        )
+        if debug is not None:
+            kwargs['debug'] = debug
+        if verbose is not None:
+            kwargs['verbose'] = verbose
+        if pic is not None:
+            kwargs['pic'] = pic
+        _ = DBX(self.datablock_cls, 
+                self.alias,
+                **kwargs)
+
+        if self._scope is not None:
+            _scope = {}
+            for key, val in self._scope.items():
+                if isinstance(val, DBX.Reader) or isinstance(val, DBX.Extenter):
+                    _scope[key] = val.with_pic(pic)
+                else:
+                    _scope[key] = val
+            _._scope = _scope
+        else:
+            _._scope = self._scope
+
+        _.datablock_kwargs = self.datablock_kwargs
+        _.databuilder_kwargs = self.databuilder_kwargs
+        return _
+
+    def with_pic(self, pic=True):
+        _ = self.clone(pic=pic)
+        return _
 
     def __repr__(self):
         """
@@ -1437,14 +1486,6 @@ class DBX:
             else:
                 _ = self.datablock.metric(scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem, roots=datablock_shardroots, topic=topic)
             return _
-        
-        @property
-        def __versionspace(self):
-            if hasattr(dbx.datablock_cls, 'VERSION'):
-                versionspace = self.anchorspace.subspace(f"version={{{self.datablock_clstr}.VERSION}}",)
-            else:
-                versionspace = self.anchorspace.subspace(f"version={str(DEFAULT_VERSION)}",)
-            return versionspace
 
         SCOPE_fields = dataclasses.fields(dbx.datablock_cls.SCOPE)
         __block_keys = [field.name for field in SCOPE_fields]
@@ -1469,7 +1510,10 @@ class DBX:
             __topics = [DEFAULT_TOPIC]
 
         if hasattr(dbx.datablock_cls, 'VERSION'):
-            __version = dbx.datablock_cls.VERSION
+            if dbx.pic:
+                __version = f"{{{dbx.datablock_clstr}.VERSION}}"
+            else:
+                __version = dbx.datablock_cls.VERSION
         else:
             __version = DEFAULT_VERSION
         databuilder_classdict = {
@@ -1481,7 +1525,6 @@ class DBX:
                     '__repr__': __repr__,
                     'version': __version,
                     'topics': __topics,
-                    #'versionspace': __versionspace,
                     'datablock_cls': __datablock_cls,
                     'datablock_kwargs': __datablock_kwargs,
                     'datablock': __datablock,
@@ -1508,7 +1551,7 @@ class DBX:
         return _
 
     @staticmethod
-    def transcribe(*dbxs, verbose=False, with_env: Optional[list] = None, with_linenos=False, with_display=False):
+    def transcribe(*dbxs, with_env: Dict = {}, with_linenos=False, with_display=False, verbose=False, ):
         """
             Assume dbxs are ordered in the dependency order and all have unique aliases that can be used as variable prefixes.
             TODO: build the dependency graph and reorder, if necessary.
@@ -1532,6 +1575,7 @@ class DBX:
             dbx "datablocks.DBX.transcribe($MIRCOS.Databuilder(dataspace=datablocks.HOMELAKE).Datablock(verbose=True), with_env=['HOME'])" 2>&1 | python -
             ```
         """
+        script_ = ""
         def transcribe_roots(filesystem, roots, *, prefix=''):
             _roots = ""
             if isinstance(roots, dict):
