@@ -28,10 +28,7 @@ from .utils import ALIAS, DEPRECATED, OVERRIDE, microseconds_since_epoch, dateti
 from .eval import request
 from .eval.request import Request, Report, LAST, NONE, Graph
 from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL, DATABLOCKS_FILE_LOGGING_POOL
-from .dataspace import Dataspace, DATABLOCKS_DATALAKE
-
-POOL = DATABLOCKS_STDOUT_LOGGING_POOL
-DATALAKE = DATABLOCKS_DATALAKE
+from .dataspace import Dataspace, DATABLOCKS_HOMELAKE
 
 
 def _eval(string):
@@ -291,7 +288,7 @@ class Databuilder(Anchored, Scoped):
     def __init__(self,
                  alias=None,
                  *,
-                 dataspace=DATABLOCKS_DATALAKE,
+                 dataspace=DATABLOCKS_HOMELAKE,
                  tmpspace=None,
                  lock_pages=False,
                  throw=True,
@@ -1122,7 +1119,7 @@ class DBX:
             return tag
     
     @staticmethod
-    def show_datablocks(*, dataspace=DATABLOCKS_DATALAKE, pretty_print=True):
+    def show_datablocks(*, dataspace=DATABLOCKS_HOMELAKE, pretty_print=True):
         def _chase_anchors(_dataspace, _anchorchain=()):
             filenames = _dataspace.list()
             anchorchains = []
@@ -1156,10 +1153,12 @@ class DBX:
                 alias=None,
                 *,
                 debug=False,
-                verbose=False,):
+                verbose=False,
+                pic=False,):
         self.alias = alias
         self.debug = debug
         self.verbose = verbose
+        self.pic = pic
 
         #DBX_dataspace = dataspace.subspace(DBX_PREFIX)
         if isinstance(datablock_cls_or_clstr, str):
@@ -1197,8 +1196,8 @@ class DBX:
         # scope is extracted via a property, which validates the scope
 
         self.databuilder_kwargs = dict(
-            dataspace=DATABLOCKS_DATALAKE,
-            pool=DATABLOCKS_FILE_LOGGING_POOL,
+            dataspace=DATABLOCKS_HOMELAKE,
+            pool=DATABLOCKS_STDOUT_LOGGING_POOL,
             tmpspace=None, # derive from dataspace?
             lock_pages=False,
             throw=True, # fold into `pool`?
@@ -1220,7 +1219,7 @@ class DBX:
             _ = Tagger().repr_func(self.__class__, self.datablock_clstr)
         """
         #FIX: do not make default self.alias None explicit
-        _ =  Tagger().repr_func(self.__class__, self.datablock_clstr, self.alias, debug=self.debug, verbose=self.verbose)
+        _ =  Tagger().repr_func(self.__class__, self.datablock_clstr, self.alias, debug=self.debug, verbose=self.verbose, pic=self.pic,)
         return _
 
     # TODO: spell out `.DATABOOK()` and `.SCOPE()` modifications?
@@ -1242,7 +1241,9 @@ class DBX:
     @property
     def databuilder(self):
         databuilder_cls = self._make_databuilder_class()
-        databuilder = databuilder_cls(self.alias, **self.databuilder_kwargs)
+        databuilder_kwargs = self.databuilder_kwargs
+        databuilder_kwargs['dataspace'] = databuilder_kwargs['dataspace'].with_pic(True)
+        databuilder = databuilder_cls(self.alias, **databuilder_kwargs)
         return databuilder
 
     @property
@@ -1419,23 +1420,31 @@ class DBX:
 
         def __extent_shard_valid__(self, topic, tagshardscope):
             datablock_tagshardscope = self.datablock_cls.SCOPE(**tagshardscope)
-            datablock_shardroots = self.datablock_shardroots(topic, tagshardscope)
+            datablock_shardroots = self.datablock_shardroots(tagshardscope)
             if topic == None:
                 assert not hasattr(self.datablock, 'TOPICS'), f"__extent_shard_valid__: None topic when datablock.TOPICS == {getattr(self.datablock, 'TOPICS')} "
-                _ = self.datablock.valid(scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem, roots=datablock_shardroots)
+                _ = self.datablock.valid(datablock_shardroots, filesystem=self.dataspace.filesystem,)
             else:
-                _ = self.datablock.valid(scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem, roots=datablock_shardroots, topic=topic)
+                _ = self.datablock.valid(datablock_shardroots, filesystem=self.dataspace.filesystem, topic=topic)
             return _
         
         def __extent_shard_metric__(self, topic, tagshardscope):
             datablock_tagshardscope = self.datablock_cls.SCOPE(**tagshardscope)
-            datablock_shardroots = self.datablock_shardroots(topic, tagshardscope)
+            datablock_shardroots = self.datablock_shardroots(tagshardscope)
             if topic == None:
                 assert hasattr(self.datablock, 'TOPICS'), f"__extent_shard_metric__: None topic when datablock.TOPICS == {self.datablock.TOPICS} "
                 _ = self.datablock.metric(scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem, roots=datablock_shardroots)
             else:
                 _ = self.datablock.metric(scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem, roots=datablock_shardroots, topic=topic)
             return _
+        
+        @property
+        def __versionspace(self):
+            if hasattr(dbx.datablock_cls, 'VERSION'):
+                versionspace = self.anchorspace.subspace(f"version={{{self.datablock_clstr}.VERSION}}",)
+            else:
+                versionspace = self.anchorspace.subspace(f"version={str(DEFAULT_VERSION)}",)
+            return versionspace
 
         SCOPE_fields = dataclasses.fields(dbx.datablock_cls.SCOPE)
         __block_keys = [field.name for field in SCOPE_fields]
@@ -1472,6 +1481,7 @@ class DBX:
                     '__repr__': __repr__,
                     'version': __version,
                     'topics': __topics,
+                    #'versionspace': __versionspace,
                     'datablock_cls': __datablock_cls,
                     'datablock_kwargs': __datablock_kwargs,
                     'datablock': __datablock,
@@ -1503,10 +1513,10 @@ class DBX:
             Assume dbxs are ordered in the dependency order and all have unique aliases that can be used as variable prefixes.
             TODO: build the dependency graph and reorder, if necessary.
             Examples:
-            * Bash definitions (pic dataspace HOMELAKE)
+            * Bash definitions (pic dataspace DATABLOCKS_PICLAKE)
             ```
-            export MIRCOHN="datablocks.DBX('datablocks.test.micron.datasets.miRCoHN', 'mircohn').Databuilder(dataspace=datablocks.HOMELAKE).Datablock(verbose=True)"
-            export MIRCOS="datablocks.DBX('datablocks.test.micron.datasets.miRCoStats', 'mircoshn').Databuilder(dataspace=datablocks.HOMELAKE).Datablock(verbose=True).SCOPE(mirco=$MIRCOHN.reader('counts'))"
+            export MIRCOHN="datablocks.DBX('datablocks.test.micron.datasets.miRCoHN', 'mircohn').Databuilder(dataspace=datablocks.DATABLOCSK_PICLAKE).Datablock(verbose=True)"
+            export MIRCOS="datablocks.DBX('datablocks.test.micron.datasets.miRCoStats', 'mircoshn').Databuilder(dataspace=datablocks.DATABLOCKS_PICLAKE).Datablock(verbose=True).SCOPE(mirco=$MIRCOHN.reader('counts'))"
             ```
             * Echo expanded definitions
             ```
@@ -1514,7 +1524,7 @@ class DBX:
             ```
             * Print transcript with line numbers:
             ```
-            dbx "datablocks.DBX.transcribe($MIRCOS.Databuilder(dataspace=datablocks.HOMELAKE).Datablock(verbose=True), with_env=['HOME'], with_linenos=True)" 
+            dbx "datablocks.DBX.transcribe($MIRCOS.Databuilder(dataspace=datablocks.DATABLOCKS_PICLAKE).Datablock(verbose=True), with_env=['HOME'], with_linenos=True)" 
             ```
             * Execute transcript (no line numbers allowed)
                 . Note the stderr redirect -- it is necessary as some transcript seems to be output via stderr

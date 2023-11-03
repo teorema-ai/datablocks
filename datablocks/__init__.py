@@ -13,13 +13,13 @@ from datablocks.config import DATABLOCKS_LOG_LEVEL
 logging.basicConfig(level=DATABLOCKS_LOG_LEVEL)
 
 from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL, DATABLOCKS_FILE_LOGGING_POOL
-from .dataspace import Dataspace, DATABLOCKS_DATALAKE, DATALAKE, HOMELAKE
+from .dataspace import Dataspace, DATABLOCKS_HOMELAKE, DATABLOCKS_PICLAKE
 from .datablock import DBX
 
 
 def print_usage(*, console):
     if console:
-        print(f"""Usage:\nDATABLOCKS_DATALACK_URL={{DATABLOCKS_DATALAKE_URL}}\\\n"""
+        print(f"""Usage:\nDATALAKE_URL={{DATALAKE_URL}}\\\n"""
                       f"""{sys.argv[0]} --help | \n[package.module, package.module, ...] {{package.module.Class}}({{key}}={{val}},...).{{method}}({{key}}={{val}},...)""")
     else:
         print(f"""Usage:\n{__name__}.exed("--help")  |\n{__name__}.exec("{{package.module.Class}}({{key}}={{val}},...).{{method}}({{key}}={{val}},...)""")

@@ -1026,10 +1026,6 @@ class HTTP(Logging):
         return delayed
 
 
-DATABLOCKS_STDOUT_LOGGING_POOL = Logging(dataspace=DATABLOCKS_DATALAKE)
-DATABLOCKS_FILE_LOGGING_POOL = Logging(dataspace=DATABLOCKS_DATALAKE, redirect_stdout=True)
-
-
 def print_all_promises(tasks):
     import time
     print(len(tasks))
@@ -1090,3 +1086,5 @@ def ipromise_logs(itasks):
         time.sleep(0.1)
 
 
+DATABLOCKS_STDOUT_LOGGING_POOL = Logging(dataspace=DATABLOCKS_DATALAKE)
+DATABLOCKS_FILE_LOGGING_POOL = Logging(dataspace=DATABLOCKS_DATALAKE, redirect_stdout=True)

@@ -25,8 +25,12 @@ class Dataset:
         if self.verbose:
             print(f">>> {self.__class__.__qualname__}: {s}")
 
+    def print_debug(self, s):
+        if self.debug:
+            print(f"DEBUG: >>> {self.__class__.__qualname__}: {s}")
 
-class miRCoHN:
+
+class miRCoHN(Dataset):
     """
         Data for the clustering HNSC study described in from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/.
     """
@@ -76,11 +80,9 @@ class miRCoHN:
         scope = scope or self.SCOPE()
         if roots is None and filesystem.protocol != 'file':
             filesystem = fsspec.AbstractFileSystem = fsspec.filesystem("file")
-            if self.verbose:
-                print(f"Resetting filesystem to {filesystem} because None 'roots' default to 'os.getcwd()'")
+            self.print_verbose(f"Resetting filesystem to {filesystem} because None 'roots' default to 'os.getcwd()'")
 
-        if self.verbose:
-            print(">>> Building miRCoHN")
+        self.print_verbose("Building ...")
 
         framepaths = {}
 
@@ -90,19 +92,15 @@ class miRCoHN:
         with tempfile.TemporaryDirectory() as tmpdir:
             remote_tarpath = self._SRC_URL + '/' + self._SRC_TAR_DIRNAME + ".tar.gz"
             local_tarpath = os.path.join(tmpdir, self._SRC_TAR_DIRNAME) + ".tar.gz"
-            if self.verbose:
-                print(f"Downloading {remote_tarpath} to {local_tarpath}")
+            self.print_verbose(f"Downloading {remote_tarpath} to {local_tarpath}")
             fs.get(remote_tarpath, local_tarpath, callback=TqdmCallback())
             assert os.path.isfile(local_tarpath)
-            if self.verbose:
-                print(f"Trying to parse local copy {local_tarpath}")
+            self.print_verbose(f"Trying to parse local copy {local_tarpath}")
             _tardir = os.path.join(tmpdir, self._SRC_TAR_DIRNAME)
             with tarfile.open(local_tarpath, 'r') as _tarfile:
-                if self.verbose:
-                    print(f"Extracting {local_tarpath} to {_tardir}")
+                self.print_verbose(f"Extracting {local_tarpath} to {_tardir}")
                 _tarfile.extractall(tmpdir)
-            if self.debug:
-                print(f"DEBUG: extracted dir: {os.listdir(_tardir)}")
+            self.print_debug(f"Extracted dir: {os.listdir(_tardir)}")
             counts_src_path = os.path.join(_tardir, self._SRC_DAT_FILENAME)
             topic_frame = counts_frame = pd.read_csv(counts_src_path, sep='\t', header=0, index_col=0).transpose()
 
@@ -114,8 +112,7 @@ class miRCoHN:
             filesystem.mkdirs(topic_tgt_root, exist_ok=True)
             topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
             topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
-            if self.verbose:
-                print(f"Wrote dataframe to {topic_tgt_path}")
+            self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
             framepaths[topic] = topic_tgt_path
 
         # pivots
@@ -178,8 +175,7 @@ class miRCoHN:
         filesystem.makedirs(topic_tgt_root, exist_ok=True)
         topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
         topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
-        if self.verbose:
-            print(f"Wrote dataframe to {topic_tgt_path}")
+        self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
         framepaths[topic] = topic_tgt_path
 
         #controls
@@ -192,8 +188,7 @@ class miRCoHN:
         filesystem.makedirs(topic_tgt_root, exist_ok=True)
         topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
         topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
-        if self.verbose:
-            print(f"Wrote dataframe to {topic_tgt_path}")
+        self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
         framepaths[topic] = topic_tgt_path
 
         #downregulated
@@ -214,11 +209,11 @@ class miRCoHN:
         filesystem.makedirs(topic_tgt_root, exist_ok=True)
         topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
         topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
-        if self.verbose:
-            print(f">>> Wrote dataframe to {topic_tgt_path}")
+        self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
         framepaths[topic] = topic_tgt_path
 
         #https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/bin/NIHMS1644540-supplement-4.docx
+        self.print_verbose("... done")
         return framepaths
     
     def read(self, 
@@ -227,15 +222,14 @@ class miRCoHN:
              topic: str,
              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),  
     ):
-        if self.verbose:
-            print(f">>> Reading miRCoHN topic {topic}")
+        self.print_verbose(f"Reading topic '{topic}'")
         topic_tgt_root = roots[topic] if roots is not None else os.getcwd()
         topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
         topic_frame = pd.read_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
         return topic_frame
         
     
-class miRCoStats:
+class miRCoStats(Dataset):
     """
         MAD
     """
@@ -262,16 +256,14 @@ class miRCoStats:
         """
         root = root or os.getcwd()
         
-        if self.verbose:
-            print(">>> Building miRCo stats")
+        self.print_verbose("Building miRCo stats")
 
         mc = scope.mirco
         mcmad = (mc - mc.mean()).abs().mean().sort_values(ascending=False)
         mcmadf = pd.DataFrame({'mad': mcmad})
         mcmadf_path = root + "/" + self.TGT_FILENAME      
         mcmadf.to_parquet(mcmadf_path, storage_options=filesystem.storage_options)
-        if self.verbose:
-            print(f">>> Wrote dataframe to {mcmadf_path}")
+        self.print_verbose(f"Wrote dataframe to {mcmadf_path}")
         return mcmadf_path
     
     def read(self, 
@@ -285,7 +277,7 @@ class miRCoStats:
         return mcmadf_frame
     
 
-class miRNA:
+class miRNA(Dataset):
     VERSION = "0.0.1"
 
     @dataclass
@@ -312,11 +304,9 @@ class miRNA:
         remote_dat = self.MIRNA_DATASET_URL + '/' + f'{self.MIRNA_DATASET_FILENAME}.dat'
         local_dat = os.path.join(root, f'{self.MIRNA_DATASET_FILENAME}.dat')
         if not os.path.isfile(local_dat):
-            if self.verbose:
-                print(f"Downloading {remote_dat} to {local_dat}")
+            self.print_verbose(f"Downloading {remote_dat} to {local_dat}")
             fs.get(remote_dat, local_dat, callback=TqdmCallback())
-        if self.verbose:
-            print(f"Parsing local copy {local_dat}")
+        self.print_verbose(f"Parsing local copy {local_dat}")
 
         if local_dat.endswith('.gz'):
             with gzip.open(local_dat, 'r') as datfile:
@@ -349,8 +339,7 @@ class miRNA:
         recs = miRNA._parse_records(mdstr)
         f = pd.DataFrame.from_records(recs)
         frame = f.sort_values('ID').reset_index(drop=True)
-        if self.verbose:
-            print(f"Built dataframe")
+        self.print_verbose(f"Built dataframe")
         return frame
 
     @staticmethod     
@@ -392,7 +381,8 @@ class miRCoSeqs(Dataset):
     """
         Sequences sampled at count frequences
     """
-    VERSION = "0.1.0"
+    VERSION = "0.2.1"
+    TOPICS = ['counts', 'seqs', 'samples']
     
     @dataclass
     class SCOPE:
@@ -402,7 +392,13 @@ class miRCoSeqs(Dataset):
         nsamples_per_record: int = 200
         npermutations: int = 1000
 
-    MIRCOSEQS_DATASET_FILENAME = f"miRCoSeqs"
+    MIRCOSEQS_COUNTS_FILENAME = f"miRCos.txt"
+    MIRCOSEQS_SEQS_FILENAME = f"miRSeqs.parquet"
+    MIRCOSEQS_SAMPLES_FILENAME = f"miRCoSeqs.parquet"
+    FILENAMES = {'counts': MIRCOSEQS_COUNTS_FILENAME,
+             'seqs': MIRCOSEQS_SEQS_FILENAME,
+             'samples': MIRCOSEQS_SAMPLES_FILENAME,
+    }
 
     def __init__(self, verbose=False, debug=False, rm_tmp=True, ):
         self.verbose = verbose
@@ -410,13 +406,11 @@ class miRCoSeqs(Dataset):
         self.rm_tmp = rm_tmp
     
     def build(self,
-              root: str,
+              roots: Dict[str, str],
               *,
               scope: SCOPE,
               filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
         
-        root = root or os.getcwd()
-
         cof = scope.counts
         cofc1 = [c[5:] for c in cof.columns.get_level_values(1).tolist()]
         _acof = np.exp(cof.copy()*np.log(2))
@@ -430,21 +424,28 @@ class miRCoSeqs(Dataset):
 
         acols = [i for i in _aseqf.index if i in _acof.columns]
         acof = _acof[acols]
+        acof_path = self.path(roots, 'counts')
+        acof.to_parquet(acof_path, storage_options=filesystem.storage_options)
+        self.print_verbose(f"Wrote counts to {acof_path}")
+
 
         acof0 = acof[acols].fillna(0.0)
         acof1 = acof0.div(acof0.sum(axis=1), axis=0)
 
         rng = np.random.default_rng()
         
+        aseqf = _aseqf.loc[acols]
+        aseqs_path = self.path(roots, 'seqs')
+        aseqf.to_parquet(aseqs_path, storage_options=filesystem.storage_options)
+        self.print_verbose(f"Wrote sequences to {aseqs_path}")
+
         aseqs = _aseqf.loc[acols, 'sequence']
         aseqlist = aseqs.tolist()
         rng = np.random.default_rng()
         _samples = []
-        if self.verbose:
-            print(f">>> Generating samples from {scope.nepochs} epochs")
+        self.print_verbose(f"Generating samples from {scope.nepochs} epochs")
         for epoch in range(scope.nepochs):
-            if self.verbose:
-                print(f">>> epoch {epoch}")
+            self.print_verbose(f"epoch {epoch}")
             for _, rec in acof1.iterrows():
                 _samplecounts = rng.multinomial(scope.nsamples_per_record, rec)
                 for i, c in enumerate(_samplecounts):
@@ -458,26 +459,50 @@ class miRCoSeqs(Dataset):
         for i in range(scope.npermutations):
             samples = samples[perm]
 
-        path = self.path(root)
-        with open(path, 'wb') as f:
-            if self.verbose:
-                print(f">>> Writing {len(samples)} to {path}")
-            f.writelines(samples)
+
+        samples_path = self.path(roots, 'samples')
+        with filesystem.open(samples_path, 'w') as f:
+            self.print_verbose(f"Writing {len(samples)} to {samples_path}")
+            self.print_debug(f"samples[:10]:\n{samples[:10]}")
+            s = "\n".join(samples)
+            f.write(s)
 
     def read(self,
-              root,
+              roots,
               *,
-              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")
+              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
+              topic,
     ):
-        root = root or os.getcwd()
-        path = self.path(root)
-        with open(path, 'rb') as f:
-            useqs = f.readlines()
-        self.print_verbose(f"Read {len(useqs)} from path")
-        return useqs
+        path = self.path(roots, topic)
+        if topic == 'samples':
+            with filesystem.open(path, 'r') as f:
+                s = f.read()
+            self.print_debug(f"Read string of len {len(s)} from {path}")
+            useqs = s.split('\n')
+            self.print_verbose(f"Read {len(useqs)} useqs")
+            _ = useqs
+        elif topic == 'counts': 
+            _ = pd.read_pandas(path, storage_options=filesystem.storage_options)
+        elif topic == 'seqs':
+            _ = pd.read_pandas(path, storage_options=filesystem.storage_options)
+        return _
+    
+    def valid(self,
+              roots,
+              *,
+              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
+              topic,
+    ):
+        path = self.path(roots, topic)
+        _ = filesystem.exists(path)
+        return _
 
-    def path(self, root):
-        path = os.path.join(root, f"{self.MIRCOSEQS_DATASET_FILENAME}.txt",) 
+    def path(self, roots, topic):
+        if topic not in self.TOPICS: 
+            raise ValueError(f"Topic {topic} not in {self.TOPICS}")
+        filename = self.FILENAMES[topic]
+        root = roots[topic] if roots else os.getcwd()
+        path = os.path.join(root, filename,) 
         return path
 
     

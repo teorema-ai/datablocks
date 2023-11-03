@@ -524,7 +524,6 @@ class Dataspace:
     def isfile(self, path):
         return self.filesystem.isfile(path)
 
-
 DATABLOCKS_DATALAKE = Dataspace(config.DATABLOCKS_DATALAKE_URL)
-DATALAKE = DATABLOCKS_DATALAKE
-HOMELAKE = DATALAKE.clone(url=os.path.join("{HOME}", ".cache", "datalake"), pic=True)
+DATABLOCKS_HOMELAKE = Dataspace(config.DATABLOCKS_HOMELAKE_URL)
+DATABLOCKS_PICLAKE = DATABLOCKS_HOMELAKE.clone(url=os.path.join("{HOME}", ".cache", "datalake"), pic=True)
