@@ -17,10 +17,10 @@ def test_micron():
             print(dbx.read())
     MIRCOHN = datablocks.DBX('datablocks.test.micron.datasets.miRCoHN', 'mircohn')\
         .Databuilder(dataspace=TESTLAKE)
-    _test(MIRCOHN, 'counts')
+    _test(MIRCOHN, 'logcounts')
 
     MIRCOSHN = datablocks.DBX('datablocks.test.micron.datasets.miRCoStats', 'mircoshn')\
         .Databuilder(dataspace=TESTLAKE)\
-        .SCOPE(mirco=MIRCOHN.READ('counts'))
+        .SCOPE(mirco=MIRCOHN.READ('logcounts'))
     _test(MIRCOSHN)
 

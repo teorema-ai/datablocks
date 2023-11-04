@@ -293,9 +293,9 @@ class Databuilder(Anchored, Scoped):
                  lock_pages=False,
                  throw=True,
                  rebuild=False,
-                 verbose=False,
-                 debug=False,
                  pool=DATABLOCKS_STDOUT_LOGGING_POOL,
+                 verbose=False,
+                 debug=False,          
     ):
         Anchored.__init__(self)
         Scoped.__init__(self)
@@ -1162,15 +1162,21 @@ class DBX:
                 datablock_cls_or_clstr, 
                 alias=None,
                 *,
-                debug=False,
+                dataspace=DATABLOCKS_HOMELAKE,
+                tmpspace=None,
+                lock_pages=False,
+                throw=True,
+                rebuild=False,
+                pool=DATABLOCKS_STDOUT_LOGGING_POOL,
                 verbose=False,
-                pic=False,):
+                debug=False,  
+                pic=False,
+    ):
         self.alias = alias
         self.debug = debug
         self.verbose = verbose
         self.pic = pic
 
-        #DBX_dataspace = dataspace.subspace(DBX_PREFIX)
         if isinstance(datablock_cls_or_clstr, str):
             self.datablock_clstr = datablock_cls_or_clstr
             datablock_clstrparts = self.datablock_clstr.split('.')
@@ -1206,14 +1212,14 @@ class DBX:
         # scope is extracted via a property, which validates the scope
 
         self.databuilder_kwargs = dict(
-            dataspace=DATABLOCKS_HOMELAKE,
-            pool=DATABLOCKS_STDOUT_LOGGING_POOL,
-            tmpspace=None, # derive from dataspace?
-            lock_pages=False,
-            throw=True, # fold into `pool`?
-            rebuild=False, # move to build()?
-            verbose=False,
-            debug=False,
+            dataspace=dataspace,
+            pool=pool,
+            tmpspace=tmpspace, # derive from dataspace?
+            lock_pages=lock_pages,
+            throw=throw, # fold into `pool`?
+            rebuild=rebuild, # move to build()?
+            verbose=verbose,
+            debug=debug,
         )
         @functools.wraps(Databuilder)
         def update_databuilder_kwargs(**kwargs):
@@ -1268,7 +1274,7 @@ class DBX:
             _ = Tagger().repr_func(self.__class__, self.datablock_clstr)
         """
         #FIX: do not make default self.alias None explicit
-        _ =  Tagger().repr_func(self.__class__, self.datablock_clstr, self.alias, debug=self.debug, verbose=self.verbose, pic=self.pic,)
+        _ =  Tagger(tag_defaults=False).repr_ctor(self.__class__, self.datablock_clstr, self.alias, pic=self.pic,)
         return _
 
     # TODO: spell out `.DATABOOK()` and `.SCOPE()` modifications?

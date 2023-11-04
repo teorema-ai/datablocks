@@ -34,8 +34,8 @@ class miRCoHN(Dataset):
     """
         Data for the clustering HNSC study described in from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/.
     """
-    VERSION = "0.4.3"
-    TOPICS            = ['counts', 
+    VERSION = "0.5.3"
+    TOPICS            = ['logcounts', 
                          'pivots',
                          'controls',
                          'downregulated_mirna_infixes']
@@ -43,7 +43,7 @@ class miRCoHN(Dataset):
     class SCOPE:
         pass
 
-    _TGT_FILENAMES = {'counts': f"mircohn_rpm_log2.parquet",
+    _TGT_FILENAMES = {'logcounts': f"mircohn_rpm_log2.parquet",
                       'pivots': f"mircohn_pivots.parquet",
                       'controls': f"mircohn_controls.parquet",
                       'downregulated_mirna_infixes': f"mircohn_downregulated_mirna_infixes.parquet"
@@ -86,8 +86,8 @@ class miRCoHN(Dataset):
 
         framepaths = {}
 
-        # counts
-        topic = 'counts'
+        # logcounts
+        topic = 'logcounts'
         fs = fsspec.filesystem('http')
         with tempfile.TemporaryDirectory() as tmpdir:
             remote_tarpath = self._SRC_URL + '/' + self._SRC_TAR_DIRNAME + ".tar.gz"
@@ -101,12 +101,12 @@ class miRCoHN(Dataset):
                 self.print_verbose(f"Extracting {local_tarpath} to {_tardir}")
                 _tarfile.extractall(tmpdir)
             self.print_debug(f"Extracted dir: {os.listdir(_tardir)}")
-            counts_src_path = os.path.join(_tardir, self._SRC_DAT_FILENAME)
-            topic_frame = counts_frame = pd.read_csv(counts_src_path, sep='\t', header=0, index_col=0).transpose()
+            logcounts_src_path = os.path.join(_tardir, self._SRC_DAT_FILENAME)
+            topic_frame = logcounts_frame = pd.read_csv(logcounts_src_path, sep='\t', header=0, index_col=0).transpose()
 
-            coltuples = [tuple(c.split('|')) for c in counts_frame.columns]
+            coltuples = [tuple(c.split('|')) for c in logcounts_frame.columns]
             mindex = pd.MultiIndex.from_tuples(coltuples)
-            counts_frame.columns = mindex
+            logcounts_frame.columns = mindex
 
             topic_tgt_root = roots[topic] if roots is not None else os.getcwd()
             filesystem.mkdirs(topic_tgt_root, exist_ok=True)
@@ -180,7 +180,7 @@ class miRCoHN(Dataset):
 
         #controls
         topic = 'controls'
-        controls = pd.Series(counts_frame.index, index=counts_frame.index).apply(lambda _: _.split('-')[3].startswith('11'))
+        controls = pd.Series(logcounts_frame.index, index=logcounts_frame.index).apply(lambda _: _.split('-')[3].startswith('11'))
         controls.name = 'controls'
         topic_frame = controlsf = pd.DataFrame({'is_control': controls})
 
@@ -386,18 +386,18 @@ class miRCoSeqs(Dataset):
     
     @dataclass
     class SCOPE:
-        counts: pd.DataFrame
         seqs: pd.DataFrame
+        logcounts: pd.DataFrame
         nepochs: int = 5
         nsamples_per_record: int = 200
-        npermutations: int = 1000
+        npermutations: int = 1
 
     MIRCOSEQS_COUNTS_FILENAME = f"miRCos.txt"
     MIRCOSEQS_SEQS_FILENAME = f"miRSeqs.parquet"
     MIRCOSEQS_SAMPLES_FILENAME = f"miRCoSeqs.parquet"
     FILENAMES = {'counts': MIRCOSEQS_COUNTS_FILENAME,
-             'seqs': MIRCOSEQS_SEQS_FILENAME,
-             'samples': MIRCOSEQS_SAMPLES_FILENAME,
+                 'seqs': MIRCOSEQS_SEQS_FILENAME,
+                 'samples': MIRCOSEQS_SAMPLES_FILENAME,
     }
 
     def __init__(self, verbose=False, debug=False, rm_tmp=True, ):
@@ -411,10 +411,12 @@ class miRCoSeqs(Dataset):
               scope: SCOPE,
               filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
         
-        cof = scope.counts
-        cofc1 = [c[5:] for c in cof.columns.get_level_values(1).tolist()]
-        _acof = np.exp(cof.copy()*np.log(2))
-        _acof.columns = cofc1
+        # log2(n) -> n
+        # n = exp(ln(n)) = exp[ln(2^log2(n))] = exp[log2(n)*ln(2)]
+        logcof = scope.logcounts
+        logcofc1 = [c[5:] for c in logcof.columns.get_level_values(1).tolist()]
+        _acof = np.exp(logcof.copy()*np.log(2))
+        _acof.columns = logcofc1
 
         seqf = scope.seqs
         accession = seqf.Accession.apply(lambda _: _[2:])
@@ -422,12 +424,11 @@ class miRCoSeqs(Dataset):
         _seqf['accession'] = accession
         _aseqf = _seqf.set_index('accession')
 
-        acols = [i for i in _aseqf.index if i in _acof.columns]
+        acols = [i for i in _aseqf.index if i in _alogcof.columns]
         acof = _acof[acols]
         acof_path = self.path(roots, 'counts')
         acof.to_parquet(acof_path, storage_options=filesystem.storage_options)
         self.print_verbose(f"Wrote counts to {acof_path}")
-
 
         acof0 = acof[acols].fillna(0.0)
         acof1 = acof0.div(acof0.sum(axis=1), axis=0)
@@ -459,7 +460,6 @@ class miRCoSeqs(Dataset):
         for i in range(scope.npermutations):
             samples = samples[perm]
 
-
         samples_path = self.path(roots, 'samples')
         with filesystem.open(samples_path, 'w') as f:
             self.print_verbose(f"Writing {len(samples)} to {samples_path}")
@@ -482,9 +482,9 @@ class miRCoSeqs(Dataset):
             self.print_verbose(f"Read {len(useqs)} useqs")
             _ = useqs
         elif topic == 'counts': 
-            _ = pd.read_pandas(path, storage_options=filesystem.storage_options)
+            _ = pd.read_parquet(path, storage_options=filesystem.storage_options)
         elif topic == 'seqs':
-            _ = pd.read_pandas(path, storage_options=filesystem.storage_options)
+            _ = pd.read_parquet(path, storage_options=filesystem.storage_options)
         return _
     
     def valid(self,
