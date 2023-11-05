@@ -1,5 +1,10 @@
+import bisect
 from dataclasses import dataclass
+import importlib
+from itertools import combinations
 import os
+import pickle
+from sklearn.cluster import KMeans
 import tarfile
 import tempfile
 from typing import Optional, Dict
@@ -14,10 +19,7 @@ import pyarrow.parquet as pq
 import matplotlib.pyplot as plt
 import umap
 
-import ray
-
-
-DATALAKE = os.path.join(os.environ['HOME'], '.cache', 'datalake', 'micron', 'dataset')
+from micron.cclustering import ZSConsensusClustering
 
 
 class Dataset:
@@ -28,6 +30,11 @@ class Dataset:
     def print_debug(self, s):
         if self.debug:
             print(f"DEBUG: >>> {self.__class__.__qualname__}: {s}")
+
+    def __init__(self, verbose=False, debug=False, rm_tmp=True, ):
+        self.verbose = verbose
+        self.debug = debug
+        self.rm_tmp = rm_tmp
 
 
 class miRCoHN(Dataset):
@@ -53,15 +60,11 @@ class miRCoHN(Dataset):
     _SRC_TAR_DIRNAME = "gdac.broadinstitute.org_HNSC.miRseq_Mature_Preprocess.Level_3.2016012800.0.0"
     _SRC_DAT_FILENAME = "HNSC.miRseq_mature_RPM_log2.txt"
     
-    def __init__(self, *, debug=False, verbose=False):
-        self.debug = debug
-        self.verbose = verbose
-
     def display(
-             roots: Optional[Dict[str, str]] = None,
-             *, 
-             scope: Optional[SCOPE] = None, 
-             filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
+            self,
+            roots: Optional[Dict[str, str]] = None,
+            *, 
+            filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
     ):
         cof = self.read(roots, scope=scope, filesystem=filesystem)
         ufit = umap.UMAP()
@@ -233,7 +236,7 @@ class miRCoStats(Dataset):
     """
         MAD
     """
-    VERSION = "0.3.1"
+    VERSION = "0.4.1"
 
     TGT_FILENAME = f"mirco_stats.parquet"
 
@@ -286,11 +289,6 @@ class miRNA(Dataset):
 
     MIRNA_DATASET_URL = "https://mirbase.org/download"
     MIRNA_DATASET_FILENAME = f"miRNA"
-
-    def __init__(self, verbose=False, debug=False, rm_tmp=True, ):
-        self.verbose = verbose
-        self.debug = debug
-        self.rm_tmp = rm_tmp
     
     def build(self,
               root,
@@ -381,29 +379,20 @@ class miRCoSeqs(Dataset):
     """
         Sequences sampled at count frequences
     """
-    VERSION = "0.2.1"
-    TOPICS = ['counts', 'seqs', 'samples']
+    VERSION = "0.10.1"
+    TOPICS = {'logcounts': f"miRLogCos.parquet",
+                 'counts': f"miRCos.parquet",
+                 'seqs': f"miRSeqs.parquet",
+                 'samples': f"miRCoSeqs.txt",
+                 'rec_sample_ranges': f"miRSampleRanges.parquet"
+    }
     
     @dataclass
     class SCOPE:
         seqs: pd.DataFrame
         logcounts: pd.DataFrame
-        nepochs: int = 5
-        nsamples_per_record: int = 200
-        npermutations: int = 1
-
-    MIRCOSEQS_COUNTS_FILENAME = f"miRCos.txt"
-    MIRCOSEQS_SEQS_FILENAME = f"miRSeqs.parquet"
-    MIRCOSEQS_SAMPLES_FILENAME = f"miRCoSeqs.parquet"
-    FILENAMES = {'counts': MIRCOSEQS_COUNTS_FILENAME,
-                 'seqs': MIRCOSEQS_SEQS_FILENAME,
-                 'samples': MIRCOSEQS_SAMPLES_FILENAME,
-    }
-
-    def __init__(self, verbose=False, debug=False, rm_tmp=True, ):
-        self.verbose = verbose
-        self.debug = debug
-        self.rm_tmp = rm_tmp
+        npasses: int = 5
+        nseqs_per_record: int = 200    
     
     def build(self,
               roots: Dict[str, str],
@@ -414,64 +403,85 @@ class miRCoSeqs(Dataset):
         # log2(n) -> n
         # n = exp(ln(n)) = exp[ln(2^log2(n))] = exp[log2(n)*ln(2)]
         logcof = scope.logcounts
-        logcofc1 = [c[5:] for c in logcof.columns.get_level_values(1).tolist()]
-        _acof = np.exp(logcof.copy()*np.log(2))
-        _acof.columns = logcofc1
+        logcofcols1 = [c[5:] for c in logcof.columns.get_level_values(1).tolist()]
+
+        _logcof = logcof.copy()
+        _logcof.columns = logcofcols1
+
+        _cof = np.exp(logcof.copy()*np.log(2))
+        _cof.columns = logcofcols1
 
         seqf = scope.seqs
         accession = seqf.Accession.apply(lambda _: _[2:])
         _seqf = seqf.copy()
         _seqf['accession'] = accession
-        _aseqf = _seqf.set_index('accession')
+        _seqf.set_index('accession', inplace=True)
 
-        acols = [i for i in _aseqf.index if i in _alogcof.columns]
-        acof = _acof[acols]
-        acof_path = self.path(roots, 'counts')
-        acof.to_parquet(acof_path, storage_options=filesystem.storage_options)
-        self.print_verbose(f"Wrote counts to {acof_path}")
+        # join columns/datasets
+        jcols = [i for i in _seqf.index if i in _cof.columns]
 
-        acof0 = acof[acols].fillna(0.0)
-        acof1 = acof0.div(acof0.sum(axis=1), axis=0)
+        jcof = _cof[jcols]
+        jcof_path = self.path(roots, 'counts')
+        jcof.to_parquet(jcof_path, storage_options=filesystem.storage_options)
+        self.print_verbose(f"Wrote counts to {jcof_path}")
 
-        rng = np.random.default_rng()
+        jlogcof = _logcof[jcols]
+        jlogcof_path = self.path(roots, 'logcounts')
+        jlogcof.to_parquet(jlogcof_path, storage_options=filesystem.storage_options)
+        self.print_verbose(f"Wrote logcounts to {jlogcof_path}")
         
-        aseqf = _aseqf.loc[acols]
-        aseqs_path = self.path(roots, 'seqs')
-        aseqf.to_parquet(aseqs_path, storage_options=filesystem.storage_options)
-        self.print_verbose(f"Wrote sequences to {aseqs_path}")
+        jseqf = _seqf.loc[jcols]
+        jseqs_path = self.path(roots, 'seqs')
+        jseqf.to_parquet(jseqs_path, storage_options=filesystem.storage_options)
+        self.print_verbose(f"Wrote sequences to {jseqs_path}")
 
-        aseqs = _aseqf.loc[acols, 'sequence']
-        aseqlist = aseqs.tolist()
+        jcof0 = jcof.fillna(0.0)
+        jcofn = jcof0.div(jcof0.sum(axis=1), axis=0)
+        jseqs = jseqf['sequence']
+        jseqlist = jseqs.tolist()
+
+        self.print_verbose(f"Generating samples using {scope.npasses} passes")
+        rec_sample_ranges = {recidx: [] for recidx in jcofn.index}
+        sample_batches = []
+        n_samples = 0
         rng = np.random.default_rng()
-        _samples = []
-        self.print_verbose(f"Generating samples from {scope.nepochs} epochs")
-        for epoch in range(scope.nepochs):
-            self.print_verbose(f"epoch {epoch}")
-            for _, rec in acof1.iterrows():
-                _samplecounts = rng.multinomial(scope.nsamples_per_record, rec)
-                for i, c in enumerate(_samplecounts):
-                    if c == 0: continue
-                    _samples += aseqlist[i:i+1]*c
-        self.print_verbose(f"Generated {len(_samples)} samples")
-        samples_ = np.array(_samples)
-        perm = rng.permutation(len(samples_))
-        samples = samples_
-        self.print_verbose(f"Randomizing {len(_samples)} samples using {scope.npermutations} permutations")
-        for i in range(scope.npermutations):
-            samples = samples[perm]
+        for _pass in range(scope.npasses):
+            self.print_verbose(f"pass {_pass}")
+            n_pass_samples = 0
+            for recidx, rec in jcofn.iterrows():
+                rec_sample_batches = []
+                n_rec_samples = 0
+                seqfreqs = rng.multinomial(scope.nseqs_per_record, rec)
+                for i, freq in enumerate(seqfreqs):
+                    if freq == 0: continue
+                    rec_sample_batches.append((i, freq))#jseqlist[i:i+1]*freq
+                    n_rec_samples += freq
+                rec_sample_ranges[recidx].append((n_samples, n_samples + n_rec_samples))
+                sample_batches += rec_sample_batches
+                n_samples += n_rec_samples
+                n_pass_samples += n_rec_samples
+            self.print_verbose(f"Generated {n_pass_samples} in pass {_pass} for a total of {n_samples} so far")
+        self.print_verbose(f"Generated {n_samples} samples")
 
         samples_path = self.path(roots, 'samples')
         with filesystem.open(samples_path, 'w') as f:
-            self.print_verbose(f"Writing {len(samples)} to {samples_path}")
-            self.print_debug(f"samples[:10]:\n{samples[:10]}")
-            s = "\n".join(samples)
-            f.write(s)
+            self.print_verbose(f"Writing {n_samples} samples to {samples_path}")
+            for i, freq in sample_batches:
+                batch = jseqlist[i:i+1]*freq
+                s = "\n".join(batch)+"\n"
+                f.write(s)
+
+        rec_sample_ranges_frame = pd.DataFrame(rec_sample_ranges).transpose()
+        rec_sample_ranges_frame.columns.name = 'pass'
+        rec_sample_ranges_path = self.path(roots, 'rec_sample_ranges')
+        rec_sample_ranges_frame.to_parquet(rec_sample_ranges_path, storage_options=filesystem.storage_options)
+        self.print_verbose(f"Wrote {len(rec_sample_ranges_frame)} to {rec_sample_ranges_path}")
 
     def read(self,
-              roots,
-              *,
-              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
-              topic,
+             roots,
+             *,
+             topic,
+             filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
     ):
         path = self.path(roots, topic)
         if topic == 'samples':
@@ -481,17 +491,36 @@ class miRCoSeqs(Dataset):
             useqs = s.split('\n')
             self.print_verbose(f"Read {len(useqs)} useqs")
             _ = useqs
+        elif topic == 'logcounts': 
+            _ = pd.read_parquet(path, storage_options=filesystem.storage_options)
         elif topic == 'counts': 
             _ = pd.read_parquet(path, storage_options=filesystem.storage_options)
         elif topic == 'seqs':
             _ = pd.read_parquet(path, storage_options=filesystem.storage_options)
+        elif topic == 'rec_sample_ranges':
+            _ = pd.read_parquet(path, storage_options=filesystem.storage_options)
         return _
+    
+    def display(self,
+                roots,
+                *,
+                topic,
+                filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
+    ):
+        if topic == 'samples':
+            ...
+        elif topic == 'logcounts': 
+            ...
+        elif topic == 'counts': 
+            ...
+        elif topic == 'seqs':
+            ...
     
     def valid(self,
               roots,
               *,
-              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
               topic,
+              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
     ):
         path = self.path(roots, topic)
         _ = filesystem.exists(path)
@@ -499,14 +528,104 @@ class miRCoSeqs(Dataset):
 
     def path(self, roots, topic):
         if topic not in self.TOPICS: 
-            raise ValueError(f"Topic {topic} not in {self.TOPICS}")
-        filename = self.FILENAMES[topic]
+            raise ValueError(f"Topic '{topic}' not in {self.TOPICS}")
+        filename = self.TOPICS[topic]
         root = roots[topic] if roots else os.getcwd()
-        path = os.path.join(root, filename,) 
+        path = os.path.join(root, filename,) #TODO: use filesystem to join
         return path
 
-    
 
+class ZSCC(Dataset):
+    VERSION = "0.3.1"
+    TOPICS = {
+        'zscc': 'zscc.pkl',
+        'clusters': 'clusters.parquet'
+    }
     
+    @dataclass
+    class SCOPE:
+        """
+            * `clustering` is a Callable that takes `n_clusters: int`
+            * `clustering(n).fit_predict(y: np.array(m, n)) -> np.array(m)` returns cluster assignments
+        """
+        data_frame: pd.DataFrame
+        clustering: str = 'sklearn.cluster.KMeans'
+        n_reps: int = 100
+        lo: int = 2
+        hi: int = 5
+        fillna: Optional[float] = None
+
+    def path(self, roots, topic, filesystem):
+        filename = self.TOPICS[topic]
+        if filesystem.protocol == "file":
+            root = roots[topic] if roots is not None else os.getcwd()
+            path = os.path.join(root, filename)
+        else:
+            root = roots[topic]
+            path = f"{root}/{filename}"
+        return path
+    
+    def build(self,
+              roots,
+              *,
+              scope: SCOPE,
+              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
+        clparts = scope.clustering.split('.')
+        clmodname = '.'.join(clparts[:-1])
+        clclassname = clparts[-1]
+        clmod = importlib.import_module(clmodname)
+        clustering = getattr(clmod, clclassname)
+
+        zscc = ZSConsensusClustering(clustering, n_reps=scope.n_reps, lo=scope.lo, hi=scope.hi)
+        data_frame = scope.data_frame if scope.fillna is None else scope.data_frame.fillna(scope.fillna)
+        if self.verbose:
+            print(f"Fitting zscc to data of size {len(data_frame)}")
+        zscc.fit(data_frame.values)
+
+        zscc_path = self.path(roots, 'zscc', filesystem)
+        with filesystem.open(zscc_path, 'wb') as zsccfile:
+            pickle.dump(zscc, zsccfile)
+        if self.verbose:
+            print(f"Wrote zscc pickle to {zscc_path}")
+
+        if self.verbose:
+            print(f"Assigning optimal clusters to data of len {len(data_frame)}")
+        clusters = zscc.predict_data(data_frame.values)
+        clusters_frame = pd.DataFrame({'clusters': clusters})
+        clusters_path = self.path(roots, 'clusters', filesystem)
+        clusters_frame.to_parquet(clusters_path, storage_options=filesystem.storage_options)
+        if self.verbose:
+            print(f"Wrote zscc clusters to {clusters_path}")
+
+    def read(self,
+              roots,
+              *,
+              topic,
+              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"), 
+    ):
+    
+        if topic == 'zscc':
+            zscc_path = self.path(roots, 'zscc', filesystem)
+            with filesystem.open(zscc_path, 'rb') as zsccfile:
+                zscc = pickle.load(zsccfile)
+                _ = zscc
+            if self.verbose:
+                print(f"Loaded zscc pickle from {zscc_path}")
+        elif topic == 'clusters':
+            clusters_path = self.path(roots, 'clusters', filesystem)
+            clusters_frame = pd.read_parquet(clusters_path, storage_options=filesystem.storage_options)
+            _ = clusters_frame
+            if self.verbose:
+                print(f"Read zscc clusters from {clusters_path}")
+        return _
+
+
+        
+
+
+
+
+
+
 
     
