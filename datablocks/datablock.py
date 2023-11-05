@@ -7,12 +7,9 @@ import functools
 import hashlib
 import importlib
 import logging
-import math
 import os
-import pdb
-import traceback
 
-from typing import Any, TypeVar, Generic, Tuple, Union, List, Dict, Optional
+from typing import Any, TypeVar, Generic, Tuple, Union, List, Dict
 
 import fsspec
 
@@ -28,7 +25,7 @@ from .utils import ALIAS, DEPRECATED, OVERRIDE, microseconds_since_epoch, dateti
 from .eval import request
 from .eval.request import Request, Report, LAST, NONE, Graph
 from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL, DATABLOCKS_FILE_LOGGING_POOL
-from .dataspace import Dataspace, DATABLOCKS_HOMELAKE
+from .dataspace import DATABLOCKS_HOMELAKE
 
 
 def _eval(string):
@@ -858,7 +855,7 @@ class Databuilder(Anchored, Scoped):
         blockscope = self._blockscope_(**scope)
         record = self.show_named_record(alias=self.alias, version=self.version) 
         if record is not None:
-            _scope = eval(record['scope'])
+            _scope = _eval(record['scope'])
             if _scope is not None and not scopes_equal(blockscope, _scope):
                 raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.__class__} alias {self.alias}")
         """
@@ -1044,6 +1041,10 @@ class DBX:
                 self.dbx, self.topic, _ = self.parse_url(url)
             self.pic = pic
             self.dbx = self.dbx.with_pic(pic=pic)
+            if hasattr(self.dbx.datablock, 'TOPICS'):
+                if topic not in self.dbx.datablock.TOPICS:
+                    raise ValueError(f"Topic {topic} not from among {self.dbx.datablock.TOPICS}")
+
 
         def with_pic(self, pic=True):
             _ = DBX.Reader(self.url, dbx=self.dbx, topic=self.topic, pic=pic)
@@ -1055,8 +1056,14 @@ class DBX:
             return _
         
         def __ne__(self, other):
-            return not isinstance(other, self.__class__) or \
-                self.request != other.request
+            # .request might fail due to previous build record mismatch, 
+            # so treat that as a failure of equality
+            try:
+                _ =  not isinstance(other, self.__class__) or \
+                    self.request != other.request
+            finally:
+                _ = True
+            return _
         
         def __eq__(self, other):
             return not self.__ne__(other)
@@ -1093,6 +1100,10 @@ class DBX:
             else:
                 self.dbx, self.topic = self.parse_url(url)
             self.pic = pic
+            self.dbx = self.dbx.with_pic(pic=pic)
+            if hasattr(self.dbx.datablock, 'TOPICS'):
+                if topic not in self.dbx.datablock.TOPICS:
+                    raise ValueError(f"Topic {topic} not from among {self.dbx.datablock.TOPICS}")
 
         def with_pic(self, pic=True):
             _ = DBX.Extenter(self.url, dbx=self.dbx, topic=self.topic, pic=pic)
@@ -1310,7 +1321,7 @@ class DBX:
         else:
             record = self.databuilder.show_named_record(alias=self.databuilder.alias, version=self.databuilder.version) 
             if record is not None:
-                _scope = eval(record['scope'])
+                _scope = _eval(record['scope'])
                 if self.verbose:
                     print(f"DBX: scope: no specified scope for databuilder {self.databuilder} with version {self.databuilder.version} with alias {repr(self.databuilder.alias)}: using build record scope: {_scope}")
             else:
@@ -1660,7 +1671,8 @@ class DBX:
                 _blockscope  = f"{dbx.datablock_clstr}.SCOPE(\n"
                 for key, arg in dbx.scope.items():
                     if isinstance(arg, DBX.Reader):
-                        _blockscope += f"\t{key}={arg.dbx.alias}.read({readerargs[arg.dbx.alias]}topic={repr(arg.topic)}),\n"
+                        topicarg = f"topic={repr(arg.topic)}" if arg.topic is not None else ""
+                        _blockscope += f"\t{key}={arg.dbx.alias}.read({readerargs[arg.dbx.alias]}{topicarg}),\n"
                     else:
                         _blockscope += f"\t{key}={repr(arg)},\n"
                 _blockscope += ")\n"
