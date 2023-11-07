@@ -7,7 +7,7 @@ import pickle
 from sklearn.cluster import KMeans
 import tarfile
 import tempfile
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 import fsspec
 from fsspec.callbacks import TqdmCallback
@@ -17,12 +17,20 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 import matplotlib.pyplot as plt
+import plotly.express as px
 import umap
 
 from micron.cclustering import ZSConsensusClustering
 
 
 class Dataset:
+
+    @staticmethod
+    def display_umap(frame, *, color=None):
+        _umap = umap.UMAP()
+        _udata = _umap.fit_transform(frame.fillna(0.0))
+        plt.scatter(_udata[:, 0], _udata[:, 1], c=color)
+
     def print_verbose(self, s):
         if self.verbose:
             print(f">>> {self.__class__.__qualname__}: {s}")
@@ -50,78 +58,21 @@ class miRCoHN(Dataset):
     class SCOPE:
         pass
 
-    _TGT_FILENAMES = {'logcounts': f"mircohn_rpm_log2.parquet",
-                      'pivots': f"mircohn_pivots.parquet",
-                      'controls': f"mircohn_controls.parquet",
-                      'downregulated_mirna_infixes': f"mircohn_downregulated_mirna_infixes.parquet"
-    }
+    DOWNREGULATED_SEQ_PATTERNS = dict(
+        epithelial = list(set(['miR-150', 'miR-125b', 'miR-195', 'miR-127', 'miR-342', 'miR-361',
+                                  'miR-195', 'miR-125b', 'miR-150', 'miR-149', 'miR-342'
+               
+        ])),
+        stromal = list(set(['miR-210', 'miR-20a', 'miR-92a', 'miR-20b', 'miR-17', 'miR-200c', 'miR-200b', 
+                                   'miR-200a', 'miR-425', 'miR-18a', 'miR-183', 'miR-224', 'miR-181d', 'miR-221', 'miR-93', 'miR-106b', 
+                                   'miR-194', 'miR-660',
+                                   'miR-25', 'miR-106b', 'miR-93', 'miR-92a', 'miR-17', 'miR-20a', 'miR-210', 'miR-200a', 'miR-200c', 
+                                   'miR-200b', 'miR-194'
+        ]))
+    )
 
-    _SRC_URL = "https://gdac.broadinstitute.org/runs/stddata__2016_01_28/data/HNSC/20160128/"
-    _SRC_TAR_DIRNAME = "gdac.broadinstitute.org_HNSC.miRseq_Mature_Preprocess.Level_3.2016012800.0.0"
-    _SRC_DAT_FILENAME = "HNSC.miRseq_mature_RPM_log2.txt"
-    
-    def display(
-            self,
-            roots: Optional[Dict[str, str]] = None,
-            *, 
-            filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
-    ):
-        cof = self.read(roots, scope=scope, filesystem=filesystem)
-        ufit = umap.UMAP()
-        ucof = ufit.fit_transform(cof.fillna(0.0))
-        plt.scatter(ucof[:, 0], ucof[:, 1])
-
-    def build(self, 
-             roots: Optional[Dict[str, str]] = None,
-             *, 
-             scope: Optional[SCOPE] = None, 
-             filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"), 
-    ):
-        """
-            Generate a pandas dataframe of TCGA HNSC mature MiRNA sequence samples.
-        """
-        scope = scope or self.SCOPE()
-        if roots is None and filesystem.protocol != 'file':
-            filesystem = fsspec.AbstractFileSystem = fsspec.filesystem("file")
-            self.print_verbose(f"Resetting filesystem to {filesystem} because None 'roots' default to 'os.getcwd()'")
-
-        self.print_verbose("Building ...")
-
-        framepaths = {}
-
-        # logcounts
-        topic = 'logcounts'
-        fs = fsspec.filesystem('http')
-        with tempfile.TemporaryDirectory() as tmpdir:
-            remote_tarpath = self._SRC_URL + '/' + self._SRC_TAR_DIRNAME + ".tar.gz"
-            local_tarpath = os.path.join(tmpdir, self._SRC_TAR_DIRNAME) + ".tar.gz"
-            self.print_verbose(f"Downloading {remote_tarpath} to {local_tarpath}")
-            fs.get(remote_tarpath, local_tarpath, callback=TqdmCallback())
-            assert os.path.isfile(local_tarpath)
-            self.print_verbose(f"Trying to parse local copy {local_tarpath}")
-            _tardir = os.path.join(tmpdir, self._SRC_TAR_DIRNAME)
-            with tarfile.open(local_tarpath, 'r') as _tarfile:
-                self.print_verbose(f"Extracting {local_tarpath} to {_tardir}")
-                _tarfile.extractall(tmpdir)
-            self.print_debug(f"Extracted dir: {os.listdir(_tardir)}")
-            logcounts_src_path = os.path.join(_tardir, self._SRC_DAT_FILENAME)
-            topic_frame = logcounts_frame = pd.read_csv(logcounts_src_path, sep='\t', header=0, index_col=0).transpose()
-
-            coltuples = [tuple(c.split('|')) for c in logcounts_frame.columns]
-            mindex = pd.MultiIndex.from_tuples(coltuples)
-            logcounts_frame.columns = mindex
-
-            topic_tgt_root = roots[topic] if roots is not None else os.getcwd()
-            filesystem.mkdirs(topic_tgt_root, exist_ok=True)
-            topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
-            topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
-            self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
-            framepaths[topic] = topic_tgt_path
-
-        # pivots
-        topic = 'pivots'
-        #https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/bin/NIHMS1644540-supplement-3.docx
-        pivot_list = [
+    #https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/bin/NIHMS1644540-supplement-3.docx
+    PIVOT_SEQS = [
             "hsa-let-7d-5p",
             "hsa-miR-103a-3p",
             "hsa-miR-106a-5p",
@@ -173,7 +124,196 @@ class miRCoHN(Dataset):
             "hsa-miR-93-3p",
             "hsa-miR-93-5p",
         ]
-        topic_frame = pivots_frame = pd.DataFrame({'pivots': pivot_list})
+
+    #https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/bin/NIHMS1644540-supplement-4.docx
+    @staticmethod
+    def control_records_mask(counts):
+        controls = pd.Series(counts.index, index=counts.index).apply(lambda _: _.split('-')[3].startswith('11'))
+        return controls
+    
+    _TGT_FILENAMES = {'logcounts': f"mircohn_rpm_log2.parquet",
+                      'pivots': f"mircohn_pivots.parquet",
+                      'controls': f"mircohn_controls.parquet",
+                      'downregulated_mirna_infixes': f"mircohn_downregulated_mirna_infixes.parquet"
+    }
+
+    _SRC_URL = "https://gdac.broadinstitute.org/runs/stddata__2016_01_28/data/HNSC/20160128/"
+    _SRC_TAR_DIRNAME = "gdac.broadinstitute.org_HNSC.miRseq_Mature_Preprocess.Level_3.2016012800.0.0"
+    _SRC_DAT_FILENAME = "HNSC.miRseq_mature_RPM_log2.txt"
+    
+    def display(
+            self,
+            roots: Optional[Dict[str, str]] = None,
+            *, 
+            filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
+    ):
+        cof = self.read(roots, filesystem=filesystem)
+        self.display_umap(cof)
+        """
+        ufit = umap.UMAP()
+        ucof = ufit.fit_transform(cof.fillna(0.0))
+        plt.scatter(ucof[:, 0], ucof[:, 1])
+        """
+
+    @staticmethod
+    def downregulated_seq_pattern(tissue_type):
+        return miRCoHN.DOWNREGULATED_SEQ_PATTERNS[tissue_type]
+
+    @staticmethod
+    def normalized_counts(counts:             pd.DataFrame, 
+                         *, 
+                         ordering:           Optional[List[int]] = None, 
+                         seq_patterns:       Optional[List[str]] = None, 
+                         seq_mad_threshold:  Optional[float] = None,
+                         seq_pivots:         bool = False,
+                         seq_order_by_mad:   bool = False,
+                         remove_controls:    bool = True,
+                         center_at_controls: bool = False,
+    ) -> pd.DataFrame:
+        """
+            Inputs:
+                counts:              miR expression counts with one count profile record per row; 
+                                       columns are labeled by miR sequences
+                ordering:            permutation of rows to use for display
+                seq_patterns:        substrigs found in sequences to display; 
+                                       for example, sequence patters for miR known to be downregulated
+                                       in certain tissues
+                seq_mad_threshold: Maximal Absolute Deviation threshold: keep only the sequences with MAD > threshold
+                remove_controls:     remove records from normal (healthy) tissue
+                center_at_controls:  remove mean counts taken over control records
+            Ouput:
+                ncounts: counts reordered using 'ordering', restricted to columns satisfying seq_patterns, with MAD > seq_mad_threshold;
+                         if control_records are provided, counts are centered around the mean counts of control_records;
+                         any 'counts' records found among 'control_records' are removed
+
+        """
+        def seq_matches_patterns(seq, seq_patterns): 
+            for pattern in seq_patterns:
+                if seq[0].find(pattern) != -1:
+                    return True
+            return False
+
+        def filter_seq_patterns(counts):
+            fseqs = [seq for seq in counts.columns if seq_matches_patterns(seq, seq_patterns)]
+            fcounts = counts[fseqs]
+            return fcounts
+
+        def filter_seq_mad(counts):
+            if seq_mad_threshold is None:
+                return counts
+            mads = (counts - counts.mean()).abs().mean()
+            madf = pd.DataFrame({'mad': mads})
+            madcuts = pd.qcut(madf.mad, 100, labels=False, duplicates='drop')
+            madcounts = counts[madcuts[madcuts > seq_mad_threshold].index]
+            return madcounts
+        
+        control_records_mask = miRCoHN.control_records_mask(counts)
+        controls = counts[control_records_mask]
+        
+        _counts = counts
+        if remove_controls:
+            _counts = _counts[~control_records_mask]
+
+        if center_at_controls:
+            cm = controls.mean(axis=0)
+            _counts = _counts - cm
+        
+        if seq_pivots:
+            _counts = _counts[miRCoHN.PIVOT_SEQS]
+
+        if seq_patterns is not None:
+            _counts = filter_seq_patterns(_counts)
+
+        if seq_mad_threshold is not None:
+            _counts = filter_seq_mad(_counts)
+
+        if ordering:
+            _counts = _counts.iloc[ordering]
+        
+        return _counts
+    
+    @staticmethod
+    def display_heatmap(counts:             pd.DataFrame, 
+                         *, 
+                         ordering:           Optional[List[int]] = None, 
+                         seq_patterns:       Optional[List[str]] = None, 
+                         seq_mad_threshold:  Optional[float] = None,
+                         seq_pivots:         bool = False,
+                         remove_controls:    bool = True,
+                         center_at_controls: bool = False,
+                         order_seqs_by_mad:  bool = False,
+                         nseqs:              Optional[int] = None,
+    ):
+        """
+            Inputs/Output: see 'normalized_counts()'
+        """
+        ncounts = miRCoHN.normalized_counts(counts, 
+                                            ordering=ordering,
+                                            seq_patterns=seq_patterns,
+                                            seq_mad_threshold=seq_mad_threshold,
+                                            seq_pivots=seq_pivots,
+                                            remove_controls=remove_controls,
+                                            center_at_controls=center_at_controls, 
+                                            seq_order_by_mad=order_seqs_by_mad,
+        )
+        ncountst_ = ncounts.transpose()
+        if nseqs is not None:
+            ncountst = ncountst_.iloc[:nseqs]
+        else:
+            ncountst = ncountst_
+        _ = px.imshow(ncountst.values, aspect='auto')
+        return _
+
+    def build(self, 
+             roots: Optional[Dict[str, str]] = None,
+             *, 
+             scope: Optional[SCOPE] = None, 
+             filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"), 
+    ):
+        """
+            Generate a pandas dataframe of TCGA HNSC mature MiRNA sequence samples.
+        """
+        scope = scope or self.SCOPE()
+        if roots is None and filesystem.protocol != 'file':
+            filesystem = fsspec.AbstractFileSystem = fsspec.filesystem("file")
+            self.print_verbose(f"Resetting filesystem to {filesystem} because None 'roots' default to 'os.getcwd()'")
+
+        self.print_verbose("Building ...")
+
+        framepaths = {}
+
+        # logcounts
+        topic = 'logcounts'
+        fs = fsspec.filesystem('http')
+        with tempfile.TemporaryDirectory() as tmpdir:
+            remote_tarpath = self._SRC_URL + '/' + self._SRC_TAR_DIRNAME + ".tar.gz"
+            local_tarpath = os.path.join(tmpdir, self._SRC_TAR_DIRNAME) + ".tar.gz"
+            self.print_verbose(f"Downloading {remote_tarpath} to {local_tarpath}")
+            fs.get(remote_tarpath, local_tarpath, callback=TqdmCallback())
+            assert os.path.isfile(local_tarpath)
+            self.print_verbose(f"Trying to parse local copy {local_tarpath}")
+            _tardir = os.path.join(tmpdir, self._SRC_TAR_DIRNAME)
+            with tarfile.open(local_tarpath, 'r') as _tarfile:
+                self.print_verbose(f"Extracting {local_tarpath} to {_tardir}")
+                _tarfile.extractall(tmpdir)
+            self.print_debug(f"Extracted dir: {os.listdir(_tardir)}")
+            logcounts_src_path = os.path.join(_tardir, self._SRC_DAT_FILENAME)
+            topic_frame = logcounts_frame = pd.read_csv(logcounts_src_path, sep='\t', header=0, index_col=0).transpose()
+
+            coltuples = [tuple(c.split('|')) for c in logcounts_frame.columns]
+            mindex = pd.MultiIndex.from_tuples(coltuples)
+            logcounts_frame.columns = mindex
+
+            topic_tgt_root = roots[topic] if roots is not None else os.getcwd()
+            filesystem.mkdirs(topic_tgt_root, exist_ok=True)
+            topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
+            topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
+            self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
+            framepaths[topic] = topic_tgt_path
+
+        # pivots
+        topic = 'pivots'
+        topic_frame = pivots_frame = pd.DataFrame({'pivots': self.PIVOT_SEQS})
         topic_tgt_root = roots[topic] if roots is not None else os.getcwd()
         filesystem.makedirs(topic_tgt_root, exist_ok=True)
         topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
@@ -183,7 +323,7 @@ class miRCoHN(Dataset):
 
         #controls
         topic = 'controls'
-        controls = pd.Series(logcounts_frame.index, index=logcounts_frame.index).apply(lambda _: _.split('-')[3].startswith('11'))
+        controls = miRCoHN.control_records_mask(logcounts_frame)
         controls.name = 'controls'
         topic_frame = controlsf = pd.DataFrame({'is_control': controls})
 
@@ -196,16 +336,9 @@ class miRCoHN(Dataset):
 
         #downregulated
         topic = 'downregulated_mirna_infixes'
-        epithelial_downregulated_infixes = set(['miR-150', 'miR-125b', 'miR-195', 'miR-127', 'miR-342', 'miR-361',
-                                  'miR-195', 'miR-125b', 'miR-150', 'miR-149', 'miR-342'
-               
-        ])
-        stromal_downregulated_infixes = set(['miR-210', 'miR-20a', 'miR-92a', 'miR-20b', 'miR-17', 'miR-200c', 'miR-200b', 
-                                   'miR-200a', 'miR-425', 'miR-18a', 'miR-183', 'miR-224', 'miR-181d', 'miR-221', 'miR-93', 'miR-106b', 
-                                   'miR-194', 'miR-660',
-                                   'miR-25', 'miR-106b', 'miR-93', 'miR-92a', 'miR-17', 'miR-20a', 'miR-210', 'miR-200a', 'miR-200c', 
-                                   'miR-200b', 'miR-194'
-        ])
+        
+        epithelial_downregulated_infixes = self.DOWNREGULATED_SEQ_PATTERNS['epithelial']
+        stromal_downregulated_infixes = self.DOWNREGULATED_SEQ_PATTERNS['stromal']
         topic_frame = downregulated_frame = pd.DataFrame.from_records([{'epithelial': ','.join(list(epithelial_downregulated_infixes)), 
                                                                         'stromal': ','.join(list(stromal_downregulated_infixes))}])
         topic_tgt_root = roots[topic] if roots is not None else os.getcwd()
@@ -215,7 +348,6 @@ class miRCoHN(Dataset):
         self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
         framepaths[topic] = topic_tgt_path
 
-        #https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/bin/NIHMS1644540-supplement-4.docx
         self.print_verbose("... done")
         return framepaths
     
@@ -618,14 +750,3 @@ class ZSCC(Dataset):
             if self.verbose:
                 print(f"Read zscc clusters from {clusters_path}")
         return _
-
-
-        
-
-
-
-
-
-
-
-    
