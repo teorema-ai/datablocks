@@ -855,7 +855,11 @@ class Databuilder(Anchored, Scoped):
         blockscope = self._blockscope_(**scope)
         record = self.show_named_record(alias=self.alias, version=self.version) 
         if record is not None:
-            _scope = _eval(record['scope'])
+            try:
+                _scope = _eval(record['scope'])
+            except:
+                # For example, when the scope contains tags of DBX with an earlier version.
+                _scope = None
             if _scope is not None and not scopes_equal(blockscope, _scope):
                 raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.__class__} alias {self.alias}")
         """
@@ -1011,57 +1015,55 @@ class DBX:
         DBX is by definition a fixed scope block.
     """
 
-    class Reader(request.Proxy):
+    class Request(request.Proxy):
         @staticmethod
         def parse_url(url: str, **datablock_kwargs):
-            parts = url.split(":")
-            head = parts[0]
-            if len(parts) == 1:
-                topic = None
-            elif len(parts) == 2:
-                topic = parts[-1]
-            else:
+            #url = {classtr}@{version}|{alias}:{topic}
+            tail = url
+            try:
+                datablock_clstr, tail  = tail.split("@")
+            except:
                 raise ValueError(f"Malformed url: {url}")
-            hparts = head.split('@')
-            datablock_clstr = hparts[0]
-            if len(hparts) == 1:
-                alias = None
-            elif len(hparts) == 2:
-                alias = hparts[-1]
-            else:
+            try:
+                version, tail  = tail.split("|")
+            except:
+                raise ValueError(f"Malformed url: {url}")
+            try:
+                alias, topic  = tail.split(":")
+                if len(alias) == 0:
+                    alias = None
+                if len(topic) == 0:
+                    topic = DEFAULT_TOPIC
+            except:
                 raise ValueError(f"Malformed url: {url}")
             dbx = DBX(datablock_clstr, alias, **datablock_kwargs)
-            return dbx, topic
+            return dbx, version, topic
 
-        def __init__(self, url=None, *, dbx, topic, pic=False):
+        def __init__(self, url=None, *, dbx, version, topic, pic=False):
             self.url = url
             if self.url is None:
-                self.dbx, self.topic = dbx, topic
+                self.dbx, self.version, self.topic = dbx, version, topic
             else:
-                self.dbx, self.topic, _ = self.parse_url(url)
+                self.dbx, version, self.topic = self.parse_url(url)
             self.pic = pic
             self.dbx = self.dbx.with_pic(pic=pic)
             if hasattr(self.dbx.datablock, 'TOPICS'):
                 if topic not in self.dbx.datablock.TOPICS:
                     raise ValueError(f"Topic {topic} not from among {self.dbx.datablock.TOPICS}")
-
+            if dbx.version != version:
+                raise ValueError(f"Incompatible version {version} from url for dbx {dbx}")
 
         def with_pic(self, pic=True):
-            _ = DBX.Reader(self.url, dbx=self.dbx, topic=self.topic, pic=pic)
+            _ = self.__class__(self.url, dbx=self.dbx, version=self.version, topic=self.topic, pic=pic)
             return _
 
-        @property
-        def request(self):
-            _ = self.dbx.read_request(topic=self.topic)
-            return _
-        
         def __ne__(self, other):
             # .request might fail due to previous build record mismatch, 
             # so treat that as a failure of equality
             try:
                 _ =  not isinstance(other, self.__class__) or \
-                    self.request != other.request
-            finally:
+                    repr(self.request) != repr(other.request) #TODO: implemented a more principled Request __ne__
+            except:
                 _ = True
             return _
         
@@ -1076,66 +1078,30 @@ class DBX:
             if self.url is not None:
                 _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, self.url)
             else:
-                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, dbx=self.dbx, topic=self.topic)
+                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, dbx=self.dbx, version=self.version, topic=self.topic)
             return _
 
-        def __tag__(self):
-            tag__ = f"{DBX_PREFIX}.{self.dbx.datablock_clstr}"
-            tag_ = tag__+f"@{self.dbx.alias}" if self.dbx.alias is not None else tag__
-            tag = tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else tag_
-            return tag
-    
-    class Extenter(request.Proxy):
-        @staticmethod
-        def parse_url(url: str, **datablock_kwargs):
-            if not url.startswith("[") or not url.startswith("]"):
-                raise ValueError(f"Malformed url: {url}")
-            _ = DBX.Extenter.parse_url(url[1:-1], **datablock_kwargs)
+    class Reader(Request):
+        @property
+        def request(self):
+            _ = self.dbx.read_request(topic=self.topic)
             return _
         
-        def __init__(self, url=None, *, dbx, topic, pic=False):
-            self.url = url
-            if self.url is None:
-                self.dbx, self.topic = dbx, topic
-            else:
-                self.dbx, self.topic = self.parse_url(url)
-            self.pic = pic
-            self.dbx = self.dbx.with_pic(pic=pic)
-            if hasattr(self.dbx.datablock, 'TOPICS'):
-                if topic not in self.dbx.datablock.TOPICS:
-                    raise ValueError(f"Topic {topic} not from among {self.dbx.datablock.TOPICS}")
-
-        def with_pic(self, pic=True):
-            _ = DBX.Extenter(self.url, dbx=self.dbx, topic=self.topic, pic=pic)
-            return _
-
+        def __tag__(self):
+            _tag__ = f"{DBX_PREFIX}.{self.dbx.datablock_clstr}"
+            tag__ = _tag__+f"@{self.dbx.databuilder.version}"
+            tag_ =  tag__+f"|{self.dbx.alias}" if self.dbx.alias is not None else tag__+"|"
+            tag = tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else tag_+":"
+            return tag
+    
+    class Extenter(Reader):
         @property
         def request(self):
             _ = self.dbx.extent_request(topic=self.topic)
             return _
-        
-        def __ne__(self, other):
-            return not isinstance(other, self.__class__) or \
-                self.request != other.request
-        
-        def __eq__(self, other):
-            return not self.__ne__(other)
-        
-        def __str__(self):
-            _ = self.__repr__()
-            return _ 
-        
-        def __repr__(self):
-            if self.url is not None:
-                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, self.url)
-            else:
-                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, dbx=self.dbx, topic=self.topic)
-            return _
 
         def __tag__(self):
-            _tag__ = f"{DBX_PREFIX}.{self.dbx.datablock_clstr}"
-            _tag_ = _tag__+f"@{self.dbx.alias}" if self.dbx.alias is not None else _tag__
-            _tag = _tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else _tag_
+            _tag = super().__tag__()
             tag = f"[{_tag}]"
             return tag
     
@@ -1360,16 +1326,7 @@ class DBX:
         return _
 
     def READ(self, topic=None):
-        _ = DBX.Reader(dbx=self, topic=topic)
-        return _
-    
-    @ALIAS
-    def data(self, topic=None):
-        _ = self.READ(topic)
-        return _
-
-    def reader(self, topic=DEFAULT_TOPIC):
-        _ = self.READ(topic)
+        _ = DBX.Reader(dbx=self, topic=topic, version=self.version)
         return _
     
     def read(self, topic=DEFAULT_TOPIC):

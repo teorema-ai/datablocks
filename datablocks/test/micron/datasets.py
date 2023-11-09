@@ -48,8 +48,9 @@ class Dataset:
 class miRCoHN(Dataset):
     """
         Data for the clustering HNSC study described in from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/.
+        TODO: do not save 'pivots' or 'downregulated_mirna_infixes' to a file, return them from code instead?
     """
-    VERSION = "0.5.3"
+    VERSION = "0.9.3"
     TOPICS            = ['logcounts', 
                          'pivots',
                          'controls',
@@ -164,11 +165,10 @@ class miRCoHN(Dataset):
                          *, 
                          ordering:           Optional[List[int]] = None, 
                          seq_patterns:       Optional[List[str]] = None, 
-                         seq_mad_threshold:  Optional[float] = None,
+                         seq_mad_threshold:  0.0,
                          seq_pivots:         bool = False,
                          seq_order_by_mad:   bool = False,
-                         remove_controls:    bool = True,
-                         center_at_controls: bool = False,
+                         center_at_controls: Optional[pd.DataFrame] = None,
     ) -> pd.DataFrame:
         """
             Inputs:
@@ -179,7 +179,6 @@ class miRCoHN(Dataset):
                                        for example, sequence patters for miR known to be downregulated
                                        in certain tissues
                 seq_mad_threshold: Maximal Absolute Deviation threshold: keep only the sequences with MAD > threshold
-                remove_controls:     remove records from normal (healthy) tissue
                 center_at_controls:  remove mean counts taken over control records
             Ouput:
                 ncounts: counts reordered using 'ordering', restricted to columns satisfying seq_patterns, with MAD > seq_mad_threshold;
@@ -198,49 +197,55 @@ class miRCoHN(Dataset):
             fcounts = counts[fseqs]
             return fcounts
 
-        def filter_seq_mad(counts):
-            if seq_mad_threshold is None:
-                return counts
+        def filter_seq_mad_pivots(counts):
             mads = (counts - counts.mean()).abs().mean()
             madf = pd.DataFrame({'mad': mads})
             madcuts = pd.qcut(madf.mad, 100, labels=False, duplicates='drop')
-            madcounts = counts[madcuts[madcuts > seq_mad_threshold].index]
+            madseqs = madcuts[madcuts > seq_mad_threshold].index
+            if seq_pivots:
+                _counts = counts.transpose()
+                pivs = pd.Series(miRCoHN.PIVOT_SEQS)
+                _counts_ = _counts.loc[pivs]
+                counts_ = _counts_.transpose()
+            else:
+                counts_ = counts
+
+            madcounts = counts[madseqs]
             return madcounts
         
-        control_records_mask = miRCoHN.control_records_mask(counts)
-        controls = counts[control_records_mask]
-        
-        _counts = counts
-        if remove_controls:
-            _counts = _counts[~control_records_mask]
+        counts_2 = counts
 
-        if center_at_controls:
-            cm = controls.mean(axis=0)
-            _counts = _counts - cm
-        
-        if seq_pivots:
-            _counts = _counts[miRCoHN.PIVOT_SEQS]
+        if center_at_controls is not None:
+            cm = center_at_controls.mean(axis=0)
+            counts_3 = counts_2 - cm
+        else:
+            counts_3 = counts_2
 
         if seq_patterns is not None:
-            _counts = filter_seq_patterns(_counts)
+            counts_4 = filter_seq_patterns(counts_3)
+        else:
+            counts_4 = counts_3
 
         if seq_mad_threshold is not None:
-            _counts = filter_seq_mad(_counts)
+            counts_5 = filter_seq_mad_pivots(counts_4)
+        else:
+            counts_5 = counts_4
 
-        if ordering:
-            _counts = _counts.iloc[ordering]
+        if ordering is not None:
+            counts_6 = counts_5.iloc[ordering]
+        else:
+            counts_6 = counts_5
         
-        return _counts
+        return counts_6
     
     @staticmethod
     def display_heatmap(counts:             pd.DataFrame, 
                          *, 
                          ordering:           Optional[List[int]] = None, 
                          seq_patterns:       Optional[List[str]] = None, 
-                         seq_mad_threshold:  Optional[float] = None,
+                         seq_mad_threshold:  float = 0.0,
                          seq_pivots:         bool = False,
-                         remove_controls:    bool = True,
-                         center_at_controls: bool = False,
+                         center_at_controls: Optional[pd.DataFrame],
                          order_seqs_by_mad:  bool = False,
                          nseqs:              Optional[int] = None,
     ):
@@ -252,7 +257,6 @@ class miRCoHN(Dataset):
                                             seq_patterns=seq_patterns,
                                             seq_mad_threshold=seq_mad_threshold,
                                             seq_pivots=seq_pivots,
-                                            remove_controls=remove_controls,
                                             center_at_controls=center_at_controls, 
                                             seq_order_by_mad=order_seqs_by_mad,
         )
@@ -298,11 +302,13 @@ class miRCoHN(Dataset):
                 _tarfile.extractall(tmpdir)
             self.print_debug(f"Extracted dir: {os.listdir(_tardir)}")
             logcounts_src_path = os.path.join(_tardir, self._SRC_DAT_FILENAME)
-            topic_frame = logcounts_frame = pd.read_csv(logcounts_src_path, sep='\t', header=0, index_col=0).transpose()
+            logcounts_frame = pd.read_csv(logcounts_src_path, sep='\t', header=0, index_col=0).transpose()
+            logcontrols_mask = miRCoHN.control_records_mask(logcounts_frame)
+            topic_frame = _logcounts_frame = logcounts_frame[~logcontrols_mask]
 
-            coltuples = [tuple(c.split('|')) for c in logcounts_frame.columns]
+            coltuples = [tuple(c.split('|')) for c in _logcounts_frame.columns]
             mindex = pd.MultiIndex.from_tuples(coltuples)
-            logcounts_frame.columns = mindex
+            _logcounts_frame.columns = mindex
 
             topic_tgt_root = roots[topic] if roots is not None else os.getcwd()
             filesystem.mkdirs(topic_tgt_root, exist_ok=True)
@@ -323,9 +329,10 @@ class miRCoHN(Dataset):
 
         #controls
         topic = 'controls'
-        controls = miRCoHN.control_records_mask(logcounts_frame)
-        controls.name = 'controls'
-        topic_frame = controlsf = pd.DataFrame({'is_control': controls})
+        topic_frame = logcontrols_frame = logcounts_frame[logcontrols_mask]
+        ccoltuples = [tuple(c.split('|')) for c in logcontrols_frame.columns]
+        cmindex = pd.MultiIndex.from_tuples(ccoltuples)
+        logcontrols_frame.columns = cmindex
 
         topic_tgt_root = roots[topic] if roots is not None else os.getcwd()
         filesystem.makedirs(topic_tgt_root, exist_ok=True)
@@ -363,12 +370,13 @@ class miRCoHN(Dataset):
         topic_frame = pd.read_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
         return topic_frame
         
-    
+
+#DEPRECATED
 class miRCoStats(Dataset):
     """
         MAD
     """
-    VERSION = "0.4.1"
+    VERSION = "0.5.1"
 
     TGT_FILENAME = f"mirco_stats.parquet"
 
@@ -413,7 +421,7 @@ class miRCoStats(Dataset):
     
 
 class miRNA(Dataset):
-    VERSION = "0.0.1"
+    VERSION = "0.1.1"
 
     @dataclass
     class SCOPE:
@@ -511,7 +519,7 @@ class miRCoSeqs(Dataset):
     """
         Sequences sampled at count frequences
     """
-    VERSION = "0.10.1"
+    VERSION = "0.11.1"
     TOPICS = {'logcounts': f"miRLogCos.parquet",
                  'counts': f"miRCos.parquet",
                  'seqs': f"miRSeqs.parquet",
@@ -523,6 +531,7 @@ class miRCoSeqs(Dataset):
     class SCOPE:
         seqs: pd.DataFrame
         logcounts: pd.DataFrame
+        controls_mask: Optional[pd.DataFrame]
         npasses: int = 5
         nseqs_per_record: int = 200    
     
@@ -534,7 +543,10 @@ class miRCoSeqs(Dataset):
         
         # log2(n) -> n
         # n = exp(ln(n)) = exp[ln(2^log2(n))] = exp[log2(n)*ln(2)]
-        logcof = scope.logcounts
+        logcof_ = scope.logcounts
+        ctrls = scope.controls_mask.iloc[:, 0]
+        logcof = logcof_[~ctrls]
+        self.print_verbose(f"Removed controls from logcounts: {len(logcof_)} -> {len(logcof)}")
         logcofcols1 = [c[5:] for c in logcof.columns.get_level_values(1).tolist()]
 
         _logcof = logcof.copy()
@@ -668,10 +680,11 @@ class miRCoSeqs(Dataset):
 
 
 class ZSCC(Dataset):
-    VERSION = "0.3.1"
+    VERSION = "0.5.1"
     TOPICS = {
         'zscc': 'zscc.pkl',
-        'clusters': 'clusters.parquet'
+        'clusters': 'clusters.parquet',
+        'ordering': 'ordering.pkl'
     }
     
     @dataclass
@@ -726,8 +739,13 @@ class ZSCC(Dataset):
         clusters_frame = pd.DataFrame({'clusters': clusters})
         clusters_path = self.path(roots, 'clusters', filesystem)
         clusters_frame.to_parquet(clusters_path, storage_options=filesystem.storage_options)
-        if self.verbose:
-            print(f"Wrote zscc clusters to {clusters_path}")
+        self.print_verbose(f"Wrote zscc clusters to {clusters_path}")
+
+        ordering = np.argsort(clusters)
+        ordering_path = self.path(roots, 'ordering', filesystem)
+        with filesystem.open(ordering_path, 'wb') as ordering_file:
+            pickle.dump(ordering, ordering_file)
+        self.print_verbose(f"Wrote zscc ordering to {ordering_path}")
 
     def read(self,
               roots,
@@ -749,4 +767,10 @@ class ZSCC(Dataset):
             _ = clusters_frame
             if self.verbose:
                 print(f"Read zscc clusters from {clusters_path}")
+        elif topic == 'ordering':
+            ordering_path = self.path(roots, 'ordering', filesystem)
+            with filesystem.open(ordering_path, 'rb') as ordering_file:
+                _ = pickle.load(ordering_file)
+            if self.verbose:
+                print(f"Read zscc cluster ordering from {ordering_path}")
         return _
