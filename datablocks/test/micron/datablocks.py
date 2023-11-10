@@ -70,6 +70,7 @@ class Datablock:
             for topic in self.TOPICS:
                 path = self.path(roots, filesystem, topic)
                 if not filesystem.exists(path):
+                    self.print_verbose(f"Topic '{topic}' not built at path {path}")
                     built = False
                     break
         else:
@@ -92,7 +93,7 @@ class miRCoHN(Datablock):
     
     TOPICS = {'logcounts': f"mircohn_rpm_log2.parquet",
                 'pivots': f"mircohn_pivots.parquet",
-                'controls': f"mircohn_controls.parquet",
+                'logcontrols': f"mircohn_controls.parquet",
                 'downregulated_mirna_infixes': f"mircohn_downregulated_mirna_infixes.parquet"
     }
 
@@ -194,7 +195,7 @@ class miRCoHN(Datablock):
     @staticmethod
     def seq_matches_patterns(seq, seq_patterns): 
             for pattern in seq_patterns:
-                if seq[0].find(pattern) != -1:
+                if seq.find(pattern) != -1:
                     return True
             return False
 
@@ -218,6 +219,8 @@ class miRCoHN(Datablock):
 
     @staticmethod
     def center_at_controls(frame, controls):
+        if controls is None:
+            return frame
         cm = controls.mean(axis=0)
         cframe = frame - cm
         return cframe
@@ -235,9 +238,15 @@ class miRCoHN(Datablock):
             Inputs/Output: see 'normalized_counts()'
         """
         ncounts1 = miRCoHN.filter_columns_by_patterns(counts, seq_patterns)
-        ncounts2 = miRCoHN.filter_columns_by_mad(counts, seq_mad_threshold)
-        ncounts3 = miRCoHN.center_at_controls(ncounts2, center_at_controls)
+        if len(ncounts1.columns) == 0:
+            raise ValueError(f"'filter_columns_by_patterns left no columns")
+        ncounts2 = miRCoHN.filter_columns_by_mad(ncounts1, seq_mad_threshold)
+        if center_at_controls is not None:
+            ncounts3 = miRCoHN.center_at_controls(ncounts2, center_at_controls[ncounts2.columns])
+        else:
+            ncounts3 = ncounts2
         ncounts = ncounts3.iloc[ordering]
+
         ncountst_ = ncounts.transpose()
         if nseqs is not None:
             ncountst = ncountst_.iloc[:nseqs]
@@ -296,8 +305,8 @@ class miRCoHN(Datablock):
             topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
             self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
 
-            #controls
-            topic = 'controls'
+            #logcontrols
+            topic = 'logcontrols'
             topic_tgt_path = framepaths[topic]
             topic_frame = logcontrols_frame = logcounts_frame[logcontrols_mask]
             ccoltuples = [tuple(c.split('|')) for c in logcontrols_frame.columns]
@@ -329,56 +338,6 @@ class miRCoHN(Datablock):
         topic_tgt_path = self.path(roots, filesystem, topic)
         topic_frame = pd.read_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
         return topic_frame
-        
-'''
-#DEPRECATED
-class miRCoStats(Datablock):
-    """
-        MAD
-    """
-    VERSION = "0.5.1"
-
-    TGT_FILENAME = f"mirco_stats.parquet"
-
-    @dataclass
-    class SCOPE:
-        mirco: pd.DataFrame
-
-    def __init__(self, *, verbose=False, debug=False):
-        self.verbose = verbose
-        self.debug = debug
-
-    def build(self, 
-             root: Optional[str] = None,
-             *, 
-             scope: SCOPE, 
-             filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"), 
-    ):
-        """
-            Generate a pandas dataframe of miRCo statistics.
-        """
-        root = root or os.getcwd()
-        
-        self.print_verbose("Building miRCo stats")
-
-        mc = scope.mirco
-        mcmad = (mc - mc.mean()).abs().mean().sort_values(ascending=False)
-        mcmadf = pd.DataFrame({'mad': mcmad})
-        mcmadf_path = root + "/" + self.TGT_FILENAME      
-        mcmadf.to_parquet(mcmadf_path, storage_options=filesystem.storage_options)
-        self.print_verbose(f"Wrote dataframe to {mcmadf_path}")
-        return mcmadf_path
-    
-    def read(self, 
-             root: Optional[str] = None,
-             *, 
-             filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"), 
-    ):
-        mcmadf_root = root or os.getcwd()
-        mcmadf_path = os.path.join(mcmadf_root, self.TGT_FILENAME)
-        mcmadf_frame = pd.read_parquet(mcmadf_path, storage_options=filesystem.storage_options)
-        return mcmadf_frame
-'''
 
 
 class miRNA(Datablock):
@@ -433,12 +392,6 @@ class miRNA(Datablock):
         path = self.path(root, filesystem)
         frame = pd.read_parquet(path, storage_options=filesystem.storage_options)
         return frame
-    '''
-    #REMOVEs
-    def path(self, root):
-        path = os.path.join(root, f"{self.MIRNA_DATASET_FILENAME}.parquet",) 
-        return path
-    '''
     
     def _build_frame(self, mdstr):
         recs = miRNA._parse_records(mdstr)
@@ -486,9 +439,10 @@ class miRCoSeqs(Datablock):
     """
         Sequences sampled at count frequences
     """
-    VERSION = "0.13.1"
+    VERSION = "1.2.0"
     TOPICS = {'logcounts': f"miRLogCos.parquet",
                  'counts': f"miRCos.parquet",
+                 'logcontrols': f"miRLogCtrls.parquet",
                  'seqs': f"miRSeqs.parquet",
                  'samples': f"miRCoSeqs.txt",
                  'rec_sample_ranges': f"miRSampleRanges.parquet"
@@ -498,12 +452,13 @@ class miRCoSeqs(Datablock):
     class SCOPE:
         seqs: pd.DataFrame
         logcounts: pd.DataFrame
+        logcontrols: pd.DataFrame
         npasses: int = 5
         nseqs_per_record: int = 200    
 
     @staticmethod
-    def seq_to_coseq_ids(columns):
-        subcolumns = [c[5:] for c in columns.get_level_values(1).tolist()]
+    def count_cols_to_coseq_cols(columns):
+        subcolumns = {c: c[1][5:] for c in columns}
         return subcolumns
 
     @staticmethod
@@ -517,19 +472,25 @@ class miRCoSeqs(Datablock):
               scope: SCOPE,
               filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
 
+        def lift_jcols(frame, coseq2co):
+            _cocols = frame.rename(columns=coseq2co).columns
+            cocols = pd.MultiIndex.from_tuples(_cocols)
+            frame.columns = cocols
+            return frame
+
         if self.built(roots, filesystem):
             self.print_verbose(f"miRCoSeqs already built")
         else:
             self.print_verbose(f"Building miRCoSeqs ... ")
             logcof = scope.logcounts
-            logcofcols1 = self.seq_to_coseq_ids(logcof.columns)
+            co2coseq = self.count_cols_to_coseq_cols(logcof.columns)
+            coseq2co = {val: key for key, val in co2coseq.items()}
             _logcof = logcof.copy()
-            _logcof.columns = logcofcols1
+            _logcof.columns = list(co2coseq.values())
 
             # log2(n) -> n
             # n = exp(ln(n)) = exp[ln(2^log2(n))] = exp[log2(n)*ln(2)]
             _cof = self.expcounts(_logcof)
-            _cof.columns = logcofcols1
 
             seqf = scope.seqs
             accession = seqf.Accession.apply(lambda _: _[2:])
@@ -540,17 +501,17 @@ class miRCoSeqs(Datablock):
             # join columns/datasets
             jcols = [i for i in _seqf.index if i in _cof.columns]
 
-            jcof = _cof[jcols]
+            jcof = lift_jcols(_cof[jcols], coseq2co)
             jcof_path = self.path(roots, filesystem, 'counts')
             jcof.to_parquet(jcof_path, storage_options=filesystem.storage_options)
             self.print_verbose(f"Wrote counts to {jcof_path}")
 
-            jlogcof = _logcof[jcols]
+            jlogcof = lift_jcols(_logcof[jcols], coseq2co)
             jlogcof_path = self.path(roots, filesystem, 'logcounts')
             jlogcof.to_parquet(jlogcof_path, storage_options=filesystem.storage_options)
             self.print_verbose(f"Wrote logcounts to {jlogcof_path}")
             
-            jseqf = _seqf.loc[jcols]
+            jseqf = lift_jcols(_seqf.loc[jcols].transpose(), coseq2co).transpose()
             jseqs_path = self.path(roots, filesystem, 'seqs')
             jseqf.to_parquet(jseqs_path, storage_options=filesystem.storage_options)
             self.print_verbose(f"Wrote sequences to {jseqs_path}")
@@ -559,6 +520,11 @@ class miRCoSeqs(Datablock):
             jcofn = jcof0.div(jcof0.sum(axis=1), axis=0)
             jseqs = jseqf['sequence']
             jseqlist = jseqs.tolist()
+
+            jlogcontrols = scope.logcontrols[co2coseq.keys()]
+            jlogcontrols_path = self.path(roots, filesystem, 'logcontrols')
+            jlogcontrols.to_parquet(jlogcontrols_path, storage_options=filesystem.storage_options)
+            self.print_verbose(f"Wrote logcontrols to {jlogcontrols_path}")
 
             self.print_verbose(f"Generating samples using {scope.npasses} passes")
             rec_sample_ranges = {recidx: [] for recidx in jcofn.index}
@@ -612,14 +578,10 @@ class miRCoSeqs(Datablock):
             useqs = s.split('\n')
             self.print_verbose(f"Read {len(useqs)} useqs")
             _ = useqs
-        elif topic == 'logcounts': 
+        elif topic in self.TOPICS:
             _ = pd.read_parquet(path, storage_options=filesystem.storage_options)
-        elif topic == 'counts': 
-            _ = pd.read_parquet(path, storage_options=filesystem.storage_options)
-        elif topic == 'seqs':
-            _ = pd.read_parquet(path, storage_options=filesystem.storage_options)
-        elif topic == 'rec_sample_ranges':
-            _ = pd.read_parquet(path, storage_options=filesystem.storage_options)
+        else:
+            raise ValueError(f"Unknown topic: {topic}")
         return _
     
     def display(self,
@@ -636,26 +598,6 @@ class miRCoSeqs(Datablock):
             ...
         elif topic == 'seqs':
             ...
-    
-    '''
-    def valid(self,
-              roots,
-              *,
-              topic,
-              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
-    ):
-        path = self.path(roots, topic)
-        _ = filesystem.exists(path)
-        return _
-
-    def path(self, roots, topic):
-        if topic not in self.TOPICS: 
-            raise ValueError(f"Topic '{topic}' not in {self.TOPICS}")
-        filename = self.TOPICS[topic]
-        root = roots[topic] if roots else os.getcwd()
-        path = os.path.join(root, filename,) #TODO: use filesystem to join
-        return path
-    '''
 
 
 class ZSCC(Datablock):
@@ -679,18 +621,6 @@ class ZSCC(Datablock):
         hi: int = 5
         fillna: Optional[float] = None
 
-    '''
-    def path(self, roots, topic, filesystem):
-        filename = self.TOPICS[topic]
-        if filesystem.protocol == "file":
-            root = roots[topic] if roots is not None else os.getcwd()
-            path = os.path.join(root, filename)
-        else:
-            root = roots[topic]
-            path = f"{root}/{filename}"
-        return path
-    '''
-    
     def build(self,
               roots,
               *,
@@ -792,16 +722,6 @@ class FastText(Datablock):
         context_window_size: int = 100
 
     FILENAME = "model.bin"
-
-    '''
-    def path(self, root, filesystem):
-        if filesystem.protocol == "file":
-            root = root if root is not None else os.getcwd()
-            path = os.path.join(root, self.FILENAME)
-        else:
-            raise NotImplementedError("Non-file filesystems")
-        return path
-    '''
     
     def build(self,
               root,

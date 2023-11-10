@@ -27,8 +27,9 @@ def test_micron():
     MIRCOSEQSHN = \
         datablocks.DBX('datablocks.test.micron.datablocks.miRCoSeqs', f"mircoseqshn_{MIR_COSEQS_NPASSES}_{MIR_COSEQS_SEQS_PER_RECORD}")\
             .Datablock(verbose=True).SCOPE(logcounts=MIRCOHN.READ('logcounts'), 
-                                            seqs=MIRNA.READ(), 
-                                            npasses=MIR_COSEQS_NPASSES, 
-                                            nseqs_per_record=MIR_COSEQS_SEQS_PER_RECORD)
+                                           logcontrols=MIRCOHN.READ('logcontrols'),
+                                           seqs=MIRNA.READ(), 
+                                           npasses=MIR_COSEQS_NPASSES, 
+                                           nseqs_per_record=MIR_COSEQS_SEQS_PER_RECORD)
     _test(MIRCOSEQSHN, 'samples')
 

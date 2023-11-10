@@ -165,7 +165,7 @@ class Scoped:
                 key_ = key
                 val_ = self.block_pins[key]
             else:
-                raise ValueError(f"block_key={key} is neither in blockified _blockscope={_blockscope} no in block_defaults={self.block_defaults}")
+                raise ValueError(f"MISSING ARGUMENT {key}? Details: block_key={key} is neither in blockified _blockscope={_blockscope} no in block_defaults={self.block_defaults}")
             if key_ in self.block_pins and val_ != self.block_pins[key_]:
                 raise ValueError(f"block key {key_} has value {val_}, which contradicts pinned value {self.block_pins[key_]}")
             block_[key_] = val_
@@ -857,8 +857,10 @@ class Databuilder(Anchored, Scoped):
         if record is not None:
             try:
                 _scope = _eval(record['scope'])
-            except:
+            except Exception as e:
                 # For example, when the scope contains tags of DBX with an earlier version.
+                if self.verbose:
+                    print(f"Failed to retrieve scope from build record, ignoring scope of record.")
                 _scope = None
             if _scope is not None and not scopes_equal(blockscope, _scope):
                 raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.__class__} alias {self.alias}")
@@ -890,7 +892,8 @@ class Databuilder(Anchored, Scoped):
             self._kvhandles_to_batches_(*shortfall_databook_kvhandles)
         shortfall_batchscope_list = \
             [{k: blockscope[k] for k in tscope.keys()} for tscope in shortfall_batchscope_list]
-        logger.debug(f"Requesting build of shortfall_tagbatch_list: {shortfall_batchscope_list}")
+        if self.verbose:
+            print(f"Found shortfalls in Databuilder {self}:\n{shortfall_batchscope_list}")
         shortfall_batch_requests = \
             [self._build_batch_request_(self._tagscope_(**shortfall_batchscope_list[i]), shortfall_batchscope_list[i])
                             .apply(self.pool) for i in range(len(shortfall_batchscope_list))]
@@ -904,6 +907,8 @@ class Databuilder(Anchored, Scoped):
         extent_databook = self.extent_databook(**blockscope)
         build_databook_request = \
             Request(self.collate_databooks, extent_databook, collated_shortfall_batch_request)
+        if self.verbose:
+            print(f"Requesting rebuilding of shortfalls in Databuilder {self}")
         return build_databook_request
     
     @OVERRIDE
@@ -1674,12 +1679,8 @@ class DBX:
                 _filesystem = signature.Tagger().tag_func("fsspec.filesystem", protocol, **storage_options)
                 build += f"{dbx.alias}_filesystem = {_filesystem}\n"
             _blockroots = transcribe_roots(filesystem, blockroots)
-            #DEBUG:
-            #print(f"DEBUG: >>>\nblockroots:\n{blockroots}]\n_blockroots:\n{_blockroots}\n")
-            build += f"{dbx.alias}_roots = " + _blockroots + "\n"
 
-            #DEBUG: 
-            #print(f"DEBUG: >>>: build with _blockroots:\n" + build)
+            build += f"{dbx.alias}_roots = " + _blockroots + "\n"
             
             build += f"{_datablock}.build(\n"  +\
                       f"\t{dbx.alias}_roots,\n"  +\
@@ -1693,10 +1694,6 @@ class DBX:
                 script += env + "\n\n"
             script += read + "\n"
             script += build
-            #DEBUG
-            #print(f"DEBUG: >>>: build:\n" + build)
-            #print(f"DEBUG: >>>: script:\n" + script)
-            #print(f"DEBUG: >>>: script: {script}\n{script}")
 
             if with_linenos: 
                 lines = script.split('\n')
