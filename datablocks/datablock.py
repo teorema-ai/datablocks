@@ -1574,12 +1574,6 @@ class DBX:
             dbx "datablocks.DBX.transcribe($MIRCOS.Databuilder(dataspace=datablocks.HOMELAKE).Datablock(verbose=True), with_env=['HOME'])" 2>&1 | python -
             ```
         """
-        #DEBUG
-        '''
-        print(f"DEBUG: >>>: transcribing:")
-        for dbx in dbxs:
-            print(f"{dbx}")
-        '''
 
         script_ = ""
         def transcribe_roots(filesystem, roots, *, prefix=''):
@@ -1616,8 +1610,7 @@ class DBX:
             _argdatablock = Tagger().tag_ctor(arg.dbx.datablock_cls, **arg.dbx.datablock_kwargs)
             transcript += f"{arg.dbx.alias} = {_argdatablock}\n"
             argscript =  f"{arg.dbx.alias}_roots, " +\
-                        (f"scope={repr(argtagscope)}), " if len(argtagscope) else "") + \
-                        (f"filesystem={arg.dbx.alias}_filesystem), " if argfilesystem.protocol != 'file' else "")
+                        (f"filesystem={arg.dbx.alias}_filesystem, " if argfilesystem.protocol != 'file' else "")
             return transcript, argscript
 
         imports = {}
