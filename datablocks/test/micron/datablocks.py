@@ -24,8 +24,7 @@ import umap
 from micron.cclustering import ZSConsensusClustering
 
 
-class Dataset:
-
+class Datablock:
     @staticmethod
     def display_umap(frame, *, color=None):
         _umap = umap.UMAP()
@@ -40,13 +39,18 @@ class Dataset:
         if self.debug:
             print(f"DEBUG: >>> {self.__class__.__qualname__}: {s}")
 
+    def path(self, roots, topic, ):
+        topic_tgt_root = roots[topic] if roots is not None else os.getcwd()
+        filesystem.makedirs(topic_tgt_root, exist_ok=True)
+        topic_tgt_path = os.path.join(topic_tgt_root, self._TGT_FILENAMES[topic])
+
     def __init__(self, *, verbose=False, debug=False, rm_tmp=True, ):
         self.verbose = verbose
         self.debug = debug
         self.rm_tmp = rm_tmp
 
 
-class miRCoHN(Dataset):
+class miRCoHN(Datablock):
     """
         Data for the clustering HNSC study described in from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/.
         TODO: do not save 'pivots' or 'downregulated_mirna_infixes' to a file, return them from code instead?
@@ -316,7 +320,7 @@ class miRCoHN(Dataset):
         
 '''
 #DEPRECATED
-class miRCoStats(Dataset):
+class miRCoStats(Datablock):
     """
         MAD
     """
@@ -365,7 +369,7 @@ class miRCoStats(Dataset):
 '''
 
 
-class miRNA(Dataset):
+class miRNA(Datablock):
     VERSION = "0.2.1"
 
     @dataclass
@@ -460,7 +464,7 @@ class miRNA(Dataset):
         return rec
 
 
-class miRCoSeqs(Dataset):
+class miRCoSeqs(Datablock):
     """
         Sequences sampled at count frequences
     """
@@ -628,7 +632,7 @@ class miRCoSeqs(Dataset):
         return path
 
 
-class ZSCC(Dataset):
+class ZSCC(Datablock):
     VERSION = "0.6.1"
     TOPICS = {
         'zscc': 'zscc.pkl',
@@ -725,7 +729,7 @@ class ZSCC(Dataset):
         return _
 
 
-class CBOW(Dataset):
+class CBOW(Datablock):
     VERSION = "0.6.1"
     
     @dataclass
