@@ -82,6 +82,7 @@ class FS:
 ##     - put/get
 ##     - pub/sub/read (sub means "consume one message", read menas "consume all messages without expunging")
 # TODO: make 'localhost://<path>' non-pickleable?
+#TODO: #REMOVE: pic
 class Dataspace:
     signature = Signature(('url',), {})
     def __init__(self,
@@ -526,4 +527,3 @@ class Dataspace:
 
 DATABLOCKS_DATALAKE = Dataspace(config.DATABLOCKS_DATALAKE_URL)
 DATABLOCKS_HOMELAKE = Dataspace(config.DATABLOCKS_HOMELAKE_URL)
-DATABLOCKS_PICLAKE = DATABLOCKS_HOMELAKE.clone(url=os.path.join("{HOME}", ".cache", "datalake"), pic=True)

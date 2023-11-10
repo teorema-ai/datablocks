@@ -21,9 +21,8 @@ if 'DATABLOCKS_LOG_LEVEL' in os.environ:
 else:
     DATABLOCKS_LOG_LEVEL = "INFO"
     
-
-DATABLOCKS_HOMELAKE_URL = os.path.join(HOME, '.cache', 'datalake') 
-DATABLOCKS_DATALAKE_URL = DATABLOCKS_HOMELAKE_URL
+DATABLOCKS_DATALAKE_URL = os.path.join(f'{HOME}', '.cache', 'datalake')
+DATABLOCKS_HOMELAKE_URL = os.path.join('{HOME}', '.cache', 'datalake')
 
 DATABLOCKS_CONSUL_HOST = None #'127.0.0.1'
 DATABLOCKS_CONSUL_PORT = None #'8500'

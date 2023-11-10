@@ -25,7 +25,7 @@ from .utils import ALIAS, DEPRECATED, OVERRIDE, microseconds_since_epoch, dateti
 from .eval import request
 from .eval.request import Request, Report, LAST, NONE, Graph
 from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL, DATABLOCKS_FILE_LOGGING_POOL
-from .dataspace import DATABLOCKS_HOMELAKE
+from .dataspace import DATABLOCKS_DATALAKE, DATABLOCKS_HOMELAKE
 
 
 def _eval(string):
@@ -77,13 +77,13 @@ class Datablock:
     def build(self, blockscope: SCOPE, filesystem: fsspec.AbstractFileSystem, *roots: Tuple[str]):
         ...
     
-    def read(self, topic, blockscope: SCOPE, filesystem: fsspec.AbstractFileSystem, *roots: Tuple[str]):
+    def read(self, topic, filesystem: fsspec.AbstractFileSystem, *roots: Tuple[str]):
         ...
 
     def valid(self, topic, shardscope: SCOPE, filesystem: fsspec.AbstractFileSystem, root: str):
         ...
 
-    def metric(self, topic, shardscope: SCOPE, filesystem: fsspec.AbstractFileSystem, root: str) -> float:
+    def metric(self, topic, ilesystem: fsspec.AbstractFileSystem, root: str) -> float:
         ...
 
 
@@ -1139,7 +1139,7 @@ class DBX:
                 datablock_cls_or_clstr, 
                 alias=None,
                 *,
-                dataspace=DATABLOCKS_HOMELAKE,
+                dataspace=DATABLOCKS_DATALAKE,
                 tmpspace=None,
                 lock_pages=False,
                 throw=True,
@@ -1206,20 +1206,36 @@ class DBX:
 
     def clone(self, 
               *,
-              debug=None,
+              dataspace=None,
+              tmpspace=None,
+              lock_pages=None,
+              throw=None,
+              rebuild=None,
+              pool=None,
               verbose=None,
+              debug=None,  
               pic=None,
     ):
-        kwargs = dict(debug=self.debug,
-                      verbose=self.verbose,
-                      pic=self.pic
-        )
+        kwargs = copy.copy(self.databuilder_kwargs)
+        if dataspace is not None:
+            kwargs['dataspace'] = dataspace
+        if tmpspace is not None:
+            kwargs['tmpspace'] = tmpspace
+        if lock_pages is not None:
+            kwargs['lock_pages'] = lock_pages
+        if throw is not None:
+            kwargs['throw'] = throw
+        if rebuild is not None:
+            kwargs['rebuild'] = rebuild
+        if pool is not None:
+            kwargs['pool'] = pool
         if debug is not None:
             kwargs['debug'] = debug
         if verbose is not None:
             kwargs['verbose'] = verbose
         if pic is not None:
             kwargs['pic'] = pic
+
         _ = DBX(self.datablock_cls, 
                 self.alias,
                 **kwargs)
@@ -1236,7 +1252,6 @@ class DBX:
             _._scope = self._scope
 
         _.datablock_kwargs = self.datablock_kwargs
-        _.databuilder_kwargs = self.databuilder_kwargs
         return _
 
     def with_pic(self, pic=True):
@@ -1535,7 +1550,7 @@ class DBX:
         return _
 
     @staticmethod
-    def transcribe(*dbxs, with_env: Dict = {}, with_linenos=False, with_display=False, verbose=False, ):
+    def transcribe(*dbxs, with_env: Tuple[str] = (), with_linenos=False, with_display=False, verbose=False, ):
         """
             Assume dbxs are ordered in the dependency order and all have unique aliases that can be used as variable prefixes.
             TODO: build the dependency graph and reorder, if necessary.
@@ -1559,6 +1574,13 @@ class DBX:
             dbx "datablocks.DBX.transcribe($MIRCOS.Databuilder(dataspace=datablocks.HOMELAKE).Datablock(verbose=True), with_env=['HOME'])" 2>&1 | python -
             ```
         """
+        #DEBUG
+        '''
+        print(f"DEBUG: >>>: transcribing:")
+        for dbx in dbxs:
+            print(f"{dbx}")
+        '''
+
         script_ = ""
         def transcribe_roots(filesystem, roots, *, prefix=''):
             _roots = ""
@@ -1571,7 +1593,7 @@ class DBX:
             elif isinstance(roots, list):
                 _roots += "[" + ", ".join(transcribe_roots(filesystem, r) for r in roots) + "]"
             else:
-                _roots = f"f'{roots}'"
+                _roots = "f'"+ roots + "'"
             return _roots
 
         def transcribe_reader(arg):
@@ -1652,7 +1674,6 @@ class DBX:
                 build += f"{dbx.alias}_scope = {_blockscope}\n"
             
             blockroots = dbx.databuilder.datablock_blockroots(tagscope)
-
             filesystem = dbx.databuilder.dataspace.filesystem
             if filesystem.protocol != "file":
                 protocol = dbx.databuilder.dataspace.protocol
@@ -1660,7 +1681,12 @@ class DBX:
                 _filesystem = signature.Tagger().tag_func("fsspec.filesystem", protocol, **storage_options)
                 build += f"{dbx.alias}_filesystem = {_filesystem}\n"
             _blockroots = transcribe_roots(filesystem, blockroots)
+            #DEBUG:
+            #print(f"DEBUG: >>>\nblockroots:\n{blockroots}]\n_blockroots:\n{_blockroots}\n")
             build += f"{dbx.alias}_roots = " + _blockroots + "\n"
+
+            #DEBUG: 
+            #print(f"DEBUG: >>>: build with _blockroots:\n" + build)
             
             build += f"{_datablock}.build(\n"  +\
                       f"\t{dbx.alias}_roots,\n"  +\
@@ -1674,11 +1700,15 @@ class DBX:
                 script += env + "\n\n"
             script += read + "\n"
             script += build
+            #DEBUG
+            #print(f"DEBUG: >>>: build:\n" + build)
+            #print(f"DEBUG: >>>: script:\n" + script)
+            #print(f"DEBUG: >>>: script: {script}\n{script}")
 
             if with_linenos: 
                 lines = script.split('\n')
                 #width = round(int(math.log(len(lines))))
-                script_ = '\n'.join([f"{i:>4}: {ln}" for i, ln in enumerate(lines)]) #TODO: use width for padding
+                script_ = '\n'.join([f"{i:>4}: " + ln for i, ln in enumerate(lines)]) #TODO: use width for padding
             else:
                 script_ = script                 
         return script_
