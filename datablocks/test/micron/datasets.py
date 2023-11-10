@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
+import fasttext
 import matplotlib.pyplot as plt
 import plotly.express as px
 import umap
@@ -39,7 +40,7 @@ class Dataset:
         if self.debug:
             print(f"DEBUG: >>> {self.__class__.__qualname__}: {s}")
 
-    def __init__(self, verbose=False, debug=False, rm_tmp=True, ):
+    def __init__(self, *, verbose=False, debug=False, rm_tmp=True, ):
         self.verbose = verbose
         self.debug = debug
         self.rm_tmp = rm_tmp
@@ -50,7 +51,7 @@ class miRCoHN(Dataset):
         Data for the clustering HNSC study described in from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/.
         TODO: do not save 'pivots' or 'downregulated_mirna_infixes' to a file, return them from code instead?
     """
-    VERSION = "0.9.3"
+    VERSION = "0.10.3"
     TOPICS            = ['logcounts', 
                          'pivots',
                          'controls',
@@ -157,86 +158,35 @@ class miRCoHN(Dataset):
         """
 
     @staticmethod
-    def downregulated_seq_pattern(tissue_type):
-        return miRCoHN.DOWNREGULATED_SEQ_PATTERNS[tissue_type]
-
-    @staticmethod
-    def normalized_counts(counts:             pd.DataFrame, 
-                         *, 
-                         ordering:           Optional[List[int]] = None, 
-                         seq_patterns:       Optional[List[str]] = None, 
-                         seq_mad_threshold:  0.0,
-                         seq_pivots:         bool = False,
-                         seq_order_by_mad:   bool = False,
-                         center_at_controls: Optional[pd.DataFrame] = None,
-    ) -> pd.DataFrame:
-        """
-            Inputs:
-                counts:              miR expression counts with one count profile record per row; 
-                                       columns are labeled by miR sequences
-                ordering:            permutation of rows to use for display
-                seq_patterns:        substrigs found in sequences to display; 
-                                       for example, sequence patters for miR known to be downregulated
-                                       in certain tissues
-                seq_mad_threshold: Maximal Absolute Deviation threshold: keep only the sequences with MAD > threshold
-                center_at_controls:  remove mean counts taken over control records
-            Ouput:
-                ncounts: counts reordered using 'ordering', restricted to columns satisfying seq_patterns, with MAD > seq_mad_threshold;
-                         if control_records are provided, counts are centered around the mean counts of control_records;
-                         any 'counts' records found among 'control_records' are removed
-
-        """
-        def seq_matches_patterns(seq, seq_patterns): 
+    def seq_matches_patterns(seq, seq_patterns): 
             for pattern in seq_patterns:
                 if seq[0].find(pattern) != -1:
                     return True
             return False
 
-        def filter_seq_patterns(counts):
-            fseqs = [seq for seq in counts.columns if seq_matches_patterns(seq, seq_patterns)]
-            fcounts = counts[fseqs]
-            return fcounts
-
-        def filter_seq_mad_pivots(counts):
-            mads = (counts - counts.mean()).abs().mean()
-            madf = pd.DataFrame({'mad': mads})
-            madcuts = pd.qcut(madf.mad, 100, labels=False, duplicates='drop')
-            madseqs = madcuts[madcuts > seq_mad_threshold].index
-            if seq_pivots:
-                _counts = counts.transpose()
-                pivs = pd.Series(miRCoHN.PIVOT_SEQS)
-                _counts_ = _counts.loc[pivs]
-                counts_ = _counts_.transpose()
-            else:
-                counts_ = counts
-
-            madcounts = counts[madseqs]
-            return madcounts
-        
-        counts_2 = counts
-
-        if center_at_controls is not None:
-            cm = center_at_controls.mean(axis=0)
-            counts_3 = counts_2 - cm
+    @staticmethod
+    def filter_columns_by_patterns(frame, col_patterns):
+        if col_patterns is not None:
+            fcols = [col for col in frame.columns if miRCoHN.seq_matches_patterns(col, col_patterns)]
+            fframe = frame[fcols]
         else:
-            counts_3 = counts_2
+            fframe = frame
+        return fframe
 
-        if seq_patterns is not None:
-            counts_4 = filter_seq_patterns(counts_3)
-        else:
-            counts_4 = counts_3
+    @staticmethod
+    def filter_columns_by_mad(frame, mad_threshold):
+        mads = (frame - frame.mean()).abs().mean()
+        madf = pd.DataFrame({'mad': mads})
+        madcuts = pd.qcut(madf.mad, 100, labels=False, duplicates='drop')
+        madcols = madcuts[madcuts > mad_threshold].index
+        madframe = frame[madcols]
+        return madframe
 
-        if seq_mad_threshold is not None:
-            counts_5 = filter_seq_mad_pivots(counts_4)
-        else:
-            counts_5 = counts_4
-
-        if ordering is not None:
-            counts_6 = counts_5.iloc[ordering]
-        else:
-            counts_6 = counts_5
-        
-        return counts_6
+    @staticmethod
+    def center_at_controls(frame, controls):
+        cm = controls.mean(axis=0)
+        cframe = frame - cm
+        return cframe
     
     @staticmethod
     def display_heatmap(counts:             pd.DataFrame, 
@@ -244,22 +194,16 @@ class miRCoHN(Dataset):
                          ordering:           Optional[List[int]] = None, 
                          seq_patterns:       Optional[List[str]] = None, 
                          seq_mad_threshold:  float = 0.0,
-                         seq_pivots:         bool = False,
-                         center_at_controls: Optional[pd.DataFrame],
-                         order_seqs_by_mad:  bool = False,
+                         center_at_controls: Optional[pd.DataFrame] = None,
                          nseqs:              Optional[int] = None,
     ):
         """
             Inputs/Output: see 'normalized_counts()'
         """
-        ncounts = miRCoHN.normalized_counts(counts, 
-                                            ordering=ordering,
-                                            seq_patterns=seq_patterns,
-                                            seq_mad_threshold=seq_mad_threshold,
-                                            seq_pivots=seq_pivots,
-                                            center_at_controls=center_at_controls, 
-                                            seq_order_by_mad=order_seqs_by_mad,
-        )
+        ncounts1 = miRCoHN.filter_columns_by_patterns(counts, seq_patterns)
+        ncounts2 = miRCoHN.filter_columns_by_mad(counts, seq_mad_threshold)
+        ncounts3 = miRCoHN.center_at_controls(ncounts2, center_at_controls)
+        ncounts = ncounts3.iloc[ordering]
         ncountst_ = ncounts.transpose()
         if nseqs is not None:
             ncountst = ncountst_.iloc[:nseqs]
@@ -370,7 +314,7 @@ class miRCoHN(Dataset):
         topic_frame = pd.read_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
         return topic_frame
         
-
+'''
 #DEPRECATED
 class miRCoStats(Dataset):
     """
@@ -418,10 +362,11 @@ class miRCoStats(Dataset):
         mcmadf_path = os.path.join(mcmadf_root, self.TGT_FILENAME)
         mcmadf_frame = pd.read_parquet(mcmadf_path, storage_options=filesystem.storage_options)
         return mcmadf_frame
-    
+'''
+
 
 class miRNA(Dataset):
-    VERSION = "0.1.1"
+    VERSION = "0.2.1"
 
     @dataclass
     class SCOPE:
@@ -519,7 +464,7 @@ class miRCoSeqs(Dataset):
     """
         Sequences sampled at count frequences
     """
-    VERSION = "0.11.1"
+    VERSION = "0.13.1"
     TOPICS = {'logcounts': f"miRLogCos.parquet",
                  'counts': f"miRCos.parquet",
                  'seqs': f"miRSeqs.parquet",
@@ -531,28 +476,32 @@ class miRCoSeqs(Dataset):
     class SCOPE:
         seqs: pd.DataFrame
         logcounts: pd.DataFrame
-        controls_mask: Optional[pd.DataFrame]
         npasses: int = 5
         nseqs_per_record: int = 200    
+
+    @staticmethod
+    def seq_to_coseq_ids(columns):
+        subcolumns = [c[5:] for c in columns.get_level_values(1).tolist()]
+        return subcolumns
+
+    @staticmethod
+    def expcounts(logcounts):
+        counts = np.exp(logcounts.copy()*np.log(2))
+        return counts
     
     def build(self,
               roots: Dict[str, str],
               *,
               scope: SCOPE,
               filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
-        
-        # log2(n) -> n
-        # n = exp(ln(n)) = exp[ln(2^log2(n))] = exp[log2(n)*ln(2)]
-        logcof_ = scope.logcounts
-        ctrls = scope.controls_mask.iloc[:, 0]
-        logcof = logcof_[~ctrls]
-        self.print_verbose(f"Removed controls from logcounts: {len(logcof_)} -> {len(logcof)}")
-        logcofcols1 = [c[5:] for c in logcof.columns.get_level_values(1).tolist()]
-
+        logcof = scope.logcounts
+        logcofcols1 = self.seq_to_coseq_ids(logcof.columns)
         _logcof = logcof.copy()
         _logcof.columns = logcofcols1
 
-        _cof = np.exp(logcof.copy()*np.log(2))
+        # log2(n) -> n
+        # n = exp(ln(n)) = exp[ln(2^log2(n))] = exp[log2(n)*ln(2)]
+        _cof = self.expcounts(_logcof)
         _cof.columns = logcofcols1
 
         seqf = scope.seqs
@@ -680,7 +629,7 @@ class miRCoSeqs(Dataset):
 
 
 class ZSCC(Dataset):
-    VERSION = "0.5.1"
+    VERSION = "0.6.1"
     TOPICS = {
         'zscc': 'zscc.pkl',
         'clusters': 'clusters.parquet',
@@ -774,3 +723,44 @@ class ZSCC(Dataset):
             if self.verbose:
                 print(f"Read zscc cluster ordering from {ordering_path}")
         return _
+
+
+class CBOW(Dataset):
+    VERSION = "0.6.1"
+    
+    @dataclass
+    class SCOPE:
+        samples_path: str
+        dim: int = 100
+        context_window_size: int = 100
+
+    FILENAME = "cbow.bin"
+
+    def path(self, root, filesystem):
+        if filesystem.protocol == "file":
+            root = root if root is not None else os.getcwd()
+            path = os.path.join(root, self.FILENAME)
+        else:
+            raise NotImplementedError("Non-file filesystems")
+        return path
+    
+    def build(self,
+              root,
+              *,
+              scope: SCOPE,
+              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
+        path = self.path(root, filesystem)
+        if not filesystem.exists(path):
+            samples_files = filesystem.ls(scope.samples_path)
+            assert len(samples_files) == 1
+            samples_path = samples_files[0]
+            cbow = fasttext.train_unsupervised(samples_path, model='cbow', dim=scope.dim, ws=scope.context_window_size)
+            cbow.save_model(path)
+
+    def read(self,
+              root,
+              *,
+              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
+        path = self.path(root, filesystem)
+        model = fasttext.load_model(path)
+        return model

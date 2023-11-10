@@ -1025,7 +1025,7 @@ class DBX:
             except:
                 raise ValueError(f"Malformed url: {url}")
             try:
-                version, tail  = tail.split("|")
+                version, tail  = tail.split("#")
             except:
                 raise ValueError(f"Malformed url: {url}")
             try:
@@ -1090,14 +1090,14 @@ class DBX:
         def __tag__(self):
             _tag__ = f"{DBX_PREFIX}.{self.dbx.datablock_clstr}"
             tag__ = _tag__+f"@{self.dbx.databuilder.version}"
-            tag_ =  tag__+f"|{self.dbx.alias}" if self.dbx.alias is not None else tag__+"|"
+            tag_ =  tag__+f"#{self.dbx.alias}" if self.dbx.alias is not None else tag__+"#"
             tag = tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else tag_+":"
             return tag
     
-    class Extenter(Reader):
+    class Pather(Reader):
         @property
         def request(self):
-            _ = self.dbx.extent_request(topic=self.topic)
+            _ = self.dbx.path_request(topic=self.topic)
             return _
 
         def __tag__(self):
@@ -1227,7 +1227,7 @@ class DBX:
         if self._scope is not None:
             _scope = {}
             for key, val in self._scope.items():
-                if isinstance(val, DBX.Reader) or isinstance(val, DBX.Extenter):
+                if isinstance(val, DBX.Reader) or isinstance(val, DBX.Pather):
                     _scope[key] = val.with_pic(pic)
                 else:
                     _scope[key] = val
@@ -1308,11 +1308,21 @@ class DBX:
         _ = self.databuilder.display_batch(**self.scope)
         return _ 
     
-    def extent_request(self, topic=DEFAULT_TOPIC):
+    def path(self, topic=DEFAULT_TOPIC):
         if self.scope is None:
             raise ValueError(f"{self} of version {self.version} has not been built yet")
-        request = self.databuilder.extent_datapage_request(topic, **self.scope)
-        return request
+        datapage = self.databuilder.extent_datapage(topic, **self.tagscope)
+        if len(datapage) > 1:
+            path = list(datapage.values())
+        elif len(datapage) == 1:
+            path = list(datapage.values())[0]
+        else:
+            path = None
+        return path
+    
+    def path_request(self, topic=DEFAULT_TOPIC):
+        _ = request.Request(self.path, topic)
+        return _
 
     def read_request(self, topic=DEFAULT_TOPIC):
         if self.scope is None:
@@ -1321,8 +1331,8 @@ class DBX:
             .set(summary=lambda _: self.extent()[topic]) # TODO: #REMOVE?
         return request
 
-    def EXTENT(self, topic=None):
-        _ = DBX.Extenter(dbx=self, topic=topic)
+    def PATH(self, topic=None):
+        _ = DBX.Pather(dbx=self, version=self.databuilder.version, topic=topic)
         return _
 
     def READ(self, topic=None):
@@ -1521,7 +1531,7 @@ class DBX:
 
     @property
     def tagscope(self):
-        _ = self.databuilder._tagscope_(**arg.dbx.scope)
+        _ = self.databuilder._tagscope_(**self.scope)
         return _
 
     @staticmethod
@@ -1627,13 +1637,19 @@ class DBX:
             if len(dbx.scope):
                 _blockscope  = f"{dbx.datablock_clstr}.SCOPE(\n"
                 for key, arg in dbx.scope.items():
-                    if isinstance(arg, DBX.Reader):
+                    if isinstance(arg, DBX.Pather):
+                        if arg.topic is None:
+                            path = f"{arg.dbx.alias}_roots"
+                        else:
+                            path = f"{arg.dbx.alias}_roots[{repr(arg.topic)}]"
+                        _blockscope += f"\t{key}={path},\n"
+                    elif isinstance(arg, DBX.Reader):
                         topicarg = f"topic={repr(arg.topic)}" if arg.topic is not None else ""
                         _blockscope += f"\t{key}={arg.dbx.alias}.read({readerargs[arg.dbx.alias]}{topicarg}),\n"
                     else:
                         _blockscope += f"\t{key}={repr(arg)},\n"
                 _blockscope += ")\n"
-                build += f"{dbx.alias}_scope = {_blockscope}"
+                build += f"{dbx.alias}_scope = {_blockscope}\n"
             
             blockroots = dbx.databuilder.datablock_blockroots(tagscope)
 
