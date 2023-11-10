@@ -1585,7 +1585,7 @@ class DBX:
 
             argtagscope = arg.dbx.databuilder._tagscope_(**arg.dbx.scope)
             if len(argtagscope):
-                transcript += f"{arg.dbx.alias}_scope = {argtagscope}"
+                transcript += f"{arg.dbx.alias}_scope = {argtagscope}\n"
 
             argblockroots = arg.dbx.databuilder.datablock_blockroots(argtagscope)
             _argblockroots = transcribe_roots(argfilesystem, argblockroots)
@@ -1598,14 +1598,14 @@ class DBX:
                         (f"filesystem={arg.dbx.alias}_filesystem), " if argfilesystem.protocol != 'file' else "")
             return transcript, argscript
 
-        imports = ""
+        imports = {}
         env = ""
         read = ""
         build = ""
 
         if with_env:
-            imports += "import os\n"
-        imports += "import fsspec\n"
+            imports['os'] = "import os\n"
+        imports['fsspec']= "import fsspec\n"
         
         if with_env:
             for ekey in with_env:
@@ -1615,7 +1615,7 @@ class DBX:
         readerargs = {}
 
         for dbx in dbxs:
-            imports += f"import {dbx.datablock_module_name}\n"
+            imports[dbx.datablock_module_name]= f"import {dbx.datablock_module_name}\n"
             for key, arg in dbx.scope.items():
                 if isinstance(arg, DBX.Reader):
                     if arg.dbx.alias is None:
@@ -1669,7 +1669,7 @@ class DBX:
                       f")\n"
             build += "\n"
 
-            script = imports + "\n\n"
+            script = ''.join(imports.values()) + "\n\n"
             if len(with_env):
                 script += env + "\n\n"
             script += read + "\n"
