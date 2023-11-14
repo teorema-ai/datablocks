@@ -89,7 +89,7 @@ class miRCoHN(Datablock):
         Data for the clustering HNSC study described in from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/.
         TODO: do not save 'pivots' or 'downregulated_mirna_infixes' to a file, return them from code instead?
     """
-    VERSION = "0.10.3"
+    VERSION = "0.11.3"
     
     TOPICS = {'logcounts': f"mircohn_rpm_log2.parquet",
                 'pivots': f"mircohn_pivots.parquet",
@@ -688,6 +688,8 @@ class ZSCC(Datablock):
                 _ = pickle.load(ordering_file)
             if self.verbose:
                 print(f"Read zscc cluster ordering from {ordering_path}")
+        else:
+            raise ValueError(f"Unknown topic '{topic}'")
         return _
 
 
@@ -729,9 +731,9 @@ class FastText(Datablock):
               scope: SCOPE,
               filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
         if self.built(root, filesystem):
-            self.print_verbose("'{scope.model}' already built")
+            self.print_verbose(f"'{scope.model}' already built")
         else:
-            self.print_verbose("Building '{scope.model}' ...")
+            self.print_verbose(f"Building '{scope.model}' ...")
             path = self.path(root, filesystem)
             if not filesystem.exists(path):
                 samples_files = filesystem.ls(scope.samples_path)

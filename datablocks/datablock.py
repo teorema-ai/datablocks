@@ -300,7 +300,7 @@ class Databuilder(Anchored, Scoped):
         self.dataspace = dataspace
         self._tmpspace = tmpspace
         self.anchorspace = dataspace.subspace(*self.anchorchain)
-        self.versionspace = self.anchorspace.subspace(f"version={str(self.version)}",)
+        #self.versionspace = self.anchorspace.subspace(f"version={str(self.version)}",)
         self.lock_pages = lock_pages
         self.verbose = verbose
         self.debug = debug
@@ -339,6 +339,10 @@ class Databuilder(Anchored, Scoped):
             return repr
         else:
             repr = tag.Tagger().tag_ctor(self.__class__)
+
+    @property
+    def versionspace(self):
+        return self.anchorspace.subspace(f"version={str(self.version)}",)
 
     @property
     def tmpspace(self):
@@ -1055,8 +1059,13 @@ class DBX:
             if hasattr(self.dbx.datablock, 'TOPICS'):
                 if topic not in self.dbx.datablock.TOPICS:
                     raise ValueError(f"Topic {topic} not from among {self.dbx.datablock.TOPICS}")
-            if dbx.version != version:
-                raise ValueError(f"Incompatible version {version} from url for dbx {dbx}")
+            if not pic:
+                if dbx.version != version:
+                    raise ValueError(f"Incompatible version {version} from url for dbx {dbx}")
+            else:
+                if dbx.version != version.format and\
+                    version == f"{dbx.__class__.__qualname__}.VERSION":
+                        raise ValueError(f"Incompatible version {version} from url for dbx {dbx}")
 
         def with_pic(self, pic=True):
             _ = self.__class__(self.url, dbx=self.dbx, version=self.version, topic=self.topic, pic=pic)
@@ -1153,11 +1162,13 @@ class DBX:
                 verbose=False,
                 debug=False,  
                 pic=False,
+                alias_dataspace=False,
     ):
         self.alias = alias
         self.debug = debug
         self.verbose = verbose
         self.pic = pic
+        self.alias_dataspace = alias_dataspace
 
         if isinstance(datablock_cls_or_clstr, str):
             self.datablock_clstr = datablock_cls_or_clstr
@@ -1220,8 +1231,11 @@ class DBX:
               verbose=None,
               debug=None,  
               pic=None,
+              alias_dataspace=None,
     ):
         kwargs = copy.copy(self.databuilder_kwargs)
+        kwargs['pic'] = self.pic
+        kwargs['alias_dataspace'] = self.alias_dataspace
         if dataspace is not None:
             kwargs['dataspace'] = dataspace
         if tmpspace is not None:
@@ -1240,6 +1254,8 @@ class DBX:
             kwargs['verbose'] = verbose
         if pic is not None:
             kwargs['pic'] = pic
+        if alias_dataspace is not None:
+            kwargs['alias_dataspace'] = alias_dataspace
 
         _ = DBX(self.datablock_cls, 
                 self.alias,
@@ -1352,11 +1368,11 @@ class DBX:
         return request
 
     def PATH(self, topic=None):
-        _ = DBX.Pather(dbx=self, version=self.databuilder.version, topic=topic)
+        _ = DBX.Pather(dbx=self, version=self.databuilder.version, topic=topic, pic=self.pic)
         return _
 
     def READ(self, topic=None):
-        _ = DBX.Reader(dbx=self, topic=topic, version=self.version)
+        _ = DBX.Reader(dbx=self, topic=topic, version=self.version, pic=self.pic)
         return _
     
     def read(self, topic=DEFAULT_TOPIC):
@@ -1413,6 +1429,24 @@ class DBX:
             if self._datablock is None:
                 self._datablock = self.datablock_cls(**self.datablock_kwargs)
             return self._datablock
+
+        @property
+        def __alias_versionspace(self):
+            if self.alias is not None:
+                _ = self.anchorspace.subspace(self.alias, f"version={str(self.version)}",)
+            else:
+                _ = self.anchorspace.subspace(f"version={str(self.version)}",)
+            return _
+
+        def __alias_dataspace__(self, topic, **shard):
+            # ignore shard, label by alias, version, topic only
+            if topic is None:
+                _ = self.versionspace
+            else:
+                _ = self.versionspace.subspace(topic)
+            if self.debug:
+                print(f"ALIAS SHARDSPACE: formed for topic {repr(topic)}: {_}")
+            return _
 
         def __datablock_shardroots(self, tagscope, ensure=False) -> Union[str, Dict[str, str]]:
             shardscope_list = self.scope_to_shards(**tagscope)
@@ -1539,6 +1573,9 @@ class DBX:
                     '_read_block_':  __read_block__,
                     'display_batch': __display_batch__,
         }
+        if dbx.alias_dataspace:
+            databuilder_classdict['versionspace'] = __alias_versionspace
+            databuilder_classdict['_shardspace_'] = __alias_dataspace__
         if hasattr(dbx.datablock_cls, 'valid'):
             databuilder_classdict['_extent_shard_valid_'] = __extent_shard_valid__
         if hasattr(dbx.datablock_cls, 'metric'):
