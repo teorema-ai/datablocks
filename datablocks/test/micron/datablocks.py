@@ -64,21 +64,31 @@ class Datablock:
         return path
 
     #TODO: factor through 'valid()'
-    def built(self, roots, filesystem):
+    def built(self):
         built = True
         if hasattr(self, 'TOPICS'):
             for topic in self.TOPICS:
-                path = self.path(roots, filesystem, topic)
-                if not filesystem.exists(path):
+                path = self.path(self.roots, self.filesystem, topic)
+                if not self.filesystem.exists(path):
                     self.print_verbose(f"Topic '{topic}' not built at path {path}")
                     built = False
                     break
         else:
-            path = self.path(roots, filesystem)
-            built = filesystem.exists(path)
+            path = self.path(self.roots, self.filesystem)
+            built = self.filesystem.exists(path)
         return built
 
-    def __init__(self, *, verbose=False, debug=False, rm_tmp=True, ):
+    def __init__(self, 
+                 roots=None, 
+                 filesystem:fsspec.AbstractFileSystem = fsspec.filesystem("file"), 
+                 scope=None,
+                 *, 
+                 verbose=False, 
+                 debug=False, 
+                 rm_tmp=True, ):
+        self.scope = scope
+        self.roots = roots
+        self.filesystem = filesystem
         self.verbose = verbose
         self.debug = debug
         self.rm_tmp = rm_tmp
@@ -180,11 +190,8 @@ class miRCoHN(Datablock):
     
     def display(
             self,
-            roots: Optional[Dict[str, str]] = None,
-            *, 
-            filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
     ):
-        cof = self.read(roots, filesystem=filesystem)
+        cof = self.read()
         self.display_umap(cof)
         """
         ufit = umap.UMAP()
@@ -255,18 +262,14 @@ class miRCoHN(Datablock):
         _ = px.imshow(ncountst.values, aspect='auto')
         return _
 
-    def build(self, 
-             roots: Optional[Dict[str, str]] = None,
-             *, 
-             scope: Optional[SCOPE] = None, 
-             filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"), 
-    ):
+    def build(self):
         """
             Generate a pandas dataframe of TCGA HNSC mature MiRNA sequence samples.
         """
-        scope = scope or self.SCOPE()
+        roots = self.roots
+        filesystem = self.filesystem
         framepaths = {topic: self.path(roots, filesystem, topic) for topic in self.TOPICS}
-        if self.built(roots, filesystem):
+        if self.built():
             self.print_verbose("All topics built already.  Done.")
         else:
             self.print_verbose("Building ...")
@@ -328,15 +331,10 @@ class miRCoHN(Datablock):
             self.print_verbose("... done")
         return framepaths
     
-    def read(self, 
-             roots: Optional[Dict[str, str]] = None,
-             *, 
-             topic: str,
-             filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),  
-    ):
+    def read(self, topic,):
         self.print_verbose(f"Reading topic '{topic}'")
-        topic_tgt_path = self.path(roots, filesystem, topic)
-        topic_frame = pd.read_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
+        topic_tgt_path = self.path(self.roots, self.filesystem, topic)
+        topic_frame = pd.read_parquet(topic_tgt_path, storage_options=self.filesystem.storage_options)
         return topic_frame
 
 
@@ -351,12 +349,10 @@ class miRNA(Datablock):
     MIRNA_DATASET_FILENAME = f"miRNA"
     FILENAME = f"{MIRNA_DATASET_FILENAME}.parquet"
     
-    def build(self,
-              root,
-              *,
-              scope: SCOPE = SCOPE(),
-              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
-        if self.built(root, filesystem):
+    def build(self):
+        root = self.roots
+        filesystem = self.filesystem
+        if self.built():
             self.print_verbose(f"miRNA already built in root {root}")
         else:
             self.print_verbose(f"Building miRNA ...")
@@ -384,13 +380,9 @@ class miRNA(Datablock):
             self.print_verbose(f"Wrote frame of len {len(frame)} to path")
             self.print_verbose("... done")
 
-    def read(self,
-              root,
-              *,
-              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")
-    ):
-        path = self.path(root, filesystem)
-        frame = pd.read_parquet(path, storage_options=filesystem.storage_options)
+    def read(self):
+        path = self.path(self.roots, self.filesystem)
+        frame = pd.read_parquet(path, storage_options=self.filesystem.storage_options)
         return frame
     
     def _build_frame(self, mdstr):
@@ -466,19 +458,17 @@ class miRCoSeqs(Datablock):
         counts = np.exp(logcounts.copy()*np.log(2))
         return counts
     
-    def build(self,
-              roots: Dict[str, str],
-              *,
-              scope: SCOPE,
-              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
-
+    def build(self):
+        roots = self.roots
+        filesystem = self.filesystem
+        scope = self.scope
         def lift_jcols(frame, coseq2co):
             _cocols = frame.rename(columns=coseq2co).columns
             cocols = pd.MultiIndex.from_tuples(_cocols)
             frame.columns = cocols
             return frame
 
-        if self.built(roots, filesystem):
+        if self.built():
             self.print_verbose(f"miRCoSeqs already built")
         else:
             self.print_verbose(f"Building miRCoSeqs ... ")
@@ -564,12 +554,9 @@ class miRCoSeqs(Datablock):
             self.print_verbose(f"Wrote {len(rec_sample_ranges_frame)} to {rec_sample_ranges_path}")
         self.print_verbose("... done")
 
-    def read(self,
-             roots,
-             *,
-             topic,
-             filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
-    ):
+    def read(self, topic):
+        roots = self.roots
+        filesystem = self.filesystem
         path = self.path(roots, filesystem, topic)
         if topic == 'samples':
             with filesystem.open(path, 'r') as f:
@@ -584,12 +571,7 @@ class miRCoSeqs(Datablock):
             raise ValueError(f"Unknown topic: {topic}")
         return _
     
-    def display(self,
-                roots,
-                *,
-                topic,
-                filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
-    ):
+    def display(self, topic):
         if topic == 'samples':
             ...
         elif topic == 'logcounts': 
@@ -621,12 +603,10 @@ class ZSCC(Datablock):
         hi: int = 5
         fillna: Optional[float] = None
 
-    def build(self,
-              roots,
-              *,
-              scope: SCOPE,
-              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
-        if self.built(roots, filesystem):
+    def build(self,):
+        roots = self.roots
+        filesystem = self.filesystem
+        if self.built():
             self.print_verbose(f"ZSCC already built")
         else:
             self.print_verbose("Building ZSCC ...")
@@ -662,13 +642,9 @@ class ZSCC(Datablock):
             self.print_verbose(f"Wrote zscc ordering to {ordering_path}")
         self.print_verbose("... done")
 
-    def read(self,
-              roots,
-              *,
-              topic,
-              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file"), 
-    ):
-    
+    def read(self, topic):
+        roots = self.roots
+        filesystem = self.filesystem
         if topic == 'zscc':
             zscc_path = self.path(roots, filesystem, 'zscc')
             with filesystem.open(zscc_path, 'rb') as zsccfile:
@@ -725,12 +701,11 @@ class FastText(Datablock):
 
     FILENAME = "model.bin"
     
-    def build(self,
-              root,
-              *,
-              scope: SCOPE,
-              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
-        if self.built(root, filesystem):
+    def build(self):
+        scope = self.scope
+        root = self.roots
+        filesystem = self.filesystem
+        if self.built():
             self.print_verbose(f"'{scope.model}' already built")
         else:
             self.print_verbose(f"Building '{scope.model}' ...")
@@ -743,10 +718,7 @@ class FastText(Datablock):
                 cbow.save_model(path)
             self.print_verbose("... done")
 
-    def read(self,
-              root,
-              *,
-              filesystem: fsspec.AbstractFileSystem = fsspec.filesystem("file")):
-        path = self.path(root, filesystem)
+    def read(self,):
+        path = self.path(self.roots, self.filesystem)
         model = fasttext.load_model(path)
         return model

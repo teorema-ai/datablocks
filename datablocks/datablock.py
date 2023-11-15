@@ -1424,10 +1424,8 @@ class DBX:
             _ = f"{repr(dbx)}.databuilder"
             return _
 
-        @property
-        def __datablock(self):
-            if self._datablock is None:
-                self._datablock = self.datablock_cls(**self.datablock_kwargs)
+        def __datablock(self, roots, filesystem, scope=None):
+            self._datablock = self.datablock_cls(roots, filesystem, scope, **self.datablock_kwargs)
             return self._datablock
 
         @property
@@ -1483,7 +1481,7 @@ class DBX:
         def __build_batch__(self, tagscope, **batchscope):
             datablock_batchscope = self.datablock_cls.SCOPE(**batchscope)
             datablock_shardroots = self.datablock_batchroots(tagscope, ensure=True)
-            self.datablock.build(datablock_shardroots, scope=datablock_batchscope, filesystem=self.dataspace.filesystem)
+            self.datablock(datablock_shardroots, scope=datablock_batchscope, filesystem=self.dataspace.filesystem).build()
             _ = self.extent_databook(**tagscope)
             return _
 
@@ -1492,27 +1490,27 @@ class DBX:
                 raise NotImplementedError(f"Class {self.datablock_clstr} does not implement '.display()'")
             datablock_batchscope = self.datablock_cls.SCOPE(**batchscope)
             datablock_shardroots = self.datablock_batchroots(tagscope, ensure=True)
-            _ = self.datablock.display(datablock_shardroots, scope=datablock_batchscope, filesystem=self.dataspace.filesystem)
+            _ = self.datablock(datablock_shardroots, filesystem=self.dataspace.filesystem).display
             return _
 
         def __read_block__(self, tagscope, topic):
             # tagscope can be a list, opaque to the Request evaluation mechanism, but batchscope must be **-expanded to allow Request mechanism to evaluate the kwargs
             datablock_blockroots = self.datablock_blockroots(tagscope)
             if topic == None:
-                assert not hasattr(self.datablock, 'TOPICS'), f"__read_block__: None topic when datablock.TOPICS == {self.datablock.TOPICS} "
-                _ = self.datablock.read(datablock_blockroots, filesystem=self.dataspace.filesystem)
+                assert not hasattr(self.datablock_cls, 'TOPICS'), f"__read_block__: None topic when datablock.TOPICS == {self.datablock_cls.TOPICS} "
+                _ = self.datablock(datablock_blockroots, filesystem=self.dataspace.filesystem).read()
             else:
-                _ = self.datablock.read(datablock_blockroots, topic=topic, filesystem=self.dataspace.filesystem)
+                _ = self.datablock(datablock_blockroots, filesystem=self.dataspace.filesystem).read(topic)
             return _
 
         def __extent_shard_valid__(self, topic, tagshardscope):
             datablock_tagshardscope = self.datablock_cls.SCOPE(**tagshardscope)
             datablock_shardroots = self.datablock_shardroots(tagshardscope)
             if topic == None:
-                assert not hasattr(self.datablock, 'TOPICS'), f"__extent_shard_valid__: None topic when datablock.TOPICS == {getattr(self.datablock, 'TOPICS')} "
-                _ = self.datablock.valid(datablock_shardroots, filesystem=self.dataspace.filesystem,)
+                assert not hasattr(self.datablock_cls, 'TOPICS'), f"__extent_shard_valid__: None topic when datablock.TOPICS == {getattr(self.datablock_cls, 'TOPICS')} "
+                _ = self.datablock(datablock_shardroots, filesystem=self.dataspace.filesystem,).valid()
             else:
-                _ = self.datablock.valid(datablock_shardroots, filesystem=self.dataspace.filesystem, topic=topic)
+                _ = self.datablock(datablock_shardroots, filesystem=self.dataspace.filesystem).valid(topic)
             return _
         
         def __extent_shard_metric__(self, topic, tagshardscope):
@@ -1520,9 +1518,9 @@ class DBX:
             datablock_shardroots = self.datablock_shardroots(tagshardscope)
             if topic == None:
                 assert hasattr(self.datablock, 'TOPICS'), f"__extent_shard_metric__: None topic when datablock.TOPICS == {self.datablock.TOPICS} "
-                _ = self.datablock.metric(scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem, roots=datablock_shardroots)
+                _ = self.datablock(scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem, roots=datablock_shardroots).metric()
             else:
-                _ = self.datablock.metric(scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem, roots=datablock_shardroots, topic=topic)
+                _ = self.datablock(scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem, roots=datablock_shardroots).metric(topic)
             return _
 
         SCOPE_fields = dataclasses.fields(dbx.datablock_cls.SCOPE)
@@ -1618,20 +1616,8 @@ class DBX:
         """
 
         script_ = ""
-        def transcribe_roots(filesystem, roots, *, prefix=''):
-            _roots = ""
-            if isinstance(roots, dict):
-                _roots += f"{prefix}{{\n"
-                for key, val in roots.items():
-                    prefix_ = prefix + '\t\t'
-                    _roots += f"{prefix}\t{repr(key)}: {transcribe_roots(filesystem, val, prefix=prefix_)},\n"
-                _roots += f"{prefix}}}"
-            elif isinstance(roots, list):
-                _roots += "[" + ", ".join(transcribe_roots(filesystem, r) for r in roots) + "]"
-            else:
-                _roots = "f'"+ roots + "'"
-            return _roots
 
+        '''
         def transcribe_reader(arg):
             transcript = f"# {tag(arg.dbx)}\n"
 
@@ -1654,6 +1640,7 @@ class DBX:
             argscript =  f"{arg.dbx.alias}_roots, " +\
                         (f"filesystem={arg.dbx.alias}_filesystem, " if argfilesystem.protocol != 'file' else "")
             return transcript, argscript
+        '''
 
         imports = {}
         env = ""
@@ -1668,11 +1655,12 @@ class DBX:
             for ekey in with_env:
                 env += f"{ekey} = os.getenv('{ekey}')\n"
 
+        '''
         readers = {}
         readerargs = {}
 
         for dbx in dbxs:
-            imports[dbx.datablock_module_name]= f"import {dbx.datablock_module_name}\n"
+            
             for key, arg in dbx.scope.items():
                 if isinstance(arg, DBX.Reader):
                     if arg.dbx.alias is None:
@@ -1683,10 +1671,26 @@ class DBX:
         for arg in readers.values():
             _transcript, argscript = transcribe_reader(arg)
             read += _transcript + "\n"
-            readerargs[arg.dbx.alias] = argscript            
+            readerargs[arg.dbx.alias] = argscript   
+        '''  
+
+        def transcribe_roots(filesystem, roots, *, prefix=''):
+            _roots = ""
+            if isinstance(roots, dict):
+                _roots += f"{prefix}{{\n"
+                for key, val in roots.items():
+                    prefix_ = prefix + '\t\t'
+                    _roots += f"{prefix}\t{repr(key)}: {transcribe_roots(filesystem, val, prefix=prefix_)},\n"
+                _roots += f"\t{prefix}}}"
+            elif isinstance(roots, list):
+                _roots += "[" + ", ".join(transcribe_roots(filesystem, r) for r in roots) + "]"
+            else:
+                _roots = "f'"+ roots + "'"
+            return _roots       
 
         for dbx in dbxs:
-            _datablock = Tagger().tag_ctor(dbx.datablock_cls, **dbx.datablock_kwargs)
+            imports[dbx.datablock_module_name]= f"import {dbx.datablock_module_name}\n"
+            _datablock = f"{dbx.alias}"
             build += f"# {tag(dbx)}\n"
             blockscope = dbx.databuilder._blockscope_(**dbx.scope)
             tagscope = dbx.databuilder._tagscope_(**blockscope)
@@ -1696,40 +1700,47 @@ class DBX:
                 for key, arg in dbx.scope.items():
                     if isinstance(arg, DBX.Pather):
                         if arg.topic is None:
-                            path = f"{arg.dbx.alias}_roots"
+                            path = f"{arg.dbx.alias}.roots"
                         else:
-                            path = f"{arg.dbx.alias}_roots[{repr(arg.topic)}]"
-                        _blockscope += f"\t{key}={path},\n"
+                            path = f"{arg.dbx.alias}.roots[{repr(arg.topic)}]"
+                        _blockscope += f"\t\t{key}={path},\n"
                     elif isinstance(arg, DBX.Reader):
-                        topicarg = f"topic={repr(arg.topic)}" if arg.topic is not None else ""
-                        _blockscope += f"\t{key}={arg.dbx.alias}.read({readerargs[arg.dbx.alias]}{topicarg}),\n"
+                        topicarg = f"{repr(arg.topic)}" if arg.topic is not None else ""
+                        _blockscope += f"\t\t{key}={arg.dbx.alias}.read({topicarg}),\n"
                     else:
-                        _blockscope += f"\t{key}={repr(arg)},\n"
-                _blockscope += ")\n"
-                build += f"{dbx.alias}_scope = {_blockscope}\n"
+                        _blockscope += f"\t\t{key}={repr(arg)},\n"
+                _blockscope += "\t)"
+            else:
+                _blockscope = ""
             
-            blockroots = dbx.databuilder.datablock_blockroots(tagscope)
             filesystem = dbx.databuilder.dataspace.filesystem
+            blockroots = dbx.databuilder.datablock_blockroots(tagscope)
+            _blockroots = transcribe_roots(filesystem, blockroots)
+
             if filesystem.protocol != "file":
                 protocol = dbx.databuilder.dataspace.protocol
                 storage_options = dbx.databuilder.dataspace.storage_options
-                _filesystem = signature.Tagger().tag_func("fsspec.filesystem", protocol, **storage_options)
-                build += f"{dbx.alias}_filesystem = {_filesystem}\n"
-            _blockroots = transcribe_roots(filesystem, blockroots)
-
-            build += f"{dbx.alias}_roots = " + _blockroots + "\n"
+                _filesystem = signature.Tagger().tag_func("fsspec.filesystem", protocol, **storage_options) 
+            else:
+                _filesystem = ""
+        
+            _, __kwargs = Tagger().tag_args_kwargs(**dbx.datablock_kwargs)
+            _kwargs = ""
+            for key, val in __kwargs.items():
+                _kwargs += f"{key}={val},\n\t"
             
-            build += f"{_datablock}.build(\n"  +\
-                      f"\t{dbx.alias}_roots,\n"  +\
-                      (f"\tscope={dbx.alias}_scope,\n" if len(dbx.scope) else "") +\
-                      (f"\tfilesystem={dbx.alias}_filesystem,\n" if filesystem.protocol != "file" else "") +\
-                      f")\n"
+            build += f"{_datablock} = " + Tagger().ctor_name(dbx.datablock_cls) + "(\n"     + \
+                            (f"\troots={_blockroots},\n" if len(_blockroots) > 0 else "")      + \
+                            (f"\tfilesystem={_filesystem},\n" if len(_filesystem) > 0 else "") + \
+                            (f"\tscope={_blockscope},\n" if len(_blockscope) > 0 else "")      + \
+                            (f"\t{_kwargs}")                                                + \
+                     ")\n"
             build += "\n"
 
             script = ''.join(imports.values()) + "\n\n"
             if len(with_env):
                 script += env + "\n\n"
-            script += read + "\n"
+            #script += read + "\n"
             script += build
 
             if with_linenos: 

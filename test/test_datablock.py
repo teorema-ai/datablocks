@@ -5,23 +5,32 @@ import datablocks.dataspace
 TESTLAKE = datablocks.dataspace.Dataspace.temporary()
 
 
-def test_micron():
-    def _test(dbx, topic=None):
-        print(f"intent: {dbx}\n", dbx.intent())
-        print(f"extent: pre-build: {dbx}: \n", dbx.extent())
-        dbx.build()
-        print(f"extent: post-build: {dbx}\n", dbx.extent())
-        if topic:
-            print(dbx.read(topic))
-        else:
-            print(dbx.read())
-    MIRCOHN = datablocks.DBX('datablocks.test.micron.datablocks.miRCoHN', 'mircohn')\
+def _test(dbx, topic=None):
+    print(f"intent: {dbx}\n", dbx.intent())
+    print(f"extent: pre-build: {dbx}: \n", dbx.extent())
+    dbx.build()
+    print(f"extent: post-build: {dbx}\n", dbx.extent())
+    if topic:
+        print(dbx.read(topic))
+    else:
+        print(dbx.read())
+
+
+MIRCOHN = datablocks.DBX('datablocks.test.micron.datablocks.miRCoHN', 'mircohn')\
         .Databuilder(dataspace=TESTLAKE)
+
+MIRNA = datablocks.DBX('datablocks.test.micron.datablocks.miRNA', 'mirna').Datablock(verbose=True).SCOPE()
+
+
+def test_mircohn():
     _test(MIRCOHN, 'logcounts')
 
-    MIRNA = datablocks.DBX('datablocks.test.micron.datablocks.miRNA', 'mirna').Datablock(verbose=True).SCOPE()
+
+def test_mirna():
     _test(MIRNA)
 
+
+def test_mircoseq():
     MIR_COSEQS_NPASSES = 10
     MIR_COSEQS_SEQS_PER_RECORD = 300
     MIRCOSEQSHN = \
