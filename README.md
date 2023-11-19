@@ -1,4 +1,4 @@
-# datablocks
+#datablocks
 > SUMMARY 
 datablocks is a Python package that manages datasets built out of Datablocks and residing in Dataspaces.
 It is an experiment dataset management toolkit.
@@ -7,22 +7,30 @@ It is an experiment dataset management toolkit.
 * `Datablock` interface at a minimum should implement the following interface:
 ```
     class Datablock:
+        [TOPICS: dict] # {topic -> root}
+
         @dataclass
         def SCOPE:
             ...
-        
-        def build(scope: SCOPE, filesystem: fsspec.AbstractFileSystem, *roots):
+
+        def __init__(self,
+                    roots: dict{topic:str -> root:str|list[str]} | str | list[str],
+                    filesystem: fsspec.AbstractFileSystem,
+                    scope: Optional[SCOPE])
+
+        def build(self):
             ...
-        def read(scope: SCOPE, filesystem: fsspec.AbstractFileSystem, *roots):
+
+        def read(self, topic: Optional[str]):
             ...
 ```
 * Optionally, it is recommended that the following additional members methods be implemented.
-    - `VERSION` [member]
-    - `valid(scope: SCOPE, filesystem: fsspec.AbstractFileSystem, *roots)` 
-        . [`scope` can be ignored here if the validation can be done solely based on `roots` and `filesystem`]
-    - `metric(scope: SCOPE, filesystem: fsspec.AbstractFileSystem, *roots) -> Float 
-        . [`scope` can be ignored here if the metric can be computed solely based on `root` and `filesystem`]
-*`datablocks.datablock.DBX(Datablock, 'alias')` or `datablocks.datablock.DBX('path.to.Datablock', 'alias')`
+    - `REVISION` [member]
+    - `valid(topic: Optional[str])` 
+    - `metric(topic: Optional[str]) -> Float`` 
+*`datablocks.dbx.DBX(Datablock, 'alias', verbose: bool, debug: bool, **databuilder_kwargs)` 
+    or 
+ `datablocks.datablock.DBX('path.to.Datablock', 'alias', ...)`
 can be used to 
 * build and cache a dataset
 * interrogate its build history, 
@@ -32,51 +40,47 @@ can be used to
 If `**scope` includes the result of other `DBX` as input specified as follows
 ```
     dbarray10 = DB(datablocks.test.datasets.PandasArray, 'dbarray10')
-    DB(datablocks.test.datasets.PandasMultiplier, 'dbmult10_3').build(input=dbarray10.reader(), multiplier=3.0)
+    DB(datablocks.test.datasets.PandasMultiplier, 'dbmult10_3').SCOPE(input=dbarray10.READ(topic), multiplier=3.0)
 ```
 then `DBX` builds a lazy execution graph, whose nodes include (1) reading `dbarray10`, (2) building `dbmult10_3` from the inputs.
 The graph is evaluated in an evaluation pool, potentially remotely, potentially in parallel, depending on the pool type.
 
 More details below.
 
-# USAGE
+#USAGE
 ## Basic
 * Build a dataset 
 ```
->datablocks.exec "DBX('datablocks.test.datasets.PandasDataset').DATABLOCK(verbose=True, build_delay_secs=10).SCOPE(size=100)"
+>dbx "DBX('datablocks.test.datasets.PandasDataset', 'pd100', verbose=True, build_delay_secs=10).SCOPE(size=100).build()"
 ```
 * Read a dataset
 ```
->datablocks.exec "DBX('datablocks.test.datasets.PandasDataset').SCOPE(size=100).read()"
+>dbx "DBX('datablocks.test.datablocks.PandasDatablock', 'pd100').read()"
 ```
 
-
-* See `datablocks.test.datasets.[PandasArray, PandasMultiplier]` for implementation details.
-* A datablock implementation must implement 
-    _ `init(root: str, filesystem: fsspec: AbstractFileSystem)
-    - `build(**scope)`
-    - `read(**scope)` [`scope` can be ignored here if the reading can be done solely from `root` and `filesystem`]
-
-
-## Debugging
+#DEBUGGING
 ```
     export PDA="DBX('datablocks.test.datasets.PandasArray', 'pda')" 
-    datablocks.exec "$PDA.build()"
-    #
-    # Show all block build records:
-    datablocks.exec "$PDA.show_build_records"
-    # See the last record's graph:
-    datablocks.exec "$PDA.show_build_graph()" # See the overall state, take note of exceptions and logs
-    # or
-    datablocks.exec "$PDA.show_block_graph(record=3)" # use record index from output of `show_block_records`
+    dbx "$PDA.build()"
+
+    * all block build records:
+    dbx "$PDA.show_build_records()"
+    
+    * last record's graph:
+    dbx "$PDA.show_build_graph()" # See the overall state, take note of exceptions and logs
+    
+    * specified record's graph
+    dbx "$PDA.show_block_graph(record=3)" # use record index from output of `show_block_records`
     # Most of the `show_*` methods below take a record index and default to the last record.
-    #
-    # Check the number of batches:
-    datablocks.exec "$PDA.show_block_nbatches()"
-    # Look at the subgraph at batch 0:
-    datablocks.exec "$PDA.show_block_batch_graph()"
+    
+    * batch count:
+    dbx "$PDA.show_block_count()"
+
+    * batch graph of batch 0:
+    dbx "$PDA.show_block_batch_graph()"
     # or
-    datablocks.exec "$PDA.show_block_batch_graph(batch=0)"
+    dbx "$PDA.show_block_batch_graph(batch=0)"
+
     # Add exception tracebacks to print, but only if necessary -- can be very voluminous, 
     #  since traceback is replicated up the call tree:
     datablocks.exec "$PDA.show_block_batch_graph(_print='traceback')"
@@ -89,21 +93,23 @@ More details below.
     #
     # Also potentially useful:
     # Use the output of `show_block_graph` to determine list of node indices:
-    datablocks.exec "$PDA.show_block_batch_graph(node=[]'1'], _print='traceback')" 
-    
+    datablocks.exec "$PDA.show_block_batch_graph(node=[]'1'], _print='traceback')"   
 ```
 or in Python
 ```
+    from datablocks.dbx import DBX
     import datablocks.test.datasets
-    PDA=DB(datablocks.test.datasets.PandasArray, 'pda')
+
+    PDA=DBX(datablocks.test.datasets.PandasArray, 'pda')
     # or
-    PDA=DB("datablocks.test.datasets.PandasArray", 'pda')
+    PDA=DBX("datablocks.test.datasets.PandasArray", 'pda')
     PDA.build()
     # etc
 ```
+
 # TEST
 ```
-    python $HOME/datablocks/datablocks/test/datasets.py [{TEST_NAME}]
+    pytest
 ```
 
 # EXAMPLES
@@ -115,11 +121,11 @@ export MIRCOS="datablocks.DBX('datablocks.test.micron.datasets.miRCoStats').SCOP
 # Examine
 dbx.echo "$MIRCOS"
 dbx "$MIRCOS"
-dbx "$MIRCOS.scope"
+dbx "$MIRCOS.SCOPE"
 dbx "$MIRCOS.intent()"
 dbx "$MIRCOS.extent()"
 # Build
-
+...
 
 ```
 

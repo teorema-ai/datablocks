@@ -26,21 +26,53 @@ from micron.cclustering import ZSConsensusClustering
 
 
 class Datablock:
+    REVISION = '0.0.1'
     @staticmethod
     def display_umap(frame, *, color=None):
         _umap = umap.UMAP()
         _udata = _umap.fit_transform(frame.fillna(0.0))
         plt.scatter(_udata[:, 0], _udata[:, 1], c=color)
 
-    def print_verbose(self, s):
-        if self.verbose:
-            print(f">>> {self.__class__.__qualname__}: {s}")
+    def __init__(self, 
+                 roots=None, 
+                 filesystem:fsspec.AbstractFileSystem = fsspec.filesystem("file"), 
+                 scope=None,
+                 *, 
+                 verbose=False, 
+                 debug=False, 
+                 rm_tmp=True, ):
+        self.scope = scope
+        self.roots = roots
+        self.filesystem = filesystem
+        self.verbose = verbose
+        self.debug = debug
+        self.rm_tmp = rm_tmp
 
-    def print_debug(self, s):
-        if self.debug:
-            print(f"DEBUG: >>> {self.__class__.__qualname__}: {s}")
+    def valid(self, topic=None):
+        if hasattr(self, 'TOPICS'):
+            path = self.path(topic)
+            _ = self.filesystem.exists(path)
+        else:
+            path = self.path()
+            _ = self.filesystem.exists(path)
+        return _            
 
-    def path(self, roots, filesystem, topic=None):
+    def built(self):
+        built = True
+        if hasattr(self, 'TOPICS'):
+            for topic in self.TOPICS:
+                if not self.valid(topic):
+                    self.print_verbose(f"Topic {topic} not built")
+                    built = False
+                    break
+        else:
+            if not self.valid():
+                built = False
+        return built
+
+    def path(self, topic=None):
+        roots = self.roots
+        filesystem = self.filesystem
         if topic is not None:
             if filesystem.protocol == 'file':
                 if roots is None:
@@ -63,35 +95,14 @@ class Datablock:
                 path = roots + "/" + self.FILENAME
         return path
 
-    #TODO: factor through 'valid()'
-    def built(self):
-        built = True
-        if hasattr(self, 'TOPICS'):
-            for topic in self.TOPICS:
-                path = self.path(self.roots, self.filesystem, topic)
-                if not self.filesystem.exists(path):
-                    self.print_verbose(f"Topic '{topic}' not built at path {path}")
-                    built = False
-                    break
-        else:
-            path = self.path(self.roots, self.filesystem)
-            built = self.filesystem.exists(path)
-        return built
+    def print_verbose(self, s):
+        if self.verbose:
+            print(f">>> {self.__class__.__qualname__}: {s}")
 
-    def __init__(self, 
-                 roots=None, 
-                 filesystem:fsspec.AbstractFileSystem = fsspec.filesystem("file"), 
-                 scope=None,
-                 *, 
-                 verbose=False, 
-                 debug=False, 
-                 rm_tmp=True, ):
-        self.scope = scope
-        self.roots = roots
-        self.filesystem = filesystem
-        self.verbose = verbose
-        self.debug = debug
-        self.rm_tmp = rm_tmp
+    def print_debug(self, s):
+        if self.debug:
+            print(f"DEBUG: >>> {self.__class__.__qualname__}: {s}")
+
 
 
 class miRCoHN(Datablock):
@@ -99,7 +110,7 @@ class miRCoHN(Datablock):
         Data for the clustering HNSC study described in from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/.
         TODO: do not save 'pivots' or 'downregulated_mirna_infixes' to a file, return them from code instead?
     """
-    VERSION = "0.11.3"
+    REVISION = "0.11.3"
     
     TOPICS = {'logcounts': f"mircohn_rpm_log2.parquet",
                 'pivots': f"mircohn_pivots.parquet",
@@ -268,7 +279,7 @@ class miRCoHN(Datablock):
         """
         roots = self.roots
         filesystem = self.filesystem
-        framepaths = {topic: self.path(roots, filesystem, topic) for topic in self.TOPICS}
+        framepaths = {topic: self.path(topic) for topic in self.TOPICS}
         if self.built():
             self.print_verbose("All topics built already.  Done.")
         else:
@@ -333,13 +344,13 @@ class miRCoHN(Datablock):
     
     def read(self, topic,):
         self.print_verbose(f"Reading topic '{topic}'")
-        topic_tgt_path = self.path(self.roots, self.filesystem, topic)
+        topic_tgt_path = self.path(topic)
         topic_frame = pd.read_parquet(topic_tgt_path, storage_options=self.filesystem.storage_options)
         return topic_frame
 
 
 class miRNA(Datablock):
-    VERSION = "0.2.1"
+    REVISION = "0.2.1"
 
     @dataclass
     class SCOPE:
@@ -375,13 +386,13 @@ class miRNA(Datablock):
                     datstr = datfile.read()
                     frame = self._build_frame(datstr)
 
-            path = self.path(root, filesystem)
+            path = self.path()
             frame.to_parquet(path, storage_options=filesystem.storage_options)
             self.print_verbose(f"Wrote frame of len {len(frame)} to path")
             self.print_verbose("... done")
 
     def read(self):
-        path = self.path(self.roots, self.filesystem)
+        path = self.path()
         frame = pd.read_parquet(path, storage_options=self.filesystem.storage_options)
         return frame
     
@@ -431,7 +442,7 @@ class miRCoSeqs(Datablock):
     """
         Sequences sampled at count frequences
     """
-    VERSION = "1.2.0"
+    REVISION = "1.2.0"
     TOPICS = {'logcounts': f"miRLogCos.parquet",
                  'counts': f"miRCos.parquet",
                  'logcontrols': f"miRLogCtrls.parquet",
@@ -492,17 +503,17 @@ class miRCoSeqs(Datablock):
             jcols = [i for i in _seqf.index if i in _cof.columns]
 
             jcof = lift_jcols(_cof[jcols], coseq2co)
-            jcof_path = self.path(roots, filesystem, 'counts')
+            jcof_path = self.path('counts')
             jcof.to_parquet(jcof_path, storage_options=filesystem.storage_options)
             self.print_verbose(f"Wrote counts to {jcof_path}")
 
             jlogcof = lift_jcols(_logcof[jcols], coseq2co)
-            jlogcof_path = self.path(roots, filesystem, 'logcounts')
+            jlogcof_path = self.path('logcounts')
             jlogcof.to_parquet(jlogcof_path, storage_options=filesystem.storage_options)
             self.print_verbose(f"Wrote logcounts to {jlogcof_path}")
             
             jseqf = lift_jcols(_seqf.loc[jcols].transpose(), coseq2co).transpose()
-            jseqs_path = self.path(roots, filesystem, 'seqs')
+            jseqs_path = self.path('seqs')
             jseqf.to_parquet(jseqs_path, storage_options=filesystem.storage_options)
             self.print_verbose(f"Wrote sequences to {jseqs_path}")
 
@@ -512,7 +523,7 @@ class miRCoSeqs(Datablock):
             jseqlist = jseqs.tolist()
 
             jlogcontrols = scope.logcontrols[co2coseq.keys()]
-            jlogcontrols_path = self.path(roots, filesystem, 'logcontrols')
+            jlogcontrols_path = self.path('logcontrols')
             jlogcontrols.to_parquet(jlogcontrols_path, storage_options=filesystem.storage_options)
             self.print_verbose(f"Wrote logcontrols to {jlogcontrols_path}")
 
@@ -539,7 +550,7 @@ class miRCoSeqs(Datablock):
                 self.print_verbose(f"Generated {n_pass_samples} in pass {_pass} for a total of {n_samples} so far")
             self.print_verbose(f"Generated {n_samples} samples")
 
-            samples_path = self.path(roots, filesystem, 'samples')
+            samples_path = self.path('samples')
             with filesystem.open(samples_path, 'w') as f:
                 self.print_verbose(f"Writing {n_samples} samples to {samples_path}")
                 for i, freq in sample_batches:
@@ -549,7 +560,7 @@ class miRCoSeqs(Datablock):
 
             rec_sample_ranges_frame = pd.DataFrame(rec_sample_ranges).transpose()
             rec_sample_ranges_frame.columns.name = 'pass'
-            rec_sample_ranges_path = self.path(roots, filesystem, 'rec_sample_ranges')
+            rec_sample_ranges_path = self.path('rec_sample_ranges')
             rec_sample_ranges_frame.to_parquet(rec_sample_ranges_path, storage_options=filesystem.storage_options)
             self.print_verbose(f"Wrote {len(rec_sample_ranges_frame)} to {rec_sample_ranges_path}")
         self.print_verbose("... done")
@@ -557,7 +568,7 @@ class miRCoSeqs(Datablock):
     def read(self, topic):
         roots = self.roots
         filesystem = self.filesystem
-        path = self.path(roots, filesystem, topic)
+        path = self.path(topic)
         if topic == 'samples':
             with filesystem.open(path, 'r') as f:
                 s = f.read()
@@ -583,7 +594,7 @@ class miRCoSeqs(Datablock):
 
 
 class ZSCC(Datablock):
-    VERSION = "0.6.1"
+    REVISION = "0.6.1"
     TOPICS = {
         'zscc': 'zscc.pkl',
         'clusters': 'clusters.parquet',
@@ -621,7 +632,7 @@ class ZSCC(Datablock):
             self.print_verbose(f"Fitting zscc to data of size {len(data_frame)}")
             zscc.fit(data_frame.values)
 
-            zscc_path = self.path(roots, filesystem, 'zscc')
+            zscc_path = self.path('zscc')
             with filesystem.open(zscc_path, 'wb') as zsccfile:
                 pickle.dump(zscc, zsccfile)
             if self.verbose:
@@ -629,13 +640,13 @@ class ZSCC(Datablock):
 
             if self.verbose:
                 print(f"Assigning optimal clusters to data of len {len(data_frame)}")
-            clusters_path = self.path(roots, filesystem, 'clusters')
+            clusters_path = self.path('clusters')
             clusters = zscc.predict_data(data_frame.values)
             clusters_frame = pd.DataFrame({'clusters': clusters})
             clusters_frame.to_parquet(clusters_path, storage_options=filesystem.storage_options)
             self.print_verbose(f"Wrote zscc clusters to {clusters_path}")
 
-            ordering_path = self.path(roots, filesystem, 'ordering')
+            ordering_path = self.path('ordering')
             ordering = np.argsort(clusters)
             with filesystem.open(ordering_path, 'wb') as ordering_file:
                 pickle.dump(ordering, ordering_file)
@@ -646,20 +657,20 @@ class ZSCC(Datablock):
         roots = self.roots
         filesystem = self.filesystem
         if topic == 'zscc':
-            zscc_path = self.path(roots, filesystem, 'zscc')
+            zscc_path = self.path('zscc')
             with filesystem.open(zscc_path, 'rb') as zsccfile:
                 zscc = pickle.load(zsccfile)
                 _ = zscc
             if self.verbose:
                 print(f"Loaded zscc pickle from {zscc_path}")
         elif topic == 'clusters':
-            clusters_path = self.path(roots, filesystem, 'clusters')
+            clusters_path = self.path('clusters')
             clusters_frame = pd.read_parquet(clusters_path, storage_options=filesystem.storage_options)
             _ = clusters_frame
             if self.verbose:
                 print(f"Read zscc clusters from {clusters_path}")
         elif topic == 'ordering':
-            ordering_path = self.path(roots, filesystem, 'ordering')
+            ordering_path = self.path('ordering')
             with filesystem.open(ordering_path, 'rb') as ordering_file:
                 _ = pickle.load(ordering_file)
             if self.verbose:
@@ -670,7 +681,7 @@ class ZSCC(Datablock):
 
 
 class FastText(Datablock):
-    VERSION = "0.6.1"
+    REVISION = "0.6.1"
     
     @dataclass
     class SCOPE:
@@ -709,7 +720,7 @@ class FastText(Datablock):
             self.print_verbose(f"'{scope.model}' already built")
         else:
             self.print_verbose(f"Building '{scope.model}' ...")
-            path = self.path(root, filesystem)
+            path = self.path()
             if not filesystem.exists(path):
                 samples_files = filesystem.ls(scope.samples_path)
                 assert len(samples_files) == 1
@@ -719,6 +730,6 @@ class FastText(Datablock):
             self.print_verbose("... done")
 
     def read(self,):
-        path = self.path(self.roots, self.filesystem)
+        path = self.path()
         model = fasttext.load_model(path)
         return model

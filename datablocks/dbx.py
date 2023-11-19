@@ -32,7 +32,7 @@ def _eval(string):
     """
         Eval in the context of impoirted datablocks.datablock.
     """
-    import datablocks.datablock
+    import datablocks.dbx
     _eval = __builtins__['eval']
     _ = _eval(string)
     return _
@@ -56,35 +56,95 @@ DBX_PREFIX = 'DBX'
 
 
 class Datablock:
-    VERSION = '0.0.0'
-    DEFAULT_ROOT = os.getcwd()
-    DEFAULT_FILESYSTEM = fsspec.filesystem("file")
-    DEFAULT_TOPIC = None
+    REVISION = '0.0.1'
+    FILENAME = None # define or define TOPICS: dict
 
     @dataclass
     class SCOPE:
-        """
-            - In DBX.build() scopes containing RANGE members beyond those annotated as RANGE in SCOPE are treating as `blocking` arguments,
-              to be broken up along to form batches for building.  This means DBX creates one Datablock instance per batch and calls .build() on it.
-            - In DBX.read() scopes containing RANGE members are used as is to create a single Datablock instance to .read().  The instance is free
-              to reject RANGE-containing scope, if it cannot collate individual shards.
-        """
         ...
-        # Example:
-        #instruments: RANGE[str] = RANGE(('x', 'y'))
 
+    def __init__(self, 
+                 roots=None, 
+                 filesystem:fsspec.AbstractFileSystem = fsspec.filesystem("file"), 
+                 scope=None,
+                 *, 
+                 verbose=False, 
+                 debug=False, 
+                 rm_tmp=True, ):
+        self.scope = scope
+        self.roots = roots
+        self.filesystem = filesystem
+        self.verbose = verbose
+        self.debug = debug
+        self.rm_tmp = rm_tmp
 
-    def build(self, blockscope: SCOPE, filesystem: fsspec.AbstractFileSystem, *roots: Tuple[str]):
-        ...
+    def build(self):
+        raise NotImplementedError
+
+    def read(self, topic=None):
+        raise NotImplementedError
+
+    def valid(self, topic=None):
+        if hasattr(self, 'TOPICS'):
+            path = self.path(topic)
+            _ = self.filesystem.exists(path)
+        else:
+            path = self.path()
+            _ = self.filesystem.exists(path)
+        return _            
     
-    def read(self, topic, filesystem: fsspec.AbstractFileSystem, *roots: Tuple[str]):
-        ...
+    '''
+    #TODO: fix dbx.__extent_shard_metric__, which fails with this
+    def metric(self, topic=None):
+        return int(self.valid(topic))
+    '''
 
-    def valid(self, topic, shardscope: SCOPE, filesystem: fsspec.AbstractFileSystem, root: str):
-        ...
+    def built(self):
+        built = True
+        if hasattr(self, 'TOPICS'):
+            for topic in self.TOPICS:
+                if not self.valid(topic):
+                    self.print_verbose(f"Topic {topic} not built")
+                    built = False
+                    break
+        else:
+            if not self.valid():
+                built = False
+        return built
 
-    def metric(self, topic, ilesystem: fsspec.AbstractFileSystem, root: str) -> float:
-        ...
+    def path(self, topic=None):
+        roots = self.roots
+        filesystem = self.filesystem
+        if topic is not None:
+            if filesystem.protocol == 'file':
+                if roots is None:
+                    path = os.path.join(os.getcwd(), self.TOPICS[topic])
+                else:
+                    path_ = roots[topic]
+                    os.makedirs(path_, exist_ok=True)
+                    path = os.path.join(path_, self.TOPICS[topic])
+            else:
+                path = roots[topic] + "/" + self.TOPICS[topic]
+        else:
+            if filesystem.protocol == 'file':
+                if roots is None:
+                    path = os.join(os.getcwd(), self.FILENAME)
+                else:
+                    path_ = roots
+                    os.makedirs(path_, exist_ok=True)
+                    path = os.path.join(path_, self.FILENAME)
+            else:
+                path = roots + "/" + self.FILENAME
+        return path
+
+    def print_verbose(self, s):
+        if self.verbose:
+            print(f">>> {self.__class__.__qualname__}: {s}")
+
+    def print_debug(self, s):
+        if self.debug:
+            print(f"DEBUG: >>> {self.__class__.__qualname__}: {s}")
+
 
 
 class Anchored:
@@ -271,17 +331,17 @@ class KVHandle(tuple):
 
 
 DEFAULT_TOPIC = None
-DEFAULT_VERSION = '0.0.0'
+DEFAULT_REVISION = '0.0.0'
 
 class Databuilder(Anchored, Scoped): 
     # TODO: implement support for multiple batch_to_shard_keys
-    version = DEFAULT_VERSION
+    revision = DEFAULT_REVISION
     topics = [DEFAULT_TOPIC]
-    signature = Signature((), ('dataspace', 'version',)) # extract these attrs and use in __tag__
+    signature = Signature((), ('dataspace', 'revision',)) # extract these attrs and use in __tag__
 
-    RECORD_SCHEMA_VERSION = '0.2.0'
+    RECORD_SCHEMA_REVISION = '0.2.0'
 
-    # TODO: make dataspace, version position-only and adjust Signature
+    # TODO: make dataspace, revision position-only and adjust Signature
     def __init__(self,
                  alias=None,
                  *,
@@ -300,7 +360,7 @@ class Databuilder(Anchored, Scoped):
         self.dataspace = dataspace
         self._tmpspace = tmpspace
         self.anchorspace = dataspace.subspace(*self.anchorchain)
-        #self.versionspace = self.anchorspace.subspace(f"version={str(self.version)}",)
+        #self.revisionspace = self.anchorspace.subspace(f"revision={str(self.revision)}",)
         self.lock_pages = lock_pages
         self.verbose = verbose
         self.debug = debug
@@ -341,13 +401,13 @@ class Databuilder(Anchored, Scoped):
             repr = tag.Tagger().tag_ctor(self.__class__)
 
     @property
-    def versionspace(self):
-        return self.anchorspace.subspace(f"version={str(self.version)}",)
+    def revisionspace(self):
+        return self.anchorspace.subspace(f"revision={str(self.revision)}",)
 
     @property
     def tmpspace(self):
         if self._tmpspace is None:
-            self._tmpspace = self.versionspace.temporary(self.versionspace.subspace('tmp').ensure().root)
+            self._tmpspace = self.revisionspace.temporary(self.revisionspace.subspace('tmp').ensure().root)
         return self._tmpspace
 
     #TODO: #MOVE -> DBX.show_topics()
@@ -356,9 +416,9 @@ class Databuilder(Anchored, Scoped):
             __build_class__['print'](self.topics)
         return self.topics
 
-    #TODO: #MOVE -> DBX.show_version()
-    def get_version(self):
-        return self.version
+    #TODO: #MOVE -> DBX.show_revision()
+    def get_revision(self):
+        return self.revision
 
     #RENAME: -> block_page_intent
     def intent_datapage(self, topic, **scope):
@@ -379,7 +439,7 @@ class Databuilder(Anchored, Scoped):
     #RENAME: -> _shard_page_extent_valid_?
     def _extent_shard_valid_(self, topic, tagshardscope):
         pathset = self._shardspace_(topic, **tagshardscope).root
-        valid = self.versionspace.filesystem.isdir(pathset)
+        valid = self.revisionspace.filesystem.isdir(pathset)
         if self.debug:
             if valid:
                 print(f"_extent_shard_valid_: VALID: shard with topic {repr(topic)} with scope with tag {tagshardscope}")
@@ -541,7 +601,7 @@ class Databuilder(Anchored, Scoped):
         #TODO: `scope_to_hvhandle` with topic==None must generate an hvhandle with no topic head
         tagshard = self._tagscope_(**shard)
         hvhandle = self._scope_to_hvhandle_(topic, **tagshard)
-        subspace = self.versionspace.subspace(*hvhandle)
+        subspace = self.revisionspace.subspace(*hvhandle)
         if self.debug:
             print(f"SHARDSPACE: formed for topic {repr(topic)} and shard with tag {tagshard}: {subspace}")
         return subspace
@@ -576,7 +636,7 @@ class Databuilder(Anchored, Scoped):
 
     def _kvhandle_to_dirpath(self, topic, kvhandle):
         datachain = self._kvhandle_to_hvhandle_(topic, kvhandle)
-        subspace = self.versionspace.subspace(*datachain)
+        subspace = self.revisionspace.subspace(*datachain)
         path = subspace.root
         return path
     
@@ -593,15 +653,15 @@ class Databuilder(Anchored, Scoped):
     def _lock_kvhandle(self, topic, kvhandle):
         if self.lock_pages:
             hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
-            self.versionspace.subspace(*hivechain).acquire()
+            self.revisionspace.subspace(*hivechain).acquire()
 
     def _unlock_kvhandle(self, topic, kvhandle):
         if self.lock_pages:
             hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
-            self.versionspace.subspace(*hivechain).release()
+            self.revisionspace.subspace(*hivechain).release()
 
     def _recordspace_(self):
-        subspace = self.anchorspace.subspace('.records', f'schema={self.RECORD_SCHEMA_VERSION}')
+        subspace = self.anchorspace.subspace('.records', f'schema={self.RECORD_SCHEMA_REVISION}')
         return subspace
 
     #REMOVE: unroll inplace where necessary
@@ -618,11 +678,11 @@ class Databuilder(Anchored, Scoped):
         metric = self.extent_metric(**scope)
         print(metric)
     
-    BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'version', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
+    BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'revision', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
 
     def show_build_records(self, *, full=False, columns=None, all=False, tail=5):
         """
-        All build records for a given Databuilder class, irrespective of alias and version (see `list()` for more specific).
+        All build records for a given Databuilder class, irrespective of alias and revision (see `list()` for more specific).
         'all=True' forces 'tail=None'
         """
         short = not full
@@ -683,19 +743,22 @@ class Databuilder(Anchored, Scoped):
             _record = records.iloc[-1]
         return _record
 
-    def show_named_record(self, *, alias=None, version=None, full=False):
+    def show_named_record(self, *, alias=None, revision=None, full=False):
         import datablocks # needed for `eval`
         records = self.show_build_records(full=full)
         if self.debug:
-            print(f"show_name_record: databuilder {self}: version: {repr(version)}, alias: {repr(alias)}: retrieved records: len: {len(records)}:\n{records}")
+            print(f"show_name_record: databuilder {self}: revision: {repr(revision)}, alias: {repr(alias)}: retrieved records: len: {len(records)}:\n{records}")
         if len(records) == 0:
             return None
         if alias is not None:
             records0 = records.loc[records.alias == alias]
         else:
             records0 = records
-        if version is not None:
-            records1 = records0.loc[records0.version == repr(version)] #NB: must compare to string repr
+        if revision is not None:
+            if 'revision' in records0.columns:
+                records1 = records0.loc[records0.revision == repr(revision)] #NB: must compare to string repr
+            else:
+                records1 = pd.DataFrame()
         else:
             records1 = records0
         if self.debug:
@@ -748,9 +811,9 @@ class Databuilder(Anchored, Scoped):
     def _build_databook_request_lifecycle_callback_(self, **blockscope):
         #tagscope = self._tagscope_(**blockscope)
         classname = ctor_name(self.__class__)
-        versionstr = repr(self.version)
+        revisionstr = repr(self.revision)
         #tagscopestr = repr(tagscope)
-        namestr = f"{classname}:{versionstr}(**{blockscope})"
+        namestr = f"{classname}:{revisionstr}(**{blockscope})"
         hashstr = hashlib.sha256(namestr.encode()).hexdigest()[:10]
         alias = self.alias
         if alias is None:
@@ -764,11 +827,11 @@ class Databuilder(Anchored, Scoped):
             timestamp = int(microseconds_since_epoch())
             datestr = datetime_to_microsecond_str()
             blockscopestr = repr(blockscope)
-            _record = dict(schema=Databuilder.RECORD_SCHEMA_VERSION,
+            _record = dict(schema=Databuilder.RECORD_SCHEMA_REVISION,
                            alias=alias,
                            stage=lifecycle_stage.name,
                            classname=classname,
-                            version=versionstr,
+                            revision=revisionstr,
                             scope=blockscopestr,
                             date=datestr,
                             timestamp=timestamp,
@@ -855,14 +918,14 @@ class Databuilder(Anchored, Scoped):
                 if s1[key] != s2[key]:
                     return False
             return True
-        # TODO: consistency check: sha256 alias must be unique for a given version or match scope
+        # TODO: consistency check: sha256 alias must be unique for a given revision or match scope
         blockscope = self._blockscope_(**scope)
-        record = self.show_named_record(alias=self.alias, version=self.version) 
+        record = self.show_named_record(alias=self.alias, revision=self.revision) 
         if record is not None:
             try:
                 _scope = _eval(record['scope'])
             except Exception as e:
-                # For example, when the scope contains tags of DBX with an earlier version.
+                # For example, when the scope contains tags of DBX with an earlier revision.
                 if self.verbose:
                     print(f"Failed to retrieve scope from build record, ignoring scope of record.")
                 _scope = None
@@ -870,7 +933,7 @@ class Databuilder(Anchored, Scoped):
                 raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.__class__} alias {self.alias}")
         """
         pool_key = utils.datetime_now_key()
-        pool_dataspace = self.versionspace.subspace(*(self.pool.anchorchain+(pool_key,))).ensure()
+        pool_dataspace = self.revisionspace.subspace(*(self.pool.anchorchain+(pool_key,))).ensure()
         pool = self.pool.clone(dataspace=pool_dataspace)
         """
         request = self.build_databook_request(**blockscope).with_lifecycle_callback(self._build_databook_request_lifecycle_callback_(**blockscope))
@@ -956,7 +1019,7 @@ class Databuilder(Anchored, Scoped):
     @OVERRIDE
     # tagscope is necessary since batchscope will be expanded before being passed to _build_batch_
     def _build_batch_request_(self, tagscope, **batchscope):
-        self.versionspace.ensure()
+        self.revisionspace.ensure()
         return Request(self._build_batch_, tagscope, **batchscope)
 
     @OVERRIDE
@@ -1027,14 +1090,14 @@ class DBX:
     class Request(request.Proxy):
         @staticmethod
         def parse_url(url: str, **datablock_kwargs):
-            #url = {classtr}@{version}|{alias}:{topic}
+            #url = {classtr}@{revision}|{alias}:{topic}
             tail = url
             try:
                 datablock_clstr, tail  = tail.split("@")
             except:
                 raise ValueError(f"Malformed url: {url}")
             try:
-                version, tail  = tail.split("#")
+                revision, tail  = tail.split("#")
             except:
                 raise ValueError(f"Malformed url: {url}")
             try:
@@ -1046,29 +1109,29 @@ class DBX:
             except:
                 raise ValueError(f"Malformed url: {url}")
             dbx = DBX(datablock_clstr, alias, **datablock_kwargs)
-            return dbx, version, topic
+            return dbx, revision, topic
 
-        def __init__(self, url=None, *, dbx, version, topic, pic=False):
+        def __init__(self, url=None, *, dbx, revision, topic, pic=False):
             self.url = url
             if self.url is None:
-                self.dbx, self.version, self.topic = dbx, version, topic
+                self.dbx, self.revision, self.topic = dbx, revision, topic
             else:
-                self.dbx, version, self.topic = self.parse_url(url)
+                self.dbx, revision, self.topic = self.parse_url(url)
             self.pic = pic
             self.dbx = self.dbx.with_pic(pic=pic)
             if hasattr(self.dbx.datablock, 'TOPICS'):
                 if topic not in self.dbx.datablock.TOPICS:
                     raise ValueError(f"Topic {topic} not from among {self.dbx.datablock.TOPICS}")
             if not pic:
-                if dbx.version != version:
-                    raise ValueError(f"Incompatible version {version} from url for dbx {dbx}")
+                if dbx.revision != revision:
+                    raise ValueError(f"Incompatible revision {revision} from url for dbx {dbx}")
             else:
-                if dbx.version != version.format and\
-                    version == f"{dbx.__class__.__qualname__}.VERSION":
-                        raise ValueError(f"Incompatible version {version} from url for dbx {dbx}")
+                if dbx.revision != revision.format and\
+                    revision == f"{dbx.__class__.__qualname__}.REVISION":
+                        raise ValueError(f"Incompatible revision {revision} from url for dbx {dbx}")
 
         def with_pic(self, pic=True):
-            _ = self.__class__(self.url, dbx=self.dbx, version=self.version, topic=self.topic, pic=pic)
+            _ = self.__class__(self.url, dbx=self.dbx, revision=self.revision, topic=self.topic, pic=pic)
             return _
 
         def __ne__(self, other):
@@ -1092,7 +1155,7 @@ class DBX:
             if self.url is not None:
                 _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, self.url)
             else:
-                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, dbx=self.dbx, version=self.version, topic=self.topic)
+                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, dbx=self.dbx, revision=self.revision, topic=self.topic)
             return _
 
     class Reader(Request):
@@ -1103,7 +1166,7 @@ class DBX:
         
         def __tag__(self):
             _tag__ = f"{DBX_PREFIX}.{self.dbx.datablock_clstr}"
-            tag__ = _tag__+f"@{self.dbx.databuilder.version}"
+            tag__ = _tag__+f"@{self.dbx.databuilder.revision}"
             tag_ =  tag__+f"#{self.dbx.alias}" if self.dbx.alias is not None else tag__+"#"
             tag = tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else tag_+":"
             return tag
@@ -1129,7 +1192,7 @@ class DBX:
                     continue
                 elif dataspace.isfile(filename):
                     continue
-                elif filename.startswith('version='):
+                elif filename.startswith('revision='):
                     anchorchain = _anchorchain + (filename,)
                     anchorchains.append(anchorchain)
                 else:
@@ -1319,17 +1382,17 @@ class DBX:
         if self._scope is not None:
             _scope = self._scope
             if self.verbose:
-                print(f"DBX: scope: databuilder {self.databuilder} with version {self.databuilder.version} with alias {repr(self.databuilder.alias)}: using specified scope: {self._scope}")
+                print(f"DBX: scope: databuilder {self.databuilder} with revision {self.databuilder.revision} with alias {repr(self.databuilder.alias)}: using specified scope: {self._scope}")
         else:
-            record = self.databuilder.show_named_record(alias=self.databuilder.alias, version=self.databuilder.version) 
+            record = self.databuilder.show_named_record(alias=self.databuilder.alias, revision=self.databuilder.revision) 
             if record is not None:
                 _scope = _eval(record['scope'])
                 if self.verbose:
-                    print(f"DBX: scope: no specified scope for databuilder {self.databuilder} with version {self.databuilder.version} with alias {repr(self.databuilder.alias)}: using build record scope: {_scope}")
+                    print(f"DBX: scope: no specified scope for databuilder {self.databuilder} with revision {self.databuilder.revision} with alias {repr(self.databuilder.alias)}: using build record scope: {_scope}")
             else:
                 _scope = {}
                 if self.verbose:
-                    print(f"DBX: scope: no specified scope and no records for databuilder {self.databuilder} with version {self.databuilder.version} with alias {repr(self.databuilder.alias)}: using default scope")
+                    print(f"DBX: scope: no specified scope and no records for databuilder {self.databuilder} with revision {self.databuilder.revision} with alias {repr(self.databuilder.alias)}: using default scope")
         return _scope
 
     def build_request(self):
@@ -1346,7 +1409,7 @@ class DBX:
     
     def path(self, topic=DEFAULT_TOPIC):
         if self.scope is None:
-            raise ValueError(f"{self} of version {self.version} has not been built yet")
+            raise ValueError(f"{self} of revision {self.revision} has not been built yet")
         datapage = self.databuilder.extent_datapage(topic, **self.tagscope)
         if len(datapage) > 1:
             path = list(datapage.values())
@@ -1362,17 +1425,17 @@ class DBX:
 
     def read_request(self, topic=DEFAULT_TOPIC):
         if self.scope is None:
-            raise ValueError(f"{self} of version {self.version} has not been built yet")
+            raise ValueError(f"{self} of revision {self.revision} has not been built yet")
         request = self.databuilder.read_databook_request(topic, **self.scope)\
             .set(summary=lambda _: self.extent()[topic]) # TODO: #REMOVE?
         return request
 
     def PATH(self, topic=None):
-        _ = DBX.Pather(dbx=self, version=self.databuilder.version, topic=topic, pic=self.pic)
+        _ = DBX.Pather(dbx=self, revision=self.databuilder.revision, topic=topic, pic=self.pic)
         return _
 
     def READ(self, topic=None):
-        _ = DBX.Reader(dbx=self, topic=topic, version=self.version, pic=self.pic)
+        _ = DBX.Reader(dbx=self, topic=topic, revision=self.revision, pic=self.pic)
         return _
     
     def read(self, topic=DEFAULT_TOPIC):
@@ -1429,19 +1492,19 @@ class DBX:
             return self._datablock
 
         @property
-        def __alias_versionspace(self):
+        def __alias_revisionspace(self):
             if self.alias is not None:
-                _ = self.anchorspace.subspace(self.alias, f"version={str(self.version)}",)
+                _ = self.anchorspace.subspace(self.alias, f"revision={str(self.revision)}",)
             else:
-                _ = self.anchorspace.subspace(f"version={str(self.version)}",)
+                _ = self.anchorspace.subspace(f"revision={str(self.revision)}",)
             return _
 
         def __alias_dataspace__(self, topic, **shard):
-            # ignore shard, label by alias, version, topic only
+            # ignore shard, label by alias, revision, topic only
             if topic is None:
-                _ = self.versionspace
+                _ = self.revisionspace
             else:
-                _ = self.versionspace.subspace(topic)
+                _ = self.revisionspace.subspace(topic)
             if self.debug:
                 print(f"ALIAS SHARDSPACE: formed for topic {repr(topic)}: {_}")
             return _
@@ -1481,7 +1544,10 @@ class DBX:
         def __build_batch__(self, tagscope, **batchscope):
             datablock_batchscope = self.datablock_cls.SCOPE(**batchscope)
             datablock_shardroots = self.datablock_batchroots(tagscope, ensure=True)
-            self.datablock(datablock_shardroots, scope=datablock_batchscope, filesystem=self.dataspace.filesystem).build()
+            dbk = self.datablock(datablock_shardroots, scope=datablock_batchscope, filesystem=self.dataspace.filesystem)
+            if self.verbose:
+                print(f"DBX: building batch for datablock {dbk} constructed with kwargs {self.datablock_kwargs}")
+            dbk.build()
             _ = self.extent_databook(**tagscope)
             return _
 
@@ -1545,13 +1611,13 @@ class DBX:
         else:
             __topics = [DEFAULT_TOPIC]
 
-        if hasattr(dbx.datablock_cls, 'VERSION'):
+        if hasattr(dbx.datablock_cls, 'REVISION'):
             if dbx.pic:
-                __version = f"{{{dbx.datablock_clstr}.VERSION}}"
+                __revision = f"{{{dbx.datablock_clstr}.REVISION}}"
             else:
-                __version = dbx.datablock_cls.VERSION
+                __revision = dbx.datablock_cls.REVISION
         else:
-            __version = DEFAULT_VERSION
+            __revision = DEFAULT_REVISION
         databuilder_classdict = {
                     '__module__': __module_name,
                     'block_keys': __block_keys, 
@@ -1559,7 +1625,7 @@ class DBX:
                     'batch_to_shard_keys': __batch_to_shard_keys,
                     '__init__': __init__,
                     '__repr__': __repr__,
-                    'version': __version,
+                    'revision': __revision,
                     'topics': __topics,
                     'datablock_cls': __datablock_cls,
                     'datablock_kwargs': __datablock_kwargs,
@@ -1572,7 +1638,7 @@ class DBX:
                     'display_batch': __display_batch__,
         }
         if dbx.alias_dataspace:
-            databuilder_classdict['versionspace'] = __alias_versionspace
+            databuilder_classdict['revisionspace'] = __alias_revisionspace
             databuilder_classdict['_shardspace_'] = __alias_dataspace__
         if hasattr(dbx.datablock_cls, 'valid'):
             databuilder_classdict['_extent_shard_valid_'] = __extent_shard_valid__

@@ -5,19 +5,28 @@ import datablocks.dataspace
 TESTLAKE = datablocks.dataspace.Dataspace.temporary()
 
 
-def _test(dbx, topic=None):
-    print(f"intent: {dbx}\n", dbx.intent())
-    print(f"extent: pre-build: {dbx}: \n", dbx.extent())
-    dbx.build()
-    print(f"extent: post-build: {dbx}\n", dbx.extent())
-    if topic:
-        print(dbx.read(topic))
-    else:
-        print(dbx.read())
+def _test(dbx, topic=None, *, build=True, read=True, verbose=False):
+    print()
+    if verbose:
+        print(f"intent: {dbx}\n", dbx.intent())
+    if build:
+        if verbose:
+            print(f"extent: pre-build: {dbx}: \n", dbx.extent())
+        dbx.build()
+        if verbose:
+            print(f"extent: post-build: {dbx}\n", dbx.extent())
+    if read:
+        if topic:
+            if verbose:
+                print(dbx.read(topic))
+        else:
+            if verbose:
+                print(dbx.read())
 
 
 MIRCOHN = datablocks.DBX('datablocks.test.micron.datablocks.miRCoHN', 'mircohn')\
         .Databuilder(dataspace=TESTLAKE)
+
 
 MIRNA = datablocks.DBX('datablocks.test.micron.datablocks.miRNA', 'mirna').Datablock(verbose=True).SCOPE()
 
@@ -42,3 +51,7 @@ def test_mircoseq():
                                            nseqs_per_record=MIR_COSEQS_SEQS_PER_RECORD)
     _test(MIRCOSEQSHN, 'samples')
 
+
+def test_pandas_datablock():
+    pdbk = datablocks.DBX('datablocks.test.pandas.datablocks.PandasArray', f"pdbk")
+    _test(pdbk)

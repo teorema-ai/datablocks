@@ -14,7 +14,7 @@ logging.basicConfig(level=DATABLOCKS_LOG_LEVEL)
 
 from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL, DATABLOCKS_FILE_LOGGING_POOL
 from .dataspace import Dataspace, DATABLOCKS_DATALAKE, DATABLOCKS_HOMELAKE
-from .datablock import DBX
+from .dbx import DBX
 
 
 def print_usage(*, console):
@@ -31,7 +31,7 @@ def echo():
 
 
 def exec(argstr=None):
-    import datablocks.datablock
+    import datablocks.dbx
     def import_mod(path):
         path_parts = path.split('.')
         for i in range(1, len(path_parts)+1):
