@@ -63,37 +63,48 @@ More details below.
     export PDA="DBX('datablocks.test.datasets.PandasArray', 'pda')" 
     dbx "$PDA.build()"
 
-    * all block build records:
-    dbx "$PDA.show_build_records()"
+    * block build records' tail: [returns a dataframe that can be subqueries]
+    dbx "$PDA.show_build_records(tail=7)"
+
+    * last block build record:
+    dbx "$PDA.show_build_record()"
+
+    * specified block build record with $ID
+    dbx "$PDA.show_build_record(record=$ID)"
     
     * last record's graph:
-    dbx "$PDA.show_build_graph()" # See the overall state, take note of exceptions and logs
+        See the overall state, take note of exceptions and logs
+    dbx "$PDA.show_build_graph()" 
     
     * specified record's graph
-    dbx "$PDA.show_block_graph(record=3)" # use record index from output of `show_block_records`
+    dbx "$PDA.show_block_graph(record=$ID)" # use record index from output of `show_block_records`
     # Most of the `show_*` methods below take a record index and default to the last record.
+
+    * graph transcript (detailed):
+    dbx "$PDA.show_build_graph().transcript" # See the overall state, take note of exceptions and logs
     
     * batch count:
-    dbx "$PDA.show_block_count()"
+    dbx "$PDA.show_block_batch_count()"
 
     * batch graph of batch 0:
     dbx "$PDA.show_block_batch_graph()"
     # or
     dbx "$PDA.show_block_batch_graph(batch=0)"
 
-    # Add exception tracebacks to print, but only if necessary -- can be very voluminous, 
-    #  since traceback is replicated up the call tree:
-    datablocks.exec "$PDA.show_block_batch_graph(_print='traceback')"
-    #
-    # See top block log or logpath(usually rather uninformative)
-    datablocks.exec "$PDA.show_block_graph().log()"
-    # or `logpath`, `logname`, `logspace`
-    # See a batch log (usually there is only one):
-    datablocks.exec "$PDA.show_block_batch_graph().log()"
-    #
-    # Also potentially useful:
-    # Use the output of `show_block_graph` to determine list of node indices:
-    datablocks.exec "$PDA.show_block_batch_graph(node=[]'1'], _print='traceback')"   
+    * batch log
+    dbx "$PDA.show_block_batch_graph().log()"
+
+    * batch exception
+    dbx "$PDA.show_block_batch_graph().exception"
+
+    * batch traceback: 
+        only if necessary -- can be very voluminous, 
+        since traceback is replicated up the call tree:
+    dbx "$PDA.show_block_batch_graph().traceback"
+
+    * graph arg node:
+        Use the output of `show_block_graph` to determine list of node indices:
+    dbx "$PDA.show_block_batch_graph(node=['1']).transcript"   
 ```
 or in Python
 ```

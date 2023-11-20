@@ -680,7 +680,7 @@ class Databuilder(Anchored, Scoped):
     
     BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'revision', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
 
-    def show_build_records(self, *, full=False, columns=None, all=False, tail=5):
+    def show_build_records(self, *, stage='ALL', full=False, columns=None, all=False, tail=5):
         """
         All build records for a given Databuilder class, irrespective of alias and revision (see `list()` for more specific).
         'all=True' forces 'tail=None'
@@ -700,7 +700,6 @@ class Databuilder(Anchored, Scoped):
             pass
     
         if frame is not None and len(frame) > 0:
-            
             frame.reset_index(inplace=True, drop=True)
             if columns is None:
                 _columns = frame.columns
@@ -711,7 +710,10 @@ class Databuilder(Anchored, Scoped):
             else:
                 _columns_ = _columns
             frame.sort_values(['timestamp'], inplace=True)
-            _frame = frame[_columns_]
+            if stage is not None and stage != 'ALL':
+                _frame = frame[frame.stage == stage][_columns_]
+            else:
+                _frame = frame[_columns_]
         else:
             _frame = pd.DataFrame()
 
@@ -732,20 +734,22 @@ class Databuilder(Anchored, Scoped):
     def show_build_record(self, *, record=None, full=False):
         import datablocks
         try:
-            records = self.show_build_records(full=full)
+            records = self.show_build_records(full=full, stage='END')
         except:
             return None
         if len(records) == 0:
             return None
         if isinstance(record, int):
             _record = records.loc[record]
-        if record is None:
+        elif record is None:
             _record = records.iloc[-1]
+        else:
+            _record = None
         return _record
 
-    def show_named_record(self, *, alias=None, revision=None, full=False):
+    def show_named_record(self, *, alias=None, revision=None, full=False, stage=None):
         import datablocks # needed for `eval`
-        records = self.show_build_records(full=full)
+        records = self.show_build_records(full=full, stage=stage)
         if self.debug:
             print(f"show_name_record: databuilder {self}: revision: {repr(revision)}, alias: {repr(alias)}: retrieved records: len: {len(records)}:\n{records}")
         if len(records) == 0:
@@ -920,7 +924,7 @@ class Databuilder(Anchored, Scoped):
             return True
         # TODO: consistency check: sha256 alias must be unique for a given revision or match scope
         blockscope = self._blockscope_(**scope)
-        record = self.show_named_record(alias=self.alias, revision=self.revision) 
+        record = self.show_named_record(alias=self.alias, revision=self.revision, stage='END') 
         if record is not None:
             try:
                 _scope = _eval(record['scope'])
@@ -936,7 +940,7 @@ class Databuilder(Anchored, Scoped):
         pool_dataspace = self.revisionspace.subspace(*(self.pool.anchorchain+(pool_key,))).ensure()
         pool = self.pool.clone(dataspace=pool_dataspace)
         """
-        request = self.build_databook_request(**blockscope).with_lifecycle_callback(self._build_databook_request_lifecycle_callback_(**blockscope))
+        request = self.build_databook_request(**blockscope)
         response = request.evaluate()
         if self.verbose:
             print(f"task_id: {response.id}")
@@ -995,9 +999,9 @@ class Databuilder(Anchored, Scoped):
             [{k: blockscope[k] for k in tscope.keys()} for tscope in shortfall_batchscope_list]
         if self.verbose:
             if len(shortfall_batchscope_list) == 0:
-                print(f"build_databook_request: no shortfalls found: returning extent")
+                print(f"Databuilder: build_databook_request: no shortfalls found: returning extent")
             else:
-                print(f"build_databook_request: requesting build of shortfall batchscopes with tags: {shortfall_batchscope_list}")
+                print(f"Databuilder: build_databook_request: requesting build of shortfall batchscopes with tags: {shortfall_batchscope_list}")
         _shortfall_batch_requests = \
             [self._build_batch_request_(self._tagscope_(**shortfall_batchscope_list[i]), **shortfall_batchscope_list[i])
                             .apply(self.pool) for i in range(len(shortfall_batchscope_list))]
@@ -1014,7 +1018,15 @@ class Databuilder(Anchored, Scoped):
         build_databook_request = LAST(*requests)
         #TODO: #FIX
         #build_databook_request = LAST(*shortfall_batch_requests) if len(shortfall_batch_requests) > 0 else NONE()
-        return build_databook_request
+        if len(shortfall_batchscope_list) > 0:
+            _ = build_databook_request.with_lifecycle_callback(self._build_databook_request_lifecycle_callback_(**blockscope))
+            if self.verbose:
+                print(f"Databuilder: build_databook_request: will update build records")
+        else:
+            _ = build_databook_request
+            if self.verbose:
+                print(f"Databuilder: build_databook_request: will NOT update build records")
+        return _
 
     @OVERRIDE
     # tagscope is necessary since batchscope will be expanded before being passed to _build_batch_
@@ -1119,19 +1131,19 @@ class DBX:
                 self.dbx, revision, self.topic = self.parse_url(url)
             self.pic = pic
             self.dbx = self.dbx.with_pic(pic=pic)
-            if hasattr(self.dbx.datablock, 'TOPICS'):
-                if topic not in self.dbx.datablock.TOPICS:
-                    raise ValueError(f"Topic {topic} not from among {self.dbx.datablock.TOPICS}")
+            if hasattr(self.dbx.datablock_cls, 'TOPICS'):
+                if topic not in self.dbx.datablock_cls.TOPICS:
+                    raise ValueError(f"Topic {topic} not from among {self.dbx.datablock_cls.TOPICS}")
             if not pic:
-                if dbx.revision != revision:
+                if dbx.databuilder.revision != revision:
                     raise ValueError(f"Incompatible revision {revision} from url for dbx {dbx}")
             else:
-                if dbx.revision != revision.format and\
+                if dbx.databuilder.revision != revision.format and\
                     revision == f"{dbx.__class__.__qualname__}.REVISION":
                         raise ValueError(f"Incompatible revision {revision} from url for dbx {dbx}")
 
         def with_pic(self, pic=True):
-            _ = self.__class__(self.url, dbx=self.dbx, revision=self.revision, topic=self.topic, pic=pic)
+            _ = self.__class__(self.url, dbx=self.dbx, revision=self.databuilder.revision, topic=self.topic, pic=pic)
             return _
 
         def __ne__(self, other):
@@ -1155,7 +1167,7 @@ class DBX:
             if self.url is not None:
                 _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, self.url)
             else:
-                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, dbx=self.dbx, revision=self.revision, topic=self.topic)
+                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, dbx=self.dbx, revision=self.databuilder.revision, topic=self.topic)
             return _
 
     class Reader(Request):
@@ -1365,9 +1377,6 @@ class DBX:
         _repr = self.__tag__()
         _ =  int(hashlib.sha1(_repr.encode()).hexdigest(), 16)
         return _
-    
-    def __getattr__(self, attr):
-        return getattr(self.databuilder, attr)
 
     @property
     def databuilder(self):
@@ -1384,7 +1393,7 @@ class DBX:
             if self.verbose:
                 print(f"DBX: scope: databuilder {self.databuilder} with revision {self.databuilder.revision} with alias {repr(self.databuilder.alias)}: using specified scope: {self._scope}")
         else:
-            record = self.databuilder.show_named_record(alias=self.databuilder.alias, revision=self.databuilder.revision) 
+            record = self.databuilder.show_named_record(alias=self.databuilder.alias, revision=self.databuilder.revision, stage='END') 
             if record is not None:
                 _scope = _eval(record['scope'])
                 if self.verbose:
@@ -1435,7 +1444,7 @@ class DBX:
         return _
 
     def READ(self, topic=None):
-        _ = DBX.Reader(dbx=self, topic=topic, revision=self.revision, pic=self.pic)
+        _ = DBX.Reader(dbx=self, topic=topic, revision=self.databuilder.revision, pic=self.pic)
         return _
     
     def read(self, topic=DEFAULT_TOPIC):
@@ -1655,8 +1664,11 @@ class DBX:
         _ = self.databuilder._tagscope_(**self.scope)
         return _
 
+    def transcribe(self, with_env=(), with_linenos=False, with_display=False, verbose=False, ):
+        return DBX.Transcribe(self, with_env=with_env, with_linenos=with_linenos, with_display=with_display, verbose=verbose,)
+
     @staticmethod
-    def transcribe(*dbxs, with_env: Tuple[str] = (), with_linenos=False, with_display=False, verbose=False, ):
+    def Transcribe(*dbxs, with_env: Tuple[str] = (), with_linenos=False, with_display=False, verbose=False, ):
         """
             Assume dbxs are ordered in the dependency order and all have unique aliases that can be used as variable prefixes.
             TODO: build the dependency graph and reorder, if necessary.
@@ -1781,19 +1793,18 @@ class DBX:
             
             filesystem = dbx.databuilder.dataspace.filesystem
             blockroots = dbx.databuilder.datablock_blockroots(tagscope)
-            _blockroots = transcribe_roots(filesystem, blockroots)
+            _blockroots = transcribe_roots(filesystem, blockroots, prefix='\t')
 
             if filesystem.protocol != "file":
                 protocol = dbx.databuilder.dataspace.protocol
                 storage_options = dbx.databuilder.dataspace.storage_options
                 _filesystem = signature.Tagger().tag_func("fsspec.filesystem", protocol, **storage_options) 
             else:
-                _filesystem = ""
-        
+                _filesystem = ""        
             _, __kwargs = Tagger().tag_args_kwargs(**dbx.datablock_kwargs)
             _kwargs = ""
             for key, val in __kwargs.items():
-                _kwargs += f"{key}={val},\n\t"
+                _kwargs += f"{key}={val},\n"
             
             build += f"{_datablock} = " + Tagger().ctor_name(dbx.datablock_cls) + "(\n"     + \
                             (f"\troots={_blockroots},\n" if len(_blockroots) > 0 else "")      + \
