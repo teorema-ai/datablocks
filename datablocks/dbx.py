@@ -1143,7 +1143,7 @@ class DBX:
                         raise ValueError(f"Incompatible revision {revision} from url for dbx {dbx}")
 
         def with_pic(self, pic=True):
-            _ = self.__class__(self.url, dbx=self.dbx, revision=self.databuilder.revision, topic=self.topic, pic=pic)
+            _ = self.__class__(self.url, dbx=self.dbx, revision=self.revision, topic=self.topic, pic=pic)
             return _
 
         def __ne__(self, other):
@@ -1167,7 +1167,7 @@ class DBX:
             if self.url is not None:
                 _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, self.url)
             else:
-                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, dbx=self.dbx, revision=self.databuilder.revision, topic=self.topic)
+                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, dbx=self.dbx, revision=self.revision, topic=self.topic)
             return _
 
     class Reader(Request):
@@ -1476,6 +1476,26 @@ class DBX:
         _ = self.databuilder.UNSAFE_clear(**self.scope)
         return _
     
+    @property
+    def TOPICS(self):
+        return self.datablock_cls.TOPICS
+
+    @functools.wraps(Databuilder.show_build_records)
+    def show_build_records(self, *args, **kwargs):
+        return self.databuilder.show_build_records(*args, **kwargs)
+    
+    @functools.wraps(Databuilder.show_build_record)
+    def show_build_record(self, *args, **kwargs):
+        return self.databuilder.show_build_record(*args, **kwargs)
+
+    @functools.wraps(Databuilder.show_build_graph)
+    def show_build_graph(self, *args, **kwargs):
+        return self.databuilder.show_build_graph(*args, **kwargs)
+
+    @functools.wraps(Databuilder.show_build_batch_graph)
+    def show_build_batch_graph(self, *args, **kwargs):
+        return self.databuilder.show_build_batch_graph(*args, **kwargs)
+
     def _validate_subscope(self, **subscope):
         #TODO: check that subscope is a subscope of self.scope
         return subscope
@@ -1664,11 +1684,11 @@ class DBX:
         _ = self.databuilder._tagscope_(**self.scope)
         return _
 
-    def transcribe(self, with_env=(), with_linenos=False, with_display=False, verbose=False, ):
-        return DBX.Transcribe(self, with_env=with_env, with_linenos=with_linenos, with_display=with_display, verbose=verbose,)
+    def transcribe(self, with_env=(), with_linenos=False, with_display=False, verbose=False, with_build=False):
+        return DBX.Transcribe(self, with_env=with_env, with_linenos=with_linenos, with_display=with_display, with_build=with_build, verbose=verbose,)
 
     @staticmethod
-    def Transcribe(*dbxs, with_env: Tuple[str] = (), with_linenos=False, with_display=False, verbose=False, ):
+    def Transcribe(*dbxs, with_env: Tuple[str] = (), with_linenos=False, with_build=False, with_display=tuple(), verbose=False, ):
         """
             Assume dbxs are ordered in the dependency order and all have unique aliases that can be used as variable prefixes.
             TODO: build the dependency graph and reorder, if necessary.
@@ -1825,7 +1845,11 @@ class DBX:
                 #width = round(int(math.log(len(lines))))
                 script_ = '\n'.join([f"{i:>4}: " + ln for i, ln in enumerate(lines)]) #TODO: use width for padding
             else:
-                script_ = script                 
+                script_ = script
+
+            if with_build:
+                script_ += f"{_datablock}.build()"
+
         return script_
             
             

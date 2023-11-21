@@ -23,16 +23,39 @@ def _test(dbx, topic=None, *, build=True, read=True, verbose=False):
             if verbose:
                 print(dbx.read())
 
+MIRLOGCOHN = datablocks.DBX('datablocks.test.micron.datablocks.miRLogCoHN', 'mirlogcohn')\
+        .Databuilder(dataspace=TESTLAKE).Datablock(verbose=True)
+
 
 MIRCOHN = datablocks.DBX('datablocks.test.micron.datablocks.miRCoHN', 'mircohn')\
+        .SCOPE(logcounts=MIRLOGCOHN.READ())\
         .Databuilder(dataspace=TESTLAKE)
 
 
 MIRNA = datablocks.DBX('datablocks.test.micron.datablocks.miRNA', 'mirna').Datablock(verbose=True).SCOPE()
 
 
-def test_mircohn():
+MIR_COSEQS_NPASSES = 10
+MIR_COSEQS_SEQS_PER_RECORD = 300
+MIRCOSEQSHN = \
+        datablocks.DBX('datablocks.test.micron.datablocks.miRCoSeqs', f"mircoseqshn_{MIR_COSEQS_NPASSES}_{MIR_COSEQS_SEQS_PER_RECORD}")\
+            .Datablock(verbose=True).SCOPE(logcounts=MIRCOHN.READ('logcounts'), 
+                                           logcontrols=MIRCOHN.READ('logcontrols'),
+                                           seqs=MIRNA.READ(), 
+                                           npasses=MIR_COSEQS_NPASSES, 
+                                           nseqs_per_record=MIR_COSEQS_SEQS_PER_RECORD)
+
+
+def test_mirlogcohn():
+    _test(MIRLOGCOHN, 'logcounts')
+
+
+def test_mircohn_logcounts():
     _test(MIRCOHN, 'logcounts')
+
+
+def test_mircohn_counts():
+    _test(MIRCOHN, 'counts')
 
 
 def test_mirna():
@@ -40,16 +63,8 @@ def test_mirna():
 
 
 def test_mircoseq():
-    MIR_COSEQS_NPASSES = 10
-    MIR_COSEQS_SEQS_PER_RECORD = 300
-    MIRCOSEQSHN = \
-        datablocks.DBX('datablocks.test.micron.datablocks.miRCoSeqs', f"mircoseqshn_{MIR_COSEQS_NPASSES}_{MIR_COSEQS_SEQS_PER_RECORD}")\
-            .Datablock(verbose=True).SCOPE(logcounts=MIRCOHN.READ('logcounts'), 
-                                           logcontrols=MIRCOHN.READ('logcontrols'),
-                                           seqs=MIRNA.READ(), 
-                                           npasses=MIR_COSEQS_NPASSES, 
-                                           nseqs_per_record=MIR_COSEQS_SEQS_PER_RECORD)
     _test(MIRCOSEQSHN, 'samples')
+    
 
 
 def test_pandas_datablock():

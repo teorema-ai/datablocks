@@ -27,6 +27,10 @@ from micron.cclustering import ZSConsensusClustering
 
 class Datablock:
     REVISION = '0.0.1'
+    @dataclass
+    class SCOPE:
+        pass
+
     @staticmethod
     def display_umap(frame, *, color=None):
         _umap = umap.UMAP()
@@ -104,25 +108,74 @@ class Datablock:
             print(f"DEBUG: >>> {self.__class__.__qualname__}: {s}")
 
 
+class miRLogCoHN(Datablock):
+    """
+        Data for the clustering HNSC study described in from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/.
+        TODO: do not save 'pivots' or 'downregulated_mirna_infixes' to a file, return them from code instead?
+    """
+    REVISION = "0.1.1"
+    FILENAME = "mircohn_rpm_log2.parquet"
+
+    _SRC_URL = "https://gdac.broadinstitute.org/runs/stddata__2016_01_28/data/HNSC/20160128/"
+    _SRC_TAR_DIRNAME = "gdac.broadinstitute.org_HNSC.miRseq_Mature_Preprocess.Level_3.2016012800.0.0"
+    _SRC_DAT_FILENAME = "HNSC.miRseq_mature_RPM_log2.txt"
+
+    def read(self):
+        self.print_verbose(f"Reading topic '{self.__class__.__qualname__}'")
+        topic_tgt_path = self.path()
+        topic_frame = pd.read_parquet(topic_tgt_path, storage_options=self.filesystem.storage_options)
+        return topic_frame
+    
+    def build(self):
+        """
+            Generate a pandas dataframe of TCGA HNSC mature MiRNA sequence samples.
+        """
+        if self.built():
+            self.print_verbose("Already built.  Done.")
+        else:
+            self.print_verbose("Building ...")
+            # logcounts
+            topic_tgt_path = self.path()
+            fs = fsspec.filesystem('http')
+            with tempfile.TemporaryDirectory() as tmpdir:
+                remote_tarpath = self._SRC_URL + '/' + self._SRC_TAR_DIRNAME + ".tar.gz"
+                local_tarpath = os.path.join(tmpdir, self._SRC_TAR_DIRNAME) + ".tar.gz"
+                self.print_verbose(f"Downloading {remote_tarpath} to {local_tarpath}")
+                fs.get(remote_tarpath, local_tarpath, callback=TqdmCallback())
+                assert os.path.isfile(local_tarpath)
+                self.print_verbose(f"Trying to parse local copy {local_tarpath}")
+                _tardir = os.path.join(tmpdir, self._SRC_TAR_DIRNAME)
+                with tarfile.open(local_tarpath, 'r') as _tarfile:
+                    self.print_verbose(f"Extracting {local_tarpath} to {_tardir}")
+                    _tarfile.extractall(tmpdir)
+                self.print_debug(f"Extracted dir: {os.listdir(_tardir)}")
+                logcounts_src_path = os.path.join(_tardir, self._SRC_DAT_FILENAME)
+                topic_frame = logcounts_frame = pd.read_csv(logcounts_src_path, sep='\t', header=0, index_col=0).transpose()
+
+                topic_frame.to_parquet(topic_tgt_path, storage_options=self.filesystem.storage_options)
+                self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
+
 
 class miRCoHN(Datablock):
     """
         Data for the clustering HNSC study described in from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/.
         TODO: do not save 'pivots' or 'downregulated_mirna_infixes' to a file, return them from code instead?
     """
-    REVISION = "0.11.3"
-    
-    TOPICS = {'logcounts': f"mircohn_rpm_log2.parquet",
-                'pivots': f"mircohn_pivots.parquet",
-                'logcontrols': f"mircohn_controls.parquet",
-                'downregulated_mirna_infixes': f"mircohn_downregulated_mirna_infixes.parquet"
-    }
+    REVISION = "1.0.1"
 
     @dataclass
     class SCOPE:
-        pass
+        logcounts: pd.DataFrame 
+    
+    TOPICS = {'logcounts': f"mircohn_rpm_log2.parquet",
+              'counts': f"mircohn_rpm.parquet",
+              'logcontrols': f"mircohn_logcontrols.parquet",
+              'controls': f"mircohn_ontrols.parquet",
+              'seq_patterns': f"seq_patterns.parquet",
+              'pivots': f"mircohn_pivots.parquet",
+    }
 
-    DOWNREGULATED_SEQ_PATTERNS = dict(
+    SEQ_PATTERNS = dict(
         epithelial = list(set(['miR-150', 'miR-125b', 'miR-195', 'miR-127', 'miR-342', 'miR-361',
                                   'miR-195', 'miR-125b', 'miR-150', 'miR-149', 'miR-342'
                
@@ -194,10 +247,6 @@ class miRCoHN(Datablock):
     def control_records_mask(counts):
         controls = pd.Series(counts.index, index=counts.index).apply(lambda _: _.split('-')[3].startswith('11'))
         return controls
-
-    _SRC_URL = "https://gdac.broadinstitute.org/runs/stddata__2016_01_28/data/HNSC/20160128/"
-    _SRC_TAR_DIRNAME = "gdac.broadinstitute.org_HNSC.miRseq_Mature_Preprocess.Level_3.2016012800.0.0"
-    _SRC_DAT_FILENAME = "HNSC.miRseq_mature_RPM_log2.txt"
     
     def display(
             self,
@@ -220,7 +269,7 @@ class miRCoHN(Datablock):
     @staticmethod
     def filter_columns_by_patterns(frame, col_patterns):
         if col_patterns is not None:
-            fcols = [col for col in frame.columns if miRCoHN.seq_matches_patterns(col, col_patterns)]
+            fcols = [col for col in frame.columns.get_level_values(0) if miRCoHN.seq_matches_patterns(col, col_patterns)]
             fframe = frame[fcols]
         else:
             fframe = frame
@@ -242,6 +291,11 @@ class miRCoHN(Datablock):
         cm = controls.mean(axis=0)
         cframe = frame - cm
         return cframe
+    
+    @staticmethod
+    def expcounts(logcounts):
+        counts = np.exp(logcounts.copy()*np.log(2))
+        return counts
     
     @staticmethod
     def display_heatmap(counts:             pd.DataFrame, 
@@ -277,8 +331,6 @@ class miRCoHN(Datablock):
         """
             Generate a pandas dataframe of TCGA HNSC mature MiRNA sequence samples.
         """
-        roots = self.roots
-        filesystem = self.filesystem
         framepaths = {topic: self.path(topic) for topic in self.TOPICS}
         if self.built():
             self.print_verbose("All topics built already.  Done.")
@@ -287,36 +339,28 @@ class miRCoHN(Datablock):
             # logcounts
             topic = 'logcounts'
             topic_tgt_path = framepaths[topic]
-            fs = fsspec.filesystem('http')
-            with tempfile.TemporaryDirectory() as tmpdir:
-                remote_tarpath = self._SRC_URL + '/' + self._SRC_TAR_DIRNAME + ".tar.gz"
-                local_tarpath = os.path.join(tmpdir, self._SRC_TAR_DIRNAME) + ".tar.gz"
-                self.print_verbose(f"Downloading {remote_tarpath} to {local_tarpath}")
-                fs.get(remote_tarpath, local_tarpath, callback=TqdmCallback())
-                assert os.path.isfile(local_tarpath)
-                self.print_verbose(f"Trying to parse local copy {local_tarpath}")
-                _tardir = os.path.join(tmpdir, self._SRC_TAR_DIRNAME)
-                with tarfile.open(local_tarpath, 'r') as _tarfile:
-                    self.print_verbose(f"Extracting {local_tarpath} to {_tardir}")
-                    _tarfile.extractall(tmpdir)
-                self.print_debug(f"Extracted dir: {os.listdir(_tardir)}")
-                logcounts_src_path = os.path.join(_tardir, self._SRC_DAT_FILENAME)
-                logcounts_frame = pd.read_csv(logcounts_src_path, sep='\t', header=0, index_col=0).transpose()
-                logcontrols_mask = miRCoHN.control_records_mask(logcounts_frame)
-                topic_frame = _logcounts_frame = logcounts_frame[~logcontrols_mask]
+            logcounts_frame = self.scope.logcounts
+            logcontrols_mask = miRCoHN.control_records_mask(logcounts_frame)
+            topic_frame = _logcounts_frame = logcounts_frame[~logcontrols_mask]
 
-                coltuples = [tuple(c.split('|')) for c in _logcounts_frame.columns]
-                mindex = pd.MultiIndex.from_tuples(coltuples)
-                _logcounts_frame.columns = mindex
+            coltuples = [tuple(c.split('|')) for c in _logcounts_frame.columns]
+            mindex = pd.MultiIndex.from_tuples(coltuples)
+            _logcounts_frame.columns = mindex
+            topic_frame.to_parquet(topic_tgt_path, storage_options=self.filesystem.storage_options)
+            self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
 
-                topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
-                self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
+            # counts
+            topic = 'counts'
+            topic_frame = counts_frame = self.expcounts(logcounts_frame)
+            topic_tgt_path = framepaths[topic]
+            topic_frame.to_parquet(topic_tgt_path, storage_options=self.filesystem.storage_options)
+            self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
 
             # pivots
             topic = 'pivots'
             topic_tgt_path = framepaths[topic]
             topic_frame = pivots_frame = pd.DataFrame({'pivots': self.PIVOT_SEQS})
-            topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
+            topic_frame.to_parquet(topic_tgt_path, storage_options=self.filesystem.storage_options)
             self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
 
             #logcontrols
@@ -326,17 +370,24 @@ class miRCoHN(Datablock):
             ccoltuples = [tuple(c.split('|')) for c in logcontrols_frame.columns]
             cmindex = pd.MultiIndex.from_tuples(ccoltuples)
             logcontrols_frame.columns = cmindex
-            topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
+            topic_frame.to_parquet(topic_tgt_path, storage_options=self.filesystem.storage_options)
+            self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
+
+            #controls
+            topic = 'controls'
+            topic_tgt_path = framepaths[topic]
+            topic_frame = controls_frame = self.expcounts(logcounts_frame)
+            topic_frame.to_parquet(topic_tgt_path, storage_options=self.filesystem.storage_options)
             self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
 
             #downregulated
-            topic = 'downregulated_mirna_infixes'
+            topic = 'seq_patterns'
             topic_tgt_path = framepaths[topic]
-            epithelial_downregulated_infixes = self.DOWNREGULATED_SEQ_PATTERNS['epithelial']
-            stromal_downregulated_infixes = self.DOWNREGULATED_SEQ_PATTERNS['stromal']
+            epithelial_downregulated_infixes = self.SEQ_PATTERNS['epithelial']
+            stromal_downregulated_infixes = self.SEQ_PATTERNS['stromal']
             topic_frame = downregulated_frame = pd.DataFrame.from_records([{'epithelial': ','.join(list(epithelial_downregulated_infixes)), 
                                                                             'stromal': ','.join(list(stromal_downregulated_infixes))}])
-            topic_frame.to_parquet(topic_tgt_path, storage_options=filesystem.storage_options)
+            topic_frame.to_parquet(topic_tgt_path, storage_options=self.filesystem.storage_options)
             self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
 
             self.print_verbose("... done")
@@ -350,7 +401,7 @@ class miRCoHN(Datablock):
 
 
 class miRNA(Datablock):
-    REVISION = "0.2.1"
+    REVISION = "0.3.1"
 
     @dataclass
     class SCOPE:
@@ -387,7 +438,7 @@ class miRNA(Datablock):
                     frame = self._build_frame(datstr)
 
             path = self.path()
-            frame.to_parquet(path, storage_options=filesystem.storage_options)
+            frame.to_parquet(path, storage_options=self.filesystem.storage_options)
             self.print_verbose(f"Wrote frame of len {len(frame)} to path")
             self.print_verbose("... done")
 
@@ -442,10 +493,11 @@ class miRCoSeqs(Datablock):
     """
         Sequences sampled at count frequences
     """
-    REVISION = "1.2.0"
+    REVISION = "1.4.0"
     TOPICS = {'logcounts': f"miRLogCos.parquet",
                  'counts': f"miRCos.parquet",
                  'logcontrols': f"miRLogCtrls.parquet",
+                 'controls': f"miRCtrls.parquet",
                  'seqs': f"miRSeqs.parquet",
                  'samples': f"miRCoSeqs.txt",
                  'rec_sample_ranges': f"miRSampleRanges.parquet"
@@ -526,6 +578,11 @@ class miRCoSeqs(Datablock):
             jlogcontrols_path = self.path('logcontrols')
             jlogcontrols.to_parquet(jlogcontrols_path, storage_options=filesystem.storage_options)
             self.print_verbose(f"Wrote logcontrols to {jlogcontrols_path}")
+
+            jcontrols = self.expcounts(scope.logcontrols[co2coseq.keys()])
+            jcontrols_path = self.path('controls')
+            jcontrols.to_parquet(jcontrols_path, storage_options=filesystem.storage_options)
+            self.print_verbose(f"Wrote controls to {jcontrols_path}")
 
             self.print_verbose(f"Generating samples using {scope.npasses} passes")
             rec_sample_ranges = {recidx: [] for recidx in jcofn.index}
@@ -615,7 +672,7 @@ class ZSCC(Datablock):
         fillna: Optional[float] = None
 
     def build(self,):
-        roots = self.roots
+        scope = self.scope
         filesystem = self.filesystem
         if self.built():
             self.print_verbose(f"ZSCC already built")
