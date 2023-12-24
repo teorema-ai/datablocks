@@ -161,7 +161,7 @@ class miRCoHN(Datablock):
         Data for the clustering HNSC study described in from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC7854517/.
         TODO: do not save 'pivots' or 'downregulated_mirna_infixes' to a file, return them from code instead?
     """
-    REVISION = "1.0.1"
+    REVISION = "1.2.1"
 
     @dataclass
     class SCOPE:
@@ -339,13 +339,13 @@ class miRCoHN(Datablock):
             # logcounts
             topic = 'logcounts'
             topic_tgt_path = framepaths[topic]
-            logcounts_frame = self.scope.logcounts
-            logcontrols_mask = miRCoHN.control_records_mask(logcounts_frame)
-            topic_frame = _logcounts_frame = logcounts_frame[~logcontrols_mask]
+            _logcounts_frame = self.scope.logcounts
+            logcontrols_mask = miRCoHN.control_records_mask(_logcounts_frame)
+            topic_frame = logcounts_frame = _logcounts_frame[~logcontrols_mask]
 
-            coltuples = [tuple(c.split('|')) for c in _logcounts_frame.columns]
+            coltuples = [tuple(c.split('|')) for c in logcounts_frame.columns]
             mindex = pd.MultiIndex.from_tuples(coltuples)
-            _logcounts_frame.columns = mindex
+            logcounts_frame.columns = mindex
             topic_frame.to_parquet(topic_tgt_path, storage_options=self.filesystem.storage_options)
             self.print_verbose(f"Wrote dataframe to {topic_tgt_path}")
 
@@ -366,7 +366,7 @@ class miRCoHN(Datablock):
             #logcontrols
             topic = 'logcontrols'
             topic_tgt_path = framepaths[topic]
-            topic_frame = logcontrols_frame = logcounts_frame[logcontrols_mask]
+            topic_frame = logcontrols_frame = _logcounts_frame[logcontrols_mask]
             ccoltuples = [tuple(c.split('|')) for c in logcontrols_frame.columns]
             cmindex = pd.MultiIndex.from_tuples(ccoltuples)
             logcontrols_frame.columns = cmindex
@@ -651,7 +651,7 @@ class miRCoSeqs(Datablock):
 
 
 class ZSCC(Datablock):
-    REVISION = "0.6.1"
+    REVISION = "0.8.1"
     TOPICS = {
         'zscc': 'zscc.pkl',
         'clusters': 'clusters.parquet',
@@ -738,7 +738,7 @@ class ZSCC(Datablock):
 
 
 class FastText(Datablock):
-    REVISION = "0.6.1"
+    REVISION = "0.8.1"
     
     @dataclass
     class SCOPE:
@@ -790,3 +790,10 @@ class FastText(Datablock):
         path = self.path()
         model = fasttext.load_model(path)
         return model
+
+
+class mRProHN(Datablock):
+    """
+        mRNA profile of HNSCC records 
+    """
+    

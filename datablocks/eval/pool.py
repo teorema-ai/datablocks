@@ -33,6 +33,7 @@ import ray.util
 
 from .. import signature, utils
 from ..dataspace import DATABLOCKS_DATALAKE
+from ..signature import tag
 from . import request
 from .request import Task, Future, Request, Response, Closure
 from ..utils import REMOVE, DEPRECATED
@@ -320,6 +321,12 @@ class Logging:
             pool_str = str(self.pool)
             _ = f"{super_str}.apply({pool_str})"
             return _
+        
+        def __tag__(self):
+            super_tag = super().__tag__()
+            pool_tag = tag(self.pool)
+            _ = f"{super_tag}.apply({pool_tag})"
+            return _
 
         def redefine(self, func, *args, **kwargs):
             request = self.__class__(self.pool, self.cookie, func, *args, **kwargs)
@@ -346,7 +353,7 @@ class Logging:
             return self.task.logpath
 
     def __init__(self,
-                 name='Logging',
+                 name=None,
                  *,
                  dataspace,
                  priority=0,
@@ -410,7 +417,7 @@ class Logging:
         self._ids = None
 
     def clone(self, **kwargs):
-        state = self.__getstate__()
+        state = self.__getstate__()[0]
         state.update(**kwargs)
         clone = self.__class__(**state)
         return clone
@@ -432,8 +439,10 @@ class Logging:
             self.__getstate__() == other.__getstate__()
 
     def __tag__(self):
-        _ = f"{signature.Tagger().ctor_name(self.__class__)}({self.name}, " +\
-                                                            f"dataspace={self.dataspace})"
+        if self.name is not None:
+            _ = self.name
+        else:
+            _ = f"{signature.Tagger().ctor_name(self.__class__)}(dataspace={self.dataspace})"
         return _
 
     def __str__(self):
@@ -462,7 +471,7 @@ class Logging:
 
     def apply(self, request):
         cookie = repr(request)
-        return self.Request(self, cookie, request.task, *request.args, **request.kwargs)
+        return self.Request(self, cookie, request.task, *request.args, **request.kwargs).set(throw=self.throw)
 
     def key_to_id(self, key, *, version=VERSION, unique_hash=True):
         if self.authenticate_tasks:
@@ -1086,5 +1095,9 @@ def ipromise_logs(itasks):
         time.sleep(0.1)
 
 
-DATABLOCKS_STDOUT_LOGGING_POOL = Logging(dataspace=DATABLOCKS_DATALAKE)
-DATABLOCKS_FILE_LOGGING_POOL = Logging(dataspace=DATABLOCKS_DATALAKE, redirect_stdout=True)
+DATABLOCKS_STDOUT_LOGGING_POOL = Logging(name='DATABLOCKS_STDOUT_LOGGING_POOL', dataspace=DATABLOCKS_DATALAKE)
+DATABLOCKS_FILE_LOGGING_POOL = Logging(name='DATABLOCKS_FILE_LOGGING_POOL', dataspace=DATABLOCKS_DATALAKE, redirect_stdout=True)
+
+DATABLOCKS_STDOUT_RAY_POOL = Ray(name='DATABLOCKS_STDOUT_RAY_POOL', dataspace=DATABLOCKS_DATALAKE)
+DATABLOCKS_FILE_RAY_POOL = Ray(name='DATABLOCKS_FILE_RAY_POOL', dataspace=DATABLOCKS_DATALAKE, redirect_stdout=True)
+

@@ -37,7 +37,7 @@ class Future:
     def __repr__(self):
         return signature.Tagger().repr_ctor(self.__class__, self.func, *self.args_responses, **self.kwargs_responses)
 
-    def result(self):
+    def compute(self):
         if not self._done:
             try:
                 args = [self._arg_result(arg_response) for arg_response in self.args_responses]
@@ -56,9 +56,6 @@ class Future:
                 self._running = False
                 if self._done_callback is not None:
                     self._done_callback(self)
-        if self._exception:
-            raise self._exception.with_traceback(self._traceback)
-        return self._result
 
     def done(self):
         return self._done
@@ -66,16 +63,22 @@ class Future:
     def running(self):
         return self._running
 
-    def exception(self):
-        return self._exception
-
-    def traceback(self):
-        return self._traceback
-
     def add_done_callback(self, callback):
         self._done_callback = callback
         if self.done():
             self._done_callback(self)
+ 
+    def result(self):
+        self.compute()
+        return self._result
+
+    def exception(self):
+        self.compute()
+        return self._exception
+
+    def traceback(self):
+        self.compute()
+        return self._traceback
 
     @staticmethod
     def _arg_result(arg):
