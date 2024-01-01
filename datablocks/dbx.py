@@ -1627,10 +1627,11 @@ class DBX:
                 _ = self.datablock(datablock_shardroots, scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem).metric(topic)
             return _
 
+        rangecls = RANGE if not hasattr(dbx.datablock_cls, 'RANGE') else dbx.datablock_cls.RANGE
         SCOPE_fields = dataclasses.fields(dbx.datablock_cls.SCOPE)
         __block_keys = [field.name for field in SCOPE_fields]
         __block_defaults = {field.name: field.default  for field in SCOPE_fields if field.default != dataclasses.MISSING}
-        __batch_to_shard_keys = {field.name: field.name for field in SCOPE_fields if isinstance(field.type, RANGE)}
+        __batch_to_shard_keys = {field.name: field.name for field in SCOPE_fields if isinstance(field.type, rangecls)}
 
         __module_name = DBX_PREFIX + "." + dbx.datablock_module_name
         __cls_name = dbx.datablock_cls.__name__
