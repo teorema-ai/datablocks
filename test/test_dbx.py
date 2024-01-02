@@ -5,37 +5,53 @@ import datablocks.dataspace
 TESTLAKE = datablocks.dataspace.Dataspace.temporary()
 
 
-def _test(dbx, topic=None, *, build=True, read=True, show=True, clear=False, verbose=False):
+def _test(dbx, topic=None, *, build=True, read=False, show=False, clear=False, verbose=True):
     print()
     if verbose:
-        print(f"intent: {dbx}\n", dbx.intent())
+        print(f"intent: {dbx}\n", str(dbx.intent()))
     if build:
         if verbose:
             print(f"extent: pre-build: {dbx}: \n", dbx.extent())
-        dbx.build()
+            print(f"metric: pre-build: {dbx}: \n", dbx.metric())
+        result = dbx.build()
         if verbose:
             print(f"extent: post-build: {dbx}\n", dbx.extent())
+            print(f"metric: post-build: {dbx}: \n", dbx.metric())
     if read:
         if topic:
+            _ = dbx.read(topic)
             if verbose:
-                print(dbx.read(topic))
+                print(_)
         else:
+            _ = dbx.read()
             if verbose:
-                print(dbx.read())
+                print(_)
     if show:
-        print(f"show_build_records(): {dbx.show_build_records()}")
-        print(f"show_build_record_columns(): {dbx.show_build_record_columns()}")
-        print(f"show_build_record(): {dbx.show_build_record()}")
-        print(f"show_named_record(): {dbx.show_named_record()}")
-        print(f"show_build_batch_count(): {dbx.show_build_batch_count()}")
-        print(f"show_build_transcript(): {dbx.show_build_transcript()}")
-        print(f"show_build_scope(): {dbx.show_build_scope()}")
-        print(f"show_build_graph(): {dbx.show_build_graph()}")
-        print(f"show_build_batch_graph(): {dbx.show_build_batch_graph()}")
+        dbx.show_build_records()
+        dbx.show_build_record_columns()
+        dbx.show_build_record()
+        dbx.show_named_record()
+        dbx.show_build_batch_count()
+        dbx.show_build_transcript()
+        dbx.show_build_scope()
+        dbx.show_build_graph()
+        dbx.show_build_batch_graph()
+
+        if verbose:
+            print(f"show_build_records(): {dbx.show_build_records()}")
+            print(f"show_build_record_columns(): {dbx.show_build_record_columns()}")
+            print(f"show_build_record(): {dbx.show_build_record()}")
+            print(f"show_named_record(): {dbx.show_named_record()}")
+            print(f"show_build_batch_count(): {dbx.show_build_batch_count()}")
+            print(f"show_build_transcript(): {dbx.show_build_transcript()}")
+            print(f"show_build_scope(): {dbx.show_build_scope()}")
+            print(f"show_build_graph(): {dbx.show_build_graph()}")
+            print(f"show_build_batch_graph(): {dbx.show_build_batch_graph()}")
 
     if clear:
         dbx.UNSAFE_clear()
-        print(f">>> Cleared")
+        if verbose:
+            print(f">>> Cleared")
 
 
 MIRLOGCOHN = datablocks.DBX('datablocks.test.micron.datablocks.miRLogCoHN', 'mirlogcohn')\
@@ -62,7 +78,7 @@ MIRCOSEQSHN = \
 
 
 def test_mirlogcohn():
-    _test(MIRLOGCOHN, 'logcounts')
+    _test(MIRLOGCOHN)
 
 
 def test_mircohn_logcounts():

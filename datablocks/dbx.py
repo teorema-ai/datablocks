@@ -415,15 +415,7 @@ class Databuilder(Anchored, Scoped):
             self._tmpspace = self.revisionspace.temporary(self.revisionspace.subspace('tmp').ensure().root)
         return self._tmpspace
 
-    '''
-    #TODO: #REMOVE
-    #TODO: #MOVE -> DBX.show_revision()
-    def get_revision(self):
-        return self.revision
-    '''
-
-    #RENAME: -> block_page_intent
-    def intent_datapage(self, topic, **scope):
+    def block_intent_pathpage(self, topic, **scope):
         blockscope = self._blockscope_(**scope)
         tagblockscope = self._tagscope_(**blockscope)
         if topic not in self.topics:
@@ -434,167 +426,158 @@ class Databuilder(Anchored, Scoped):
             kvhandle = self._scope_to_kvhandle_(topic, **shard)
             pathshard = self._shardspace_(topic, **shard).root
             kvhandle_pathshard_list.append((kvhandle, pathshard))
-        intent_datapage = {kvhandle: pathshard for kvhandle, pathshard in kvhandle_pathshard_list}
-        return intent_datapage
+        block_intent_pathpage = {kvhandle: pathshard for kvhandle, pathshard in kvhandle_pathshard_list}
+        return block_intent_pathpage
 
     @OVERRIDE
-    #RENAME: -> _shard_page_extent_valid_?
-    def _extent_shard_valid_(self, topic, tagscope, **shardscope):
+    def _shard_extent_pathpage_valid_(self, topic, tagscope, **shardscope):
         pathset = self._shardspace_(topic, **tagscope).root
         valid = self.revisionspace.filesystem.isdir(pathset)
         if self.debug:
             if valid:
-                print(f"_extent_shard_valid_: VALID: shard with topic {repr(topic)} with scope with tag {tagscope}")
+                print(f"_shard_extent_pathpage_valid_: VALID: shard with topic {repr(topic)} with scope with tag {tagscope}")
             else:
-                print(f"_extent_shard_valid_: INVALID shard with topic {repr(topic)} with scope with tag {tagscope}")
+                print(f"_shard_extent_pathpage_valid_: INVALID shard with topic {repr(topic)} with scope with tag {tagscope}")
         return valid
 
-    #RENAME: -> block_page_extent()
-    def extent_datapage(self, topic, **scope):
+    def block_extent_pathpage(self, topic, **scope):
         if topic not in self.topics:
             raise ValueError(f"Unknown topic {topic} is not among {self.topics}")
-        intent_datapage = self.intent_datapage(topic, **scope)
-        extent_datapage = {}
-        for kvhandle, shard_pathset in intent_datapage.items():
+        block_intent_pathpage = self.block_intent_pathpage(topic, **scope)
+        block_extent_pathpage = {}
+        for kvhandle, shard_pathset in block_intent_pathpage.items():
             shardscope = self._kvhandle_to_scope_(topic, kvhandle)
             tagscope = self._tagscope_(**shardscope)
-            valid = self._extent_shard_valid_(topic, tagscope, **shardscope)
+            valid = self._shard_extent_pathpage_valid_(topic, tagscope, **shardscope)
             if valid:
-                extent_datapage[kvhandle] = shard_pathset
-        return extent_datapage
+                block_extent_pathpage[kvhandle] = shard_pathset
+        return block_extent_pathpage
     
-    def extent_datapage_request(self, topic, **scope):
-        _ = Request(self.extent_datapage, topic, **scope)
+    def block_extent_pathpage_request(self, topic, **scope):
+        _ = Request(self.block_extent_pathpage, topic, **scope)
         return _
 
-    #RENAME: -> block_page_shortfall
-    def shortfall_datapage(self, topic, **scope):
-        intent_datapage = self.intent_datapage(topic, **scope)
-        extent_datapage = self.extent_datapage(topic, **scope)
-        shortfall_datapage = {}
-        for kvhandle, intent_pathshard in intent_datapage.items():
+    def block_shortfall_pathpage(self, topic, **scope):
+        block_intent_pathpage = self.block_intent_pathpage(topic, **scope)
+        block_extent_pathpage = self.block_extent_pathpage(topic, **scope)
+        block_shortfall_pathpage = {}
+        for kvhandle, intent_pathshard in block_intent_pathpage.items():
             if isinstance(intent_pathshard, str):
-                if kvhandle not in extent_datapage or extent_datapage[kvhandle] != intent_pathshard:
+                if kvhandle not in block_extent_pathpage or block_extent_pathpage[kvhandle] != intent_pathshard:
                     shortfall_pathshard = intent_pathshard
                 else:
                     shortfall_pathshard = []
             else:
-                if kvhandle not in extent_datapage:
+                if kvhandle not in block_extent_pathpage:
                     shortfall_pathshard = intent_pathshard
                 else:
-                    extent_pathshard = extent_datapage[kvhandle]
+                    extent_pathshard = block_extent_pathpage[kvhandle]
                     shortfall_pathshard = [intent_filepath for intent_filepath in intent_pathshard
                                              if intent_filepath not in extent_pathshard]
             if len(shortfall_pathshard) == 0:
                 continue
-            shortfall_datapage[kvhandle] = shortfall_pathshard
-        return shortfall_datapage
+            block_shortfall_pathpage[kvhandle] = shortfall_pathshard
+        return block_shortfall_pathpage
 
     #REMOVE?
-    def intent_databook(self, **scope):
-        return self._page_databook("intent", **scope)
+    def block_intent_pathbook(self, **scope):
+        return self._page_pathbook("intent", **scope)
 
     #REMOVE?
-    def extent_databook(self, **scope):
-        return self._page_databook("extent", **scope)
+    def block_extent_pathbook(self, **scope):
+        return self._page_pathbook("extent", **scope)
 
-    #RENAME: -> collate_pages
     @staticmethod
-    def collate_datapages(topic, *datapages):
-        # Each datapage is a dict {kvhandle -> filepathset}.
+    def collate_pathpages(topic, *pathpages):
+        # Each pathpage is a dict {kvhandle -> filepathset}.
         # `collate` is just a union of dicts.
-        # Assuming each kvhandle exists only once in datapages or only the last occurrence matters.
-        collated_datapage = {kvhandle: filepathset for datapage in datapages for kvhandle, filepathset in datapage.items()}
-        return collated_datapage
+        # Assuming each kvhandle exists only once in pathpages or only the last occurrence matters.
+        collated_pathpage = {kvhandle: filepathset for pathpage in pathpages for kvhandle, filepathset in pathpage.items()}
+        return collated_pathpage
 
-    #RENAME: -> collate_books
     @staticmethod
-    def collate_databooks(*databooks):
+    def collate_pathbooks(*pathbooks):
         # Collate all pages from all books within a topic
-        topic_datapages = {}
-        for databook in databooks:
-            for topic, datapage in databook.items():
-                if topic in topic_datapages:
-                    topic_datapages[topic].append(datapage)
+        topic_pathpages = {}
+        for pathbook in pathbooks:
+            for topic, pathpage in pathbook.items():
+                if topic in topic_pathpages:
+                    topic_pathpages[topic].append(pathpage)
                 else:
-                    topic_datapages[topic] = [datapage]
-        collated_databook = \
-            {topic: Databuilder.collate_datapages(topic, *datapages) \
-             for topic, datapages in topic_datapages.items()}
-        return collated_databook
+                    topic_pathpages[topic] = [pathpage]
+        collated_pathbook = \
+            {topic: Databuilder.collate_pathpages(topic, *pathpages) \
+             for topic, pathpages in topic_pathpages.items()}
+        return collated_pathbook
 
-    #REMOVE?
-    def intent(self, **scope):
+    def block_intent(self, **scope):
         blockscope = self._blockscope_(**scope)
         tagscope = self._tagscope_(**blockscope)
-        intent_databook = self.intent_databook(**tagscope)
-        _intent_databook = self._databook_kvhandle_to_scope(intent_databook)
-        return _intent_databook
+        block_intent_pathbook = self.block_intent_pathbook(**tagscope)
+        _block_intent_pathbook = self._pathbook_to_scopebook(block_intent_pathbook)
+        return _block_intent_pathbook
 
-    #REMOVE?
-    def extent(self, **scope):
+    def block_extent(self, **scope):
         blockscope = self._blockscope_(**scope)
         #tagscope = self._tagscope_(**blockscope)
-        extent_databook = self.extent_databook(**blockscope)
-        extent = self._databook_kvhandle_to_scope(extent_databook)
+        block_extent_pathbook = self.block_extent_pathbook(**blockscope)
+        extent = self._pathbook_to_scopebook(block_extent_pathbook)
         return extent
 
-    def shortfall(self, **scope):
+    def block_shortfall(self, **scope):
         blockscope = self._blockscope_(**scope)
         #tagscope = self._tagscope_(**blockscope)
-        shortfall_databook = self.shortfall_databook(**blockscope)
-        _shortfall_databook = self._databook_kvhandle_to_scope(shortfall_databook)
-        return _shortfall_databook
+        block_shortfall_pathbook = self.block_shortfall_pathbook(**blockscope)
+        _block_shortfall_pathbook = self._pathbook_to_scopebook(block_shortfall_pathbook)
+        return _block_shortfall_pathbook
 
+    #RENAME: -> _shard_extent_metric_
     def _extent_shard_metric_(self, topic, tagscope, **shardscope):
-        extent_datapage = self.extent_datapage(topic, **shardscope)
+        block_extent_pathpage = self.block_extent_pathpage(topic, **shardscope)
         if self.debug:
-            print(f"_extent_shard_metric_: topic: {repr(topic)}: shardspace: {shardscope}: extent_datapage: {extent_datapage}")
-        if len(extent_datapage) > 1:
-            raise ValueError(f"Too many shards in extent_datapage: {extent_datapage}")
-        if len(extent_datapage) == 0:
+            print(f"_extent_shard_metric_: topic: {repr(topic)}: shardspace: {shardscope}: block_extent_pathpage: {block_extent_pathpage}")
+        if len(block_extent_pathpage) > 1:
+            raise ValueError(f"Too many shards in block_extent_pathpage: {block_extent_pathpage}")
+        if len(block_extent_pathpage) == 0:
             metric = 0
         else:
-            pathset = list(extent_datapage.values())[0]
+            pathset = list(block_extent_pathpage.values())[0]
             if isinstance(pathset, str):
                 metric = 1
             else:
                 metric = len(pathset)
         return metric
     
-    #REMOVE?
-    #TODO: factor into extent_datapage_metric, extent_databook_metric and extent_metric?
-    def extent_metric(self, **scope):
+    def block_extent_metric(self, **scope):
         blockscope = self._blockscope_(**scope)
         tagscope = self._tagscope_(**blockscope)
-        extent = self.extent(**blockscope)
-        extent_metric_databook = {}
-        #FIX: break blockscope into shards: see logic in extent_datapage()
+        extent = self.block_extent(**blockscope)
+        extent_metric_pathbook = {}
+        #FIX: break blockscope into shards: see logic in block_extent_pathpage()
         for topic, scope_pathset in extent.items():
             if len(scope_pathset) == 2:
                 scope, _ = scope_pathset
                 shard_metric = self._extent_shard_metric_(topic, tagscope, **blockscope)
             else:
                 shard_metric = None
-            if topic not in extent_metric_databook:
-                extent_metric_databook[topic] = []
-            extent_metric_databook[topic].append((scope, {'metric': shard_metric}))
-        return extent_metric_databook
+            if topic not in extent_metric_pathbook:
+                extent_metric_pathbook[topic] = []
+            extent_metric_pathbook[topic].append((scope, {'metric': shard_metric}))
+        return extent_metric_pathbook
 
-    #REMOVE: fold into block_shortfall?
-    def shortfall_databook(self, **scope):
+    def block_shortfall_pathbook(self, **scope):
         blockscope = self._blockscope_(**scope)
-        pagekvhandles_list = [set(self.shortfall_datapage(topic, **blockscope).keys()) for topic in self.topics]
+        pagekvhandles_list = [set(self.block_shortfall_pathpage(topic, **blockscope).keys()) for topic in self.topics]
         bookkvhandleset = set().union(*pagekvhandles_list)
-        shortfall_databook = {}
+        block_shortfall_pathbook = {}
         for topic in self.topics:
-            shortfall_datapage = {}
+            block_shortfall_pathpage = {}
             for kvhandle in bookkvhandleset:
                 scope = {key: val for key, val in kvhandle}
                 filepathset = self._shardspace_(topic, **blockscope).root
-                shortfall_datapage[kvhandle] = filepathset
-            shortfall_databook[topic] = shortfall_datapage
-        return shortfall_databook
+                block_shortfall_pathpage[kvhandle] = filepathset
+            block_shortfall_pathbook[topic] = block_shortfall_pathpage
+        return block_shortfall_pathbook
     
     @OVERRIDE
     def _shardspace_(self, topic, **shard):
@@ -609,6 +592,29 @@ class Databuilder(Anchored, Scoped):
         if self.debug:
             print(f"SHARDSPACE: formed for topic {repr(topic)} and shard with tag {tagshard}: {subspace}")
         return subspace
+    
+    class _scopepage_(tuple):
+        def __repr__(self):
+            if len(self) < 2:
+                assert len(self) == 0
+                return ''
+            scope, pathset = self[0], self[1]
+            if len(scope) > 0:
+                _ = str(pathset)
+            else:
+                _ = str(scope) + ": " + str(pathset)
+            return _
+
+    class _scopebook_(dict):
+        def __repr__(self):
+            lines = []
+            for topic, page in self.items():
+                if topic is None:
+                    lines.append(repr(page))
+                else:
+                    lines.append(repr(topic) + ": " + repr(page))
+            _ = '\n'.join(lines)
+            return _
 
     def _scope_to_hvhandle_(self, topic, **shard):
         if topic is not None:
@@ -644,15 +650,16 @@ class Databuilder(Anchored, Scoped):
         path = subspace.root
         return path
     
-    def _databook_kvhandle_to_scope(self, databook):
-        _databook = {}
-        for topic, datapage in databook.items():
-            if not topic in _databook:
-                _databook[topic] = ()
-            for kvhandle, pathset in datapage.items():
+    def _pathbook_to_scopebook(self, pathbook):
+        _scopebook = {}
+        for topic, pathpage in pathbook.items():
+            if not topic in _scopebook:
+                _scopebook[topic] = ()
+            for kvhandle, pathset in pathpage.items():
                 scope = self._kvhandle_to_scope_(topic, kvhandle)
-                _databook[topic] += (scope, pathset)
-        return _databook
+                _scopebook[topic] += (scope, pathset)
+        _scopebook_ = Databuilder._scopebook_({topic: Databuilder._scopepage_(page) for topic, page in _scopebook.items()}) 
+        return _scopebook_
 
     def _lock_kvhandle(self, topic, kvhandle):
         if self.lock_pages:
@@ -665,72 +672,34 @@ class Databuilder(Anchored, Scoped):
             self.revisionspace.subspace(*hivechain).release()
 
     #REMOVE: unroll inplace where necessary
-    def _page_databook(self, domain, **kwargs):
-        # This databook is computed by computing a page for each topic separately, 
+    def _page_pathbook(self, domain, **kwargs):
+        # This pathbook is computed by computing a page for each topic separately, 
         # via a dedicated function call with topic as an arg, using a domain-specific
         # method.  domain: 'intent'|'extent'|'shortfall'
-        _datapage = getattr(self, f"{domain}_datapage")
-        databook = {topic: _datapage(topic, **kwargs) for topic in self.topics}
-        return databook
+        _pathpage = getattr(self, f"block_{domain}_pathpage")
+        pathbook = {topic: _pathpage(topic, **kwargs) for topic in self.topics}
+        return pathbook
 
-    #REMOVE: -> DBX.show_metric?
-    def print_metric(self, **scope):
-        metric = self.extent_metric(**scope)
-        print(metric)
-    
-    def build(self, **scope):
-        request = self.build_request(**scope)
-        response = request.evaluate()
-        if self.verbose:
-            print(f"task_id: {response.id}")
-        result = response.result()
-        return result
-
-    def build_request(self, **scope):
-        import datablocks
-        def scopes_equal(s1, s2):
-            if set(s1.keys()) != (s2.keys()):
-                return False
-            for key in s1.keys():
-                if s1[key] != s2[key]:
-                    return False
-            return True
-        # TODO: consistency check: sha256 alias must be unique for a given revision or match scope
-        blockscope = self._blockscope_(**scope)
-        record = self.show_named_record(alias=self.alias, revision=self.revision, stage='END') 
-        if record is not None:
-            try:
-                _scope = _eval(record['scope'])
-            except Exception as e:
-                # For example, when the scope contains tags of DBX with an earlier revision.
-                if self.verbose:
-                    print(f"Failed to retrieve scope from build record, ignoring scope of record.")
-                _scope = None
-            if _scope is not None and not scopes_equal(blockscope, _scope):
-                raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.__class__} alias {self.alias}")
-        request = self.build_databook_request(**blockscope)
-        return request
-    
     @OVERRIDE
-    def build_databook_request(self, **scope):
+    def build_pathbook_request(self, **scope):
         blockscope = self._blockscope_(**scope)
         if self.reload:
-            shortfall_databook = self.intent_databook(**blockscope)
+            block_shortfall_pathbook = self.block_intent_pathbook(**blockscope)
         else:
-            shortfall_databook = self.shortfall_databook(**blockscope)
-        shortfall_databook_kvhandles_lists = [list(shortfall_databook[topic].keys()) for topic in self.topics]
-        shortfall_databook_kvhandles_list = [_ for __ in shortfall_databook_kvhandles_lists for _ in __]
-        shortfall_databook_kvhandles = list(set(shortfall_databook_kvhandles_list))
+            block_shortfall_pathbook = self.block_shortfall_pathbook(**blockscope)
+        block_shortfall_pathbook_kvhandles_lists = [list(block_shortfall_pathbook[topic].keys()) for topic in self.topics]
+        block_shortfall_pathbook_kvhandles_list = [_ for __ in block_shortfall_pathbook_kvhandles_lists for _ in __]
+        block_shortfall_pathbook_kvhandles = list(set(block_shortfall_pathbook_kvhandles_list))
 
         shortfall_batchscope_list = \
-            self._kvhandles_to_batches_(*shortfall_databook_kvhandles)
+            self._kvhandles_to_batches_(*block_shortfall_pathbook_kvhandles)
         shortfall_batchscope_list = \
             [{k: blockscope[k] for k in tscope.keys()} for tscope in shortfall_batchscope_list]
         if self.verbose:
             if len(shortfall_batchscope_list) == 0:
-                print(f"Databuilder: build_databook_request: no shortfalls found: returning extent")
+                print(f"Databuilder: build_pathbook_request: no shortfalls found: returning extent")
             else:
-                print(f"Databuilder: build_databook_request: requesting build of shortfall batchscopes with tags: {shortfall_batchscope_list}")
+                print(f"Databuilder: build_pathbook_request: requesting build of shortfall batchscopes with tags: {shortfall_batchscope_list}")
         _shortfall_batch_requests = \
             [self._build_batch_request_(self._tagscope_(**shortfall_batchscope_list[i]), **shortfall_batchscope_list[i])
                             .apply(self.pool) for i in range(len(shortfall_batchscope_list))]
@@ -739,22 +708,22 @@ class Databuilder(Anchored, Scoped):
                                           ", ".join(tag(_) for _ in shortfall_batch_requests) + \
                                           "]"
         if self.verbose:
-            print(f"build_databook_request: shortfall_batch_requests: " + shortfall_batch_requests_tags)
+            print(f"build_pathbook_request: shortfall_batch_requests: " + shortfall_batch_requests_tags)
 
         tagscope = self._tagscope_(**blockscope)
-        extent_request = Request(self.extent, **tagscope)
+        extent_request = Request(self.block_extent, **tagscope)
         requests = shortfall_batch_requests + [extent_request]
-        build_databook_request = LAST(*requests)
+        build_pathbook_request = LAST(*requests)
         #TODO: #FIX
-        #build_databook_request = LAST(*shortfall_batch_requests) if len(shortfall_batch_requests) > 0 else NONE()
+        #build_pathbook_request = LAST(*shortfall_batch_requests) if len(shortfall_batch_requests) > 0 else NONE()
         if len(shortfall_batchscope_list) > 0 and self.build_block_request_lifecycle_callback is not None:
-            _ = build_databook_request.with_lifecycle_callback(self.build_block_request_lifecycle_callback(**blockscope))
+            _ = build_pathbook_request.with_lifecycle_callback(self.build_block_request_lifecycle_callback(**blockscope))
             if self.verbose:
-                print(f"Databuilder: build_databook_request: will record lifecycle")
+                print(f"Databuilder: build_pathbook_request: will record lifecycle")
         else:
-            _ = build_databook_request
+            _ = build_pathbook_request
             if self.verbose:
-                print(f"Databuilder: build_databook_request: will NOT record lifecycle")
+                print(f"Databuilder: build_pathbook_request: will NOT record lifecycle")
         return _
 
     @OVERRIDE
@@ -767,16 +736,9 @@ class Databuilder(Anchored, Scoped):
     def _build_batch_(self, tagscope, **batchscope):
         raise NotImplementedError()
 
-    def read(self, topic=None, **blockscope):
-        request = self.read_databook_request(topic, **blockscope)
-        response = request.evaluate()
-        result = response.result()
-        return result
-
     @OVERRIDE
     # tagbatchscope is necessary since batchscope will be expanded before being passed to _read_block_
-    #RENAME -> read_datapage_request
-    def read_databook_request(self, topic, **blockscope):
+    def read_block_pathpage_request(self, topic, **blockscope):
         _blockscope = self._blockscope_(**blockscope)
         _tagscope = self._tagscope_(**_blockscope)
         request = Request(self._read_block_, _tagscope, topic, **blockscope)
@@ -1139,7 +1101,7 @@ class DBX:
                 _scope = None
             if _scope is not None and not scopes_equal(blockscope, _scope):
                 raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.__class__} alias {self.alias}")
-        request = self.databuilder.build_databook_request(**blockscope)
+        request = self.databuilder.build_pathbook_request(**blockscope)
         return request
     
     def display(self):
@@ -1149,11 +1111,11 @@ class DBX:
     def path(self, topic=DEFAULT_TOPIC):
         if self.scope is None:
             raise ValueError(f"{self} of revision {self.revision} has not been built yet")
-        datapage = self.databuilder.extent_datapage(topic, **self.tagscope)
-        if len(datapage) > 1:
-            path = list(datapage.values())
-        elif len(datapage) == 1:
-            path = list(datapage.values())[0]
+        pathpage = self.databuilder.block_extent_pathpage(topic, **self.tagscope)
+        if len(pathpage) > 1:
+            path = list(pathpage.values())
+        elif len(pathpage) == 1:
+            path = list(pathpage.values())[0]
         else:
             path = None
         return path
@@ -1165,7 +1127,7 @@ class DBX:
     def read_request(self, topic=DEFAULT_TOPIC):
         if self.scope is None:
             raise ValueError(f"{self} of revision {self.revision} has not been built yet")
-        request = self.databuilder.read_databook_request(topic, **self.scope)\
+        request = self.databuilder.read_block_pathpage_request(topic, **self.scope)\
             .set(summary=lambda _: self.extent()[topic]) # TODO: #REMOVE?
         return request
 
@@ -1183,15 +1145,15 @@ class DBX:
         return result
     
     def intent(self):
-        _ = self.databuilder.intent(**self.scope)
+        _ = self.databuilder.block_intent(**self.scope)
         return _
 
     def extent(self):
-        _ = self.databuilder.extent(**self.scope)
+        _ = self.databuilder.block_extent(**self.scope)
         return _
     
     def extent_metric(self):
-        _ = self.databuilder.extent_metric(**self.scope)
+        _ = self.databuilder.block_extent_metric(**self.scope)
         return _    
     
     def valid(self):
@@ -1542,7 +1504,7 @@ class DBX:
             if self.verbose:
                 print(f"DBX: building batch for datablock {dbk} constructed with kwargs {self.datablock_kwargs}")
             dbk.build()
-            _ = self.extent_databook(**tagscope)
+            _ = self.block_extent_pathbook(**tagscope)
             return _
 
         def __display_batch__(self, tagscope, **batchscope):
@@ -1565,11 +1527,11 @@ class DBX:
                 _ = self.datablock(datablock_blockroots, scope=datablock_blockscope, filesystem=self.dataspace.filesystem).read(topic)
             return _
 
-        def __extent_shard_valid__(self, topic, tagscope, **shardscope):
+        def __shard_extent_pathpage_valid__(self, topic, tagscope, **shardscope):
             datablock_tagshardscope = self.datablock_cls.SCOPE(**shardscope)
             datablock_shardroots = self.datablock_shardroots(tagscope)
             if topic == None:
-                assert not hasattr(self.datablock_cls, 'TOPICS'), f"__extent_shard_valid__: None topic when datablock_cls.TOPICS == {getattr(self.datablock_cls, 'TOPICS')} "
+                assert not hasattr(self.datablock_cls, 'TOPICS'), f"__shard_extent_pathpage_valid__: None topic when datablock_cls.TOPICS == {getattr(self.datablock_cls, 'TOPICS')} "
                 _ = self.datablock(datablock_shardroots, scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem,).valid()
             else:
                 _ = self.datablock(datablock_shardroots, scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem).valid(topic)
@@ -1630,7 +1592,7 @@ class DBX:
             databuilder_classdict['revisionspace'] = __alias_revisionspace
             databuilder_classdict['_shardspace_'] = __alias_dataspace__
         if hasattr(dbx.datablock_cls, 'valid'):
-            databuilder_classdict['_extent_shard_valid_'] = __extent_shard_valid__
+            databuilder_classdict['_shard_extent_pathpage_valid_'] = __shard_extent_pathpage_valid__
         if hasattr(dbx.datablock_cls, 'metric'):
             databuilder_classdict['_extent_shard_metric_'] = __extent_shard_metric__
 
