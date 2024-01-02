@@ -5,7 +5,7 @@ import datablocks.dataspace
 TESTLAKE = datablocks.dataspace.Dataspace.temporary()
 
 
-def _test(dbx, topic=None, *, build=True, read=True, verbose=False):
+def _test(dbx, topic=None, *, build=True, read=True, show=True, clear=False, verbose=False):
     print()
     if verbose:
         print(f"intent: {dbx}\n", dbx.intent())
@@ -22,6 +22,21 @@ def _test(dbx, topic=None, *, build=True, read=True, verbose=False):
         else:
             if verbose:
                 print(dbx.read())
+    if show:
+        print(f"show_build_records(): {dbx.show_build_records()}")
+        print(f"show_build_record_columns(): {dbx.show_build_record_columns()}")
+        print(f"show_build_record(): {dbx.show_build_record()}")
+        print(f"show_named_record(): {dbx.show_named_record()}")
+        print(f"show_build_batch_count(): {dbx.show_build_batch_count()}")
+        print(f"show_build_transcript(): {dbx.show_build_transcript()}")
+        print(f"show_build_scope(): {dbx.show_build_scope()}")
+        print(f"show_build_graph(): {dbx.show_build_graph()}")
+        print(f"show_build_batch_graph(): {dbx.show_build_batch_graph()}")
+
+    if clear:
+        dbx.UNSAFE_clear()
+        print(f">>> Cleared")
+
 
 MIRLOGCOHN = datablocks.DBX('datablocks.test.micron.datablocks.miRLogCoHN', 'mirlogcohn')\
         .Databuilder(dataspace=TESTLAKE).Datablock(verbose=True)
@@ -55,7 +70,7 @@ def test_mircohn_logcounts():
 
 
 def test_mircohn_counts():
-    _test(MIRCOHN, 'counts')
+    _test(MIRCOHN, 'counts', clear=True)
 
 
 def test_mirna():
@@ -63,7 +78,7 @@ def test_mirna():
 
 
 def test_mircoseq():
-    _test(MIRCOSEQSHN, 'samples')
+    _test(MIRCOSEQSHN, 'samples', clear=True)
     
 
 

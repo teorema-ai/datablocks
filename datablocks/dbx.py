@@ -8,7 +8,6 @@ import hashlib
 import importlib
 import logging
 import os
-
 from typing import Any, TypeVar, Generic, Tuple, Union, List, Dict
 
 import fsspec
@@ -22,7 +21,7 @@ from . import signature
 from .signature import Signature, ctor_name
 from .signature import tag, Tagger
 from .utils import ALIAS, DEPRECATED, OVERRIDE, microseconds_since_epoch, datetime_to_microsecond_str
-from .eval import request
+from .eval import request, pool
 from .eval.request import Request, Report, LAST, NONE, Graph
 from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL, DATABLOCKS_FILE_LOGGING_POOL
 from .dataspace import DATABLOCKS_DATALAKE, DATABLOCKS_HOMELAKE
@@ -30,7 +29,7 @@ from .dataspace import DATABLOCKS_DATALAKE, DATABLOCKS_HOMELAKE
 
 def _eval(string):
     """
-        Eval in the context of impoirted datablocks.datablock.
+        A version of __builtins__.eval() in the context of impoirted datablocks.datablock.
     """
     import datablocks.dbx
     _eval = __builtins__['eval']
@@ -146,7 +145,6 @@ class Datablock:
             print(f"DEBUG: >>> {self.__class__.__qualname__}: {s}")
 
 
-
 class Anchored:
     def __init__(self, namechain=None):
         self.namechain = namechain
@@ -215,7 +213,10 @@ class Scoped:
             else:
                 raise ValueError(f"key={key} with val={val} is neither a block key nor a shard key")
             return _key, _val
-        _blockscope = {blockify(key, val)[0]: blockify(key, val)[1] for key, val in scope.items()}
+        _blockscope = {}
+        for key, val in scope.items():
+            k, v = blockify(key, val)
+            _blockscope[k] = v
         block_ = {}
         for key in self.block_keys:
             if key in _blockscope:
@@ -343,8 +344,6 @@ class Databuilder(Anchored, Scoped):
     topics = [DEFAULT_TOPIC]
     signature = Signature((), ('dataspace', 'revision',)) # extract these attrs and use in __tag__
 
-    RECORD_SCHEMA_REVISION = '0.3.0'
-
     # TODO: make dataspace, revision position-only and adjust Signature
     def __init__(self,
                  alias=None,
@@ -355,6 +354,7 @@ class Databuilder(Anchored, Scoped):
                  throw=True,
                  rebuild=False,
                  pool=DATABLOCKS_STDOUT_LOGGING_POOL,
+                 build_block_request_lifecycle_callback=None,
                  verbose=False,
                  debug=False,          
     ):
@@ -366,11 +366,12 @@ class Databuilder(Anchored, Scoped):
         self.anchorspace = dataspace.subspace(*self.anchorchain)
         #self.revisionspace = self.anchorspace.subspace(f"revision={str(self.revision)}",)
         self.lock_pages = lock_pages
+        self.throw = throw
+        self.reload = rebuild
+        self.pool = pool
+        self.build_block_request_lifecycle_callback = build_block_request_lifecycle_callback
         self.verbose = verbose
         self.debug = debug
-        self.pool = pool
-        self.reload = rebuild
-        self.throw = throw
         if self.lock_pages:
             raise NotImplementedError("self.lock_pages not implemented for Databuilder")
         if hasattr(self, 'block_to_shard_keys'):
@@ -414,15 +415,12 @@ class Databuilder(Anchored, Scoped):
             self._tmpspace = self.revisionspace.temporary(self.revisionspace.subspace('tmp').ensure().root)
         return self._tmpspace
 
-    #TODO: #MOVE -> DBX.show_topics()
-    def get_topics(self, print=False):
-        if print:
-            __build_class__['print'](self.topics)
-        return self.topics
-
+    '''
+    #TODO: #REMOVE
     #TODO: #MOVE -> DBX.show_revision()
     def get_revision(self):
         return self.revision
+    '''
 
     #RENAME: -> block_page_intent
     def intent_datapage(self, topic, **scope):
@@ -666,10 +664,6 @@ class Databuilder(Anchored, Scoped):
             hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
             self.revisionspace.subspace(*hivechain).release()
 
-    def _recordspace_(self):
-        subspace = self.anchorspace.subspace('.records', f'schema={self.RECORD_SCHEMA_REVISION}')
-        return subspace
-
     #REMOVE: unroll inplace where necessary
     def _page_databook(self, domain, **kwargs):
         # This databook is computed by computing a page for each topic separately, 
@@ -684,227 +678,6 @@ class Databuilder(Anchored, Scoped):
         metric = self.extent_metric(**scope)
         print(metric)
     
-    BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'revision', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
-
-    def show_build_records(self, *, stage='ALL', full=False, columns=None, all=False, tail=5):
-        """
-        All build records for a given Databuilder class, irrespective of alias and revision (see `list()` for more specific).
-        'all=True' forces 'tail=None'
-        """
-        short = not full
-        recordspace = self._recordspace_()
-
-        frame = None
-        try:
-            
-            filepaths = [recordspace.join(recordspace.root, filename) for filename in recordspace.list()]
-            
-            frames = {filepath: pd.read_parquet(filepath, storage_options=recordspace.filesystem.storage_options) for filepath in filepaths}
-            frame = pd.concat(list(frames.values())) if len(frames) > 0 else pd.DataFrame()
-            
-
-        except FileNotFoundError as e:
-            #TODO: ensure it is exactly recordspace.root that is missing
-            pass
-    
-        if frame is not None and len(frame) > 0:
-            frame.reset_index(inplace=True, drop=True)
-            if columns is None:
-                _columns = frame.columns
-            else:
-                _columns = [c for c in columns if c in frame.columns]
-            if short:
-                _columns_ = [c for c in _columns if c in Databuilder.BUILD_RECORDS_COLUMNS_SHORT]
-            else:
-                _columns_ = _columns
-            frame.sort_values(['timestamp'], inplace=True)
-            if stage is not None and stage != 'ALL':
-                _frame = frame[frame.stage == stage][_columns_]
-            else:
-                _frame = frame[_columns_]
-        else:
-            _frame = pd.DataFrame()
-
-        if all:
-            tail = None
-        if tail is not None:
-            __frame = _frame.tail(tail)
-        else:
-            __frame = _frame
-        
-        return __frame
-
-    def show_build_record_columns(self, *, full=True, **ignored):
-        frame = self.show_build_records(full=full)
-        columns = frame.columns
-        return columns
-    
-    def show_build_record(self, *, record=None, full=False):
-        import datablocks
-        try:
-            records = self.show_build_records(full=full, stage='END')
-        except:
-            return None
-        if len(records) == 0:
-            return None
-        if isinstance(record, int):
-            _record = records.loc[record]
-        elif record is None:
-            _record = records.iloc[-1]
-        else:
-            _record = None
-        return _record
-
-    def show_named_record(self, *, alias=None, revision=None, full=False, stage=None):
-        import datablocks # needed for `eval`
-        records = self.show_build_records(full=full, stage=stage)
-        if self.debug:
-            print(f"show_name_record: databuilder {self}: revision: {repr(revision)}, alias: {repr(alias)}: retrieved records: len: {len(records)}:\n{records}")
-        if len(records) == 0:
-            return None
-        if alias is not None:
-            records0 = records.loc[records.alias == alias]
-        else:
-            records0 = records
-        if revision is not None:
-            if 'revision' in records0.columns:
-                records1 = records0.loc[records0.revision == repr(revision)] #NB: must compare to string repr
-            else:
-                records1 = pd.DataFrame()
-        else:
-            records1 = records0
-        if self.debug:
-            print(f"show_name_record: filtered records1: len: {len(records1)}:\n{records1}")
-        if len(records1) > 0:
-            record = records1.iloc[-1]
-        else:
-            record = None
-        return record
-
-    def show_build_graph(self, *, record=None, node=tuple(), show=('logpath', 'logpath_status', 'exception'), _show=tuple(), **kwargs):
-        _record = self.show_build_record(record=record, full=True)
-        if _record is None:
-            return None
-        _transcript = _record['report_transcript']
-        if _transcript is None:
-            return None
-        if isinstance(show, str):
-            show=(show,)
-        if isinstance(_show, str):
-            _show=(_show,)
-        show = show + _show
-        _graph = Graph(_transcript, show=show, **kwargs)
-        if node is not None:
-            graph = _graph.node(*node)
-        else:
-            graph = _graph
-        return graph
-    
-    def show_build_batch_count(self, *, record=None):
-        g = self.show_build_graph(record=record) 
-        nbatches = len(g.args)-1 # number of arguments less one to the outermost Request AND(batch_request[, batch_request, ...], extent_request)
-        return nbatches
-    
-    def show_build_batch_graph(self, *, record=None, batch=0, **kwargs):
-        g = self.show_build_graph(record=record, node=(batch,), **kwargs) # argument number `batch` to the outermost Request AND
-        return g
-    
-    def show_build_transcript(self, *, record=None, **ignored):
-        _record = self.show_build_record(record=record, full=True)
-        summary = _record['report_transcript']
-        return summary
-
-    def show_build_scope(self, *, record=None, **ignored):
-        _record = self.show_build_record(record=record, full=True)
-        scopestr = _record['scope']
-        scope = _eval(scopestr)
-        return scope
-
-    def _build_databook_request_lifecycle_callback_(self, **blockscope):
-        #tagscope = self._tagscope_(**blockscope)
-        classname = ctor_name(self.__class__)
-        revisionstr = repr(self.revision)
-        #tagscopestr = repr(tagscope)
-        namestr = f"{classname}:{revisionstr}(**{blockscope})"
-        hashstr = hashlib.sha256(namestr.encode()).hexdigest()[:10]
-        alias = self.alias
-        if alias is None:
-            alias = hashstr
-        recordspace = self._recordspace_().ensure()
-
-        def _write_record_lifecycle_callback(lifecycle_stage, request, response):
-            # TODO: report_transcript should be just a repr(report.to_dict()), ideally, repr(report)
-            # TODO: however, we may rewrite report.result
-            task = request.task
-            timestamp = int(microseconds_since_epoch())
-            datestr = datetime_to_microsecond_str()
-            blockscopestr = repr(blockscope)
-            _record = dict(schema=Databuilder.RECORD_SCHEMA_REVISION,
-                           alias=alias,
-                           stage=lifecycle_stage.name,
-                           classname=classname,
-                            revision=revisionstr,
-                            scope=blockscopestr,
-                            date=datestr,
-                            timestamp=timestamp,
-                            runtime_secs='',
-                            cookie=str(task.cookie),
-                            id=str(task.id),
-                            logspace=str(task.logspace),
-                            logname=str(task.logname),
-                            status='',
-                            success='',
-                            report_transcript='',
-            )
-        
-            if self.verbose:
-                    print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: writing record for request:\n{request}")
-                    print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: topics: {self.topics}")
-                    print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: blockscope: {blockscope}")
-            
-            logname = None
-            task_id = None
-            if response is not None:
-                if response.done_time is not None and response.start_time is not None:
-                    runtime_secs = (response.done_time - response.start_time).total_seconds()
-                else:
-                    runtime_secs = str(None)
-                report = response.report()
-                task_id = response.id
-                report_transcript = report.transcript() 
-                #args_reports = report.args_reports
-                #kwargs_reports = report.kwargs_reports
-                #args_results = [arg_report.result if isinstance(arg_report, Report) else arg_report for arg_report in args_reports]
-                #kwargs_results = {key: arg_report.result if isinstance(arg_report, Report) else arg_report for key, arg_report in kwargs_reports.items()}
-                logspace=response.logspace
-                logpath = report.logpath
-                if logpath is not None:
-                    _, logname_ext = os.path.split(logpath)
-                    logname, ext = logname_ext.split('.')
-                transcriptstr = repr(report_transcript)
-                if self.debug:
-                    print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: transcript: {transcriptstr}, logpath: {logpath}, logname: {logname}")
-                _record.update(dict(
-                                    task_id=str(task_id),
-                                    runtime_secs=f"{runtime_secs}",
-                                    status=report_transcript['status'],
-                                    success=report_transcript['success'],
-                                    logspace=repr(logspace),
-                                    logname=logname,
-                                    report_transcript=transcriptstr,
-                            ))
-            record_frame = pd.DataFrame.from_records([_record])
-            record_frame.index.name = 'index'
-            record_filepath = \
-                recordspace.join(recordspace.root, f"alias-{alias}-stage-{lifecycle_stage.name}-task_id-{task_id}-datetime-{datestr}.parquet")
-            if self.verbose:
-                print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: Writing build record at lifecycle_stage {lifecycle_stage.name} to {record_filepath}")
-            record_frame.to_parquet(record_filepath, storage_options=recordspace.storage_options)
-        return _write_record_lifecycle_callback
-    
-    def display(self, **scope):
-        raise NotImplementedError
-
     def build(self, **scope):
         request = self.build_request(**scope)
         response = request.evaluate()
@@ -935,48 +708,8 @@ class Databuilder(Anchored, Scoped):
                 _scope = None
             if _scope is not None and not scopes_equal(blockscope, _scope):
                 raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.__class__} alias {self.alias}")
-        """
-        pool_key = utils.datetime_now_key()
-        pool_dataspace = self.revisionspace.subspace(*(self.pool.anchorchain+(pool_key,))).ensure()
-        pool = self.pool.clone(dataspace=pool_dataspace)
-        """
         request = self.build_databook_request(**blockscope)
         return request
-
-    # TODO: build_databook_* -> build_block_*?
-    @OVERRIDE
-    def provide_databook_request(self, **scope):
-        blockscope = self._blockscope_(**scope)
-        if self.reload:
-            shortfall_databook = self.intent_databook(**blockscope)
-        else:
-            shortfall_databook = self.shortfall_databook(**blockscope)
-        shortfall_databook_kvhandles_lists = [list(shortfall_databook[topic].keys()) for topic in self.topics]
-        shortfall_databook_kvhandles_list = [_ for __ in shortfall_databook_kvhandles_lists for _ in __]
-        shortfall_databook_kvhandles = list(set(shortfall_databook_kvhandles_list))
-
-        shortfall_batchscope_list = \
-            self._kvhandles_to_batches_(*shortfall_databook_kvhandles)
-        shortfall_batchscope_list = \
-            [{k: blockscope[k] for k in tscope.keys()} for tscope in shortfall_batchscope_list]
-        if self.verbose:
-            print(f"Found shortfalls in Databuilder {self}:\n{shortfall_batchscope_list}")
-        shortfall_batch_requests = \
-            [self._build_batch_request_(self._tagscope_(**shortfall_batchscope_list[i]), shortfall_batchscope_list[i])
-                            .apply(self.pool) for i in range(len(shortfall_batchscope_list))]
-        shortfall_batch_requests_str = "[" + \
-                                          ", ".join(str(_) for _ in shortfall_batch_requests) + \
-                                          "]"
-        logger.debug(f"shortfall_batch_requests: " + shortfall_batch_requests_str)
-        collated_shortfall_batch_request = \
-            Request(self.collate_databooks, *shortfall_batch_requests)
-        logger.debug(f"collated_shortfall_batch_request: {collated_shortfall_batch_request}")
-        extent_databook = self.extent_databook(**blockscope)
-        build_databook_request = \
-            Request(self.collate_databooks, extent_databook, collated_shortfall_batch_request)
-        if self.verbose:
-            print(f"Requesting rebuilding of shortfalls in Databuilder {self}")
-        return build_databook_request
     
     @OVERRIDE
     def build_databook_request(self, **scope):
@@ -1014,14 +747,14 @@ class Databuilder(Anchored, Scoped):
         build_databook_request = LAST(*requests)
         #TODO: #FIX
         #build_databook_request = LAST(*shortfall_batch_requests) if len(shortfall_batch_requests) > 0 else NONE()
-        if len(shortfall_batchscope_list) > 0:
-            _ = build_databook_request.with_lifecycle_callback(self._build_databook_request_lifecycle_callback_(**blockscope))
+        if len(shortfall_batchscope_list) > 0 and self.build_block_request_lifecycle_callback is not None:
+            _ = build_databook_request.with_lifecycle_callback(self.build_block_request_lifecycle_callback(**blockscope))
             if self.verbose:
-                print(f"Databuilder: build_databook_request: will update build records")
+                print(f"Databuilder: build_databook_request: will record lifecycle")
         else:
             _ = build_databook_request
             if self.verbose:
-                print(f"Databuilder: build_databook_request: will NOT update build records")
+                print(f"Databuilder: build_databook_request: will NOT record lifecycle")
         return _
 
     @OVERRIDE
@@ -1049,43 +782,7 @@ class Databuilder(Anchored, Scoped):
         request = Request(self._read_block_, _tagscope, topic, **blockscope)
         return request
     
-    @OVERRIDE
-    def _read_block_(self, tagscope, topic, **blockscope):
-        raise NotImplementedError()
-    
-    def UNSAFE_clear_records(self):
-        recordspace = self._recordspace_()
-        recordspace.remove()
-    
-    def UNSAFE_clear(self, **scope):
-        self.UNSAFE_clear_records()
-        blockscope = self._blockscope_(**scope)
-        tagblockscope = self._tagscope_(**blockscope)
-        request = self.UNSAFE_clear_request(**tagblockscope)
-        _ = request.compute()
-        return _
-
-    @OVERRIDE
-    def UNSAFE_clear_request(self, **scope):
-        blockscope = self._blockscope_(**scope)
-        #tagblockscope = self._tagscope_(**blockscope)
-        request = Request(self._UNSAFE_clear_block_, **blockscope)
-        return request
-    
-    @OVERRIDE
-    def _UNSAFE_clear_block_(self, **scope):
-        for topic in self.topics:
-            shardspace = self._shardspace_(topic, **scope)
-            """
-            if self.verbose:
-                print(f"Clearing shardspace {shardspace}")
-            """
-            logging.debug(f"Clearing shardspace {shardspace}")
-            shardspace.remove()
-
-
-
-
+   
 class DBX:
     """
         DBX instantiates a Databuilder class on demand, in particular, different instances depending on the build(**kwargs),
@@ -1094,6 +791,8 @@ class DBX:
         Not inheriting from Databuilder also has the advantage of hiding the varable scope API that Databuilder.build/read/etc presents.
         DBX is by definition a fixed scope block.
     """
+
+    RECORD_SCHEMA_REVISION = '0.3.0'
 
     class Request(request.Proxy):
         @staticmethod
@@ -1189,7 +888,14 @@ class DBX:
             _tag = super().__tag__()
             tag = f"[{_tag}]"
             return tag
-    
+
+    class Builder(request.Proxy):
+        pass
+
+    class Pool(pool.Logging):
+        def __init__(self, pool):
+            self.pool = pool
+
     @staticmethod
     def show_datablocks(*, dataspace=DATABLOCKS_HOMELAKE, pretty_print=True):
         def _chase_anchors(_dataspace, _anchorchain=()):
@@ -1379,7 +1085,9 @@ class DBX:
         databuilder_cls = self._make_databuilder_class()
         databuilder_kwargs = self.databuilder_kwargs
         databuilder_kwargs['dataspace'] = databuilder_kwargs['dataspace'].with_pic(True)
-        databuilder = databuilder_cls(self.alias, **databuilder_kwargs)
+        databuilder = databuilder_cls(self.alias, 
+                                      build_block_request_lifecycle_callback=self._build_block_request_lifecycle_callback_,
+                                      **databuilder_kwargs)
         return databuilder
 
     @property
@@ -1390,7 +1098,7 @@ class DBX:
             if self.verbose:
                 print(f"DBX: scope: databuilder {self.databuilder} with revision {self.databuilder.revision} with alias {repr(self.databuilder.alias)}: using specified scope: {self._scope}")
         else:
-            record = self.databuilder.show_named_record(alias=self.databuilder.alias, revision=self.databuilder.revision, stage='END') 
+            record = self.show_named_record(alias=self.databuilder.alias, revision=self.databuilder.revision, stage='END') 
             if record is not None:
                 _scope = _eval(record['scope'])
                 if self.verbose:
@@ -1400,14 +1108,39 @@ class DBX:
                 if self.verbose:
                     print(f"DBX: scope: no specified scope and no records for databuilder {self.databuilder} with revision {self.databuilder.revision} with alias {repr(self.databuilder.alias)}: using default scope")
         return _scope
+    
+    def build(self):
+        request = self.build_request()
+        response = request.evaluate()
+        if self.verbose:
+            print(f"task_id: {response.id}")
+        result = response.result()
+        return result
 
     def build_request(self):
-        build_request = self.databuilder.build_request(**self.scope)
-        return build_request
-
-    def build(self):
-        result = self.databuilder.build(**self.scope)
-        return result
+        import datablocks
+        def scopes_equal(s1, s2):
+            if set(s1.keys()) != (s2.keys()):
+                return False
+            for key in s1.keys():
+                if s1[key] != s2[key]:
+                    return False
+            return True
+        # TODO: consistency check: sha256 alias must be unique for a given revision or match scope
+        blockscope = self.databuilder._blockscope_(**self.scope)
+        record = self.show_named_record(alias=self.databuilder.alias, revision=self.databuilder.revision, stage='END') 
+        if record is not None:
+            try:
+                _scope = _eval(record['scope'])
+            except Exception as e:
+                # For example, when the scope contains tags of DBX with an earlier revision.
+                if self.verbose:
+                    print(f"Failed to retrieve scope from build record, ignoring scope of record.")
+                _scope = None
+            if _scope is not None and not scopes_equal(blockscope, _scope):
+                raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.__class__} alias {self.alias}")
+        request = self.databuilder.build_databook_request(**blockscope)
+        return request
     
     def display(self):
         _ = self.databuilder.display_batch(**self.scope)
@@ -1469,43 +1202,268 @@ class DBX:
         _ = self.extent_metric()
         return _
     
-    def UNSAFE_clear(self):
-        _ = self.databuilder.UNSAFE_clear(**self.scope)
-        return _
-    
     @property
     def TOPICS(self):
         return self.datablock_cls.TOPICS
 
-    @functools.wraps(Databuilder.show_build_records)
-    def show_build_records(self, *args, **kwargs):
-        return self.databuilder.show_build_records(*args, **kwargs)
+    BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'revision', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
+
+    def show_build_records(self, *, stage='ALL', full=False, columns=None, all=False, tail=5):
+        """
+        All build records for a given Databuilder class, irrespective of alias and revision (see `list()` for more specific).
+        'all=True' forces 'tail=None'
+        """
+        short = not full
+        recordspace = self._recordspace_()
+
+        frame = None
+        try:
+            
+            filepaths = [recordspace.join(recordspace.root, filename) for filename in recordspace.list()]
+            
+            frames = {filepath: pd.read_parquet(filepath, storage_options=recordspace.filesystem.storage_options) for filepath in filepaths}
+            frame = pd.concat(list(frames.values())) if len(frames) > 0 else pd.DataFrame()
+            
+
+        except FileNotFoundError as e:
+            #TODO: ensure it is exactly recordspace.root that is missing
+            pass
     
-    @functools.wraps(Databuilder.show_build_record)
-    def show_build_record(self, *args, **kwargs):
-        return self.databuilder.show_build_record(*args, **kwargs)
+        if frame is not None and len(frame) > 0:
+            frame.reset_index(inplace=True, drop=True)
+            if columns is None:
+                _columns = frame.columns
+            else:
+                _columns = [c for c in columns if c in frame.columns]
+            if short:
+                _columns_ = [c for c in _columns if c in DBX.BUILD_RECORDS_COLUMNS_SHORT]
+            else:
+                _columns_ = _columns
+            frame.sort_values(['timestamp'], inplace=True)
+            if stage is not None and stage != 'ALL':
+                _frame = frame[frame.stage == stage][_columns_]
+            else:
+                _frame = frame[_columns_]
+        else:
+            _frame = pd.DataFrame()
 
-    @functools.wraps(Databuilder.show_build_graph)
-    def show_build_graph(self, *args, **kwargs):
-        return self.databuilder.show_build_graph(*args, **kwargs)
+        if all:
+            tail = None
+        if tail is not None:
+            __frame = _frame.tail(tail)
+        else:
+            __frame = _frame
+        
+        return __frame
 
-    @functools.wraps(Databuilder.show_build_batch_graph)
-    def show_build_batch_graph(self, *args, **kwargs):
-        return self.databuilder.show_build_batch_graph(*args, **kwargs)
+    def show_build_record_columns(self, *, full=True, **ignored):
+        frame = self.show_build_records(full=full)
+        columns = frame.columns
+        return columns
+
+    def show_build_record(self, *, record=None, full=False):
+        import datablocks
+        try:
+            records = self.show_build_records(full=full, stage='END')
+        except:
+            return None
+        if len(records) == 0:
+            return None
+        if isinstance(record, int):
+            _record = records.loc[record]
+        elif record is None:
+            _record = records.iloc[-1]
+        else:
+            _record = None
+        return _record
+
+    def show_named_record(self, *, alias=None, revision=None, full=False, stage=None):
+        import datablocks # needed for `eval`
+        records = self.show_build_records(full=full, stage=stage)
+        if self.debug:
+            print(f"show_name_record: databuilder {self}: revision: {repr(revision)}, alias: {repr(alias)}: retrieved records: len: {len(records)}:\n{records}")
+        if len(records) == 0:
+            return None
+        if alias is not None:
+            records0 = records.loc[records.alias == alias]
+        else:
+            records0 = records
+        if revision is not None:
+            if 'revision' in records0.columns:
+                records1 = records0.loc[records0.revision == repr(revision)] #NB: must compare to string repr
+            else:
+                records1 = pd.DataFrame()
+        else:
+            records1 = records0
+        if self.debug:
+            print(f"show_name_record: filtered records1: len: {len(records1)}:\n{records1}")
+        if len(records1) > 0:
+            record = records1.iloc[-1]
+        else:
+            record = None
+        return record
+    
+    def show_build_graph(self, *, record=None, node=tuple(), show=('logpath', 'logpath_status', 'exception'), _show=tuple(), **kwargs):
+        _record = self.show_build_record(record=record, full=True)
+        if _record is None:
+            return None
+        _transcript = _record['report_transcript']
+        if _transcript is None:
+            return None
+        if isinstance(show, str):
+            show=(show,)
+        if isinstance(_show, str):
+            _show=(_show,)
+        show = show + _show
+        _graph = Graph(_transcript, show=show, **kwargs)
+        if node is not None:
+            graph = _graph.node(*node)
+        else:
+            graph = _graph
+        return graph
+
+    def show_build_batch_graph(self, *, record=None, batch=0, **kwargs):
+        g = self.show_build_graph(record=record, node=(batch,), **kwargs) # argument number `batch` to the outermost Request AND
+        return g
+    
+    def show_build_batch_count(self, *, record=None):
+        g = self.show_build_graph(record=record) 
+        if g is None:
+            nbatches = None
+        else:
+            nbatches = len(g.args)-1 # number of arguments less one to the outermost Request AND(batch_request[, batch_request, ...], extent_request)
+        return nbatches
+    
+    def show_build_transcript(self, *, record=None, **ignored):
+        _record = self.show_build_record(record=record, full=True)
+        if _record is None:
+            summary = None
+        else:
+            summary = _record['report_transcript']
+        return summary
+
+    def show_build_scope(self, *, record=None, **ignored):
+        _record = self.show_build_record(record=record, full=True)
+        if _record is not None:
+            scopestr = _record['scope']
+            scope = _eval(scopestr)
+        else:
+            scope = None
+        return scope
     
     def UNSAFE_clear_records(self):
-        return self.databuilder.UNSAFE_clear_records()
+        self._recordspace_().remove()
     
-    def UNSAFE_clear(self, **scope):
-        return self.databuilder.UNSAFE_clear()
+    def UNSAFE_clear_request(self):
+        blockscope = self.databuilder._blockscope_(**self.scope)
+        #tagblockscope = self.databuilder._tagscope_(**blockscope)
+        request = Request(self._UNSAFE_clear_block_, **blockscope)
+        return request
+
+    def UNSAFE_clear(self):
+        request = self.UNSAFE_clear_request()
+        self.UNSAFE_clear_records()
+        _ = request.compute()
+        return _
 
     @OVERRIDE
-    def UNSAFE_clear_request(self, **scope):
-        return self.databuilder.UNSAFE_clear_records(**scope)
+    def _UNSAFE_clear_block_(self, **scope):
+        blockscope = self.databuilder._blockscope_(**scope)
+        for topic in self.databuilder.topics:
+            shardspace = self.databuilder._shardspace_(topic, **blockscope)
+            if self.verbose:
+                print(f"Clearing shardspace {shardspace}")
+            shardspace.remove()
 
     def _validate_subscope(self, **subscope):
         #TODO: check that subscope is a subscope of self.scope
         return subscope
+
+    def _recordspace_(self):
+        subspace = self.databuilder.anchorspace.subspace('.records', f'schema={self.RECORD_SCHEMA_REVISION}')
+        return subspace
+
+    def _build_block_request_lifecycle_callback_(self, **blockscope):
+        #tagscope = self._tagscope_(**blockscope)
+        classname = ctor_name(self.__class__)
+        revisionstr = repr(self.databuilder.revision)
+        #tagscopestr = repr(tagscope)
+        namestr = f"{classname}:{revisionstr}(**{blockscope})"
+        hashstr = hashlib.sha256(namestr.encode()).hexdigest()[:10]
+        alias = self.alias
+        if alias is None:
+            alias = hashstr
+        recordspace = self._recordspace_().ensure()
+
+        def _write_record_lifecycle_callback(lifecycle_stage, request, response):
+            # TODO: report_transcript should be just a repr(report.to_dict()), ideally, repr(report)
+            # TODO: however, we may rewrite report.result
+            task = request.task
+            timestamp = int(microseconds_since_epoch())
+            datestr = datetime_to_microsecond_str()
+            blockscopestr = repr(blockscope)
+            _record = dict(schema=DBX.RECORD_SCHEMA_REVISION,
+                           alias=alias,
+                           stage=lifecycle_stage.name,
+                           classname=classname,
+                            revision=revisionstr,
+                            scope=blockscopestr,
+                            date=datestr,
+                            timestamp=timestamp,
+                            runtime_secs='',
+                            cookie=str(task.cookie),
+                            id=str(task.id),
+                            logspace=str(task.logspace),
+                            logname=str(task.logname),
+                            status='',
+                            success='',
+                            report_transcript='',
+            )
+        
+            if self.verbose:
+                    print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: writing record for request:\n{request}")
+                    print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: topics: {self.topics}")
+                    print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: blockscope: {blockscope}")
+            
+            logname = None
+            task_id = None
+            if response is not None:
+                if response.done_time is not None and response.start_time is not None:
+                    runtime_secs = (response.done_time - response.start_time).total_seconds()
+                else:
+                    runtime_secs = str(None)
+                report = response.report()
+                task_id = response.id
+                report_transcript = report.transcript() 
+                #args_reports = report.args_reports
+                #kwargs_reports = report.kwargs_reports
+                #args_results = [arg_report.result if isinstance(arg_report, Report) else arg_report for arg_report in args_reports]
+                #kwargs_results = {key: arg_report.result if isinstance(arg_report, Report) else arg_report for key, arg_report in kwargs_reports.items()}
+                logspace=response.logspace
+                logpath = report.logpath
+                if logpath is not None:
+                    _, logname_ext = os.path.split(logpath)
+                    logname, ext = logname_ext.split('.')
+                transcriptstr = repr(report_transcript)
+                if self.debug:
+                    print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: transcript: {transcriptstr}, logpath: {logpath}, logname: {logname}")
+                _record.update(dict(
+                                    task_id=str(task_id),
+                                    runtime_secs=f"{runtime_secs}",
+                                    status=report_transcript['status'],
+                                    success=report_transcript['success'],
+                                    logspace=repr(logspace),
+                                    logname=logname,
+                                    report_transcript=transcriptstr,
+                            ))
+            record_frame = pd.DataFrame.from_records([_record])
+            record_frame.index.name = 'index'
+            record_filepath = \
+                recordspace.join(recordspace.root, f"alias-{alias}-stage-{lifecycle_stage.name}-task_id-{task_id}-datetime-{datestr}.parquet")
+            if self.verbose:
+                print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: Writing build record at lifecycle_stage {lifecycle_stage.name} to {record_filepath}")
+            record_frame.to_parquet(record_filepath, storage_options=recordspace.storage_options)
+        return _write_record_lifecycle_callback
     
     def _make_databuilder_class(dbx):
         """
@@ -1717,31 +1675,6 @@ class DBX:
 
         script_ = ""
 
-        '''
-        def transcribe_reader(arg):
-            transcript = f"# {tag(arg.dbx)}\n"
-
-            argfilesystem = arg.dbx.databuilder.dataspace.filesystem
-            if argfilesystem.protocol != "file":
-                argstorage_options = arg.dbx.databuilder.dataspace.storage_options
-                _argfilesystem = signature.Tagger().tag_func("fsspec.filesystem", argfilesystem.protocol, **argstorage_options)
-                transcript += f"{arg.dbx.alias}_filesystem = {_argfilesystem}\n"
-
-            argtagscope = arg.dbx.databuilder._tagscope_(**arg.dbx.scope)
-            if len(argtagscope):
-                transcript += f"{arg.dbx.alias}_scope = {argtagscope}\n"
-
-            argblockroots = arg.dbx.databuilder.datablock_blockroots(argtagscope)
-            _argblockroots = transcribe_roots(argfilesystem, argblockroots)
-            transcript += f"{arg.dbx.alias}_roots = " + _argblockroots + "\n"
-
-            _argdatablock = Tagger().tag_ctor(arg.dbx.datablock_cls, **arg.dbx.datablock_kwargs)
-            transcript += f"{arg.dbx.alias} = {_argdatablock}\n"
-            argscript =  f"{arg.dbx.alias}_roots, " +\
-                        (f"filesystem={arg.dbx.alias}_filesystem, " if argfilesystem.protocol != 'file' else "")
-            return transcript, argscript
-        '''
-
         imports = {}
         env = ""
         read = ""
@@ -1754,25 +1687,6 @@ class DBX:
         if with_env:
             for ekey in with_env:
                 env += f"{ekey} = os.getenv('{ekey}')\n"
-
-        '''
-        readers = {}
-        readerargs = {}
-
-        for dbx in dbxs:
-            
-            for key, arg in dbx.scope.items():
-                if isinstance(arg, DBX.Reader):
-                    if arg.dbx.alias is None:
-                        raise ValueError(f"None alias for reader DBX {arg.dbx}")
-                    if arg.dbx.alias not in readers:
-                        readers[arg.dbx.alias] = arg
-
-        for arg in readers.values():
-            _transcript, argscript = transcribe_reader(arg)
-            read += _transcript + "\n"
-            readerargs[arg.dbx.alias] = argscript   
-        '''  
 
         def transcribe_roots(filesystem, roots, *, prefix=''):
             _roots = ""
