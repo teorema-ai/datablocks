@@ -22,9 +22,9 @@ from .signature import Signature, ctor_name
 from .signature import tag, Tagger
 from .utils import ALIAS, DEPRECATED, OVERRIDE, microseconds_since_epoch, datetime_to_microsecond_str
 from .eval import request, pool
-from .eval.request import Request, Report, LAST, NONE, Graph
-from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL, DATABLOCKS_FILE_LOGGING_POOL
-from .dataspace import DATABLOCKS_DATALAKE, DATABLOCKS_HOMELAKE
+from .eval.request import Request, ALL, LAST, NONE, Graph
+from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL as STDOUT_POOL, DATABLOCKS_FILE_LOGGING_POOL as FILE_POOL
+from .dataspace import DATABLOCKS_DATALAKE as DATALAKE
 
 
 def _eval(string):
@@ -56,7 +56,7 @@ DBX_PREFIX = 'DBX'
 
 class Datablock:
     REVISION = '0.0.1'
-    FILENAME = None # define or define TOPICS: dict
+    FILENAME = "data.ext" # define or define TOPICS: dict
 
     @dataclass
     class SCOPE:
@@ -348,12 +348,12 @@ class Databuilder(Anchored, Scoped):
     def __init__(self,
                  alias=None,
                  *,
-                 dataspace=DATABLOCKS_HOMELAKE,
+                 dataspace=DATALAKE,
                  tmpspace=None,
                  lock_pages=False,
                  throw=True,
                  rebuild=False,
-                 pool=DATABLOCKS_STDOUT_LOGGING_POOL,
+                 pool=STDOUT_POOL,
                  build_block_request_lifecycle_callback=None,
                  verbose=False,
                  debug=False,          
@@ -514,21 +514,21 @@ class Databuilder(Anchored, Scoped):
         blockscope = self._blockscope_(**scope)
         tagscope = self._tagscope_(**blockscope)
         block_intent_pathbook = self.block_intent_pathbook(**tagscope)
-        _block_intent_pathbook = self._pathbook_to_scopebook(block_intent_pathbook)
+        _block_intent_pathbook = self._kvhbook_to_scopebook(block_intent_pathbook)
         return _block_intent_pathbook
 
     def block_extent(self, **scope):
         blockscope = self._blockscope_(**scope)
         #tagscope = self._tagscope_(**blockscope)
         block_extent_pathbook = self.block_extent_pathbook(**blockscope)
-        extent = self._pathbook_to_scopebook(block_extent_pathbook)
+        extent = self._kvhbook_to_scopebook(block_extent_pathbook)
         return extent
 
     def block_shortfall(self, **scope):
         blockscope = self._blockscope_(**scope)
         #tagscope = self._tagscope_(**blockscope)
         block_shortfall_pathbook = self.block_shortfall_pathbook(**blockscope)
-        _block_shortfall_pathbook = self._pathbook_to_scopebook(block_shortfall_pathbook)
+        _block_shortfall_pathbook = self._kvhbook_to_scopebook(block_shortfall_pathbook)
         return _block_shortfall_pathbook
 
     #RENAME: -> _shard_extent_metric_
@@ -550,20 +550,18 @@ class Databuilder(Anchored, Scoped):
     
     def block_extent_metric(self, **scope):
         blockscope = self._blockscope_(**scope)
-        tagscope = self._tagscope_(**blockscope)
         extent = self.block_extent(**blockscope)
-        extent_metric_pathbook = {}
-        #FIX: break blockscope into shards: see logic in block_extent_pathpage()
-        for topic, scope_pathset in extent.items():
-            if len(scope_pathset) == 2:
-                scope, _ = scope_pathset
-                shard_metric = self._extent_shard_metric_(topic, tagscope, **blockscope)
-            else:
-                shard_metric = None
-            if topic not in extent_metric_pathbook:
-                extent_metric_pathbook[topic] = []
-            extent_metric_pathbook[topic].append((scope, {'metric': shard_metric}))
-        return extent_metric_pathbook
+        _extent_metric_book = {}
+        for topic, page in extent.items():
+            metric_page = []
+            for shardscope, _ in page:
+                tagscope = self._tagscope_(**shardscope)
+                shardmetric = self._extent_shard_metric_(topic, tagscope, **shardscope)
+                #FIX: refactor via *_to_scopebook()
+                metric_page.append((shardscope, shardmetric))
+            _extent_metric_book[topic] = Databuilder._scopepage_(metric_page)
+        extent_metric_book = Databuilder._scopebook_(_extent_metric_book)
+        return extent_metric_book
 
     def block_shortfall_pathbook(self, **scope):
         blockscope = self._blockscope_(**scope)
@@ -593,27 +591,37 @@ class Databuilder(Anchored, Scoped):
             print(f"SHARDSPACE: formed for topic {repr(topic)} and shard with tag {tagshard}: {subspace}")
         return subspace
     
-    class _scopepage_(tuple):
-        def __repr__(self):
-            if len(self) < 2:
-                assert len(self) == 0
-                return ''
-            scope, pathset = self[0], self[1]
-            if len(scope) > 0:
-                _ = str(pathset)
-            else:
-                _ = str(scope) + ": " + str(pathset)
-            return _
-
     class _scopebook_(dict):
-        def __repr__(self):
+        def pretty(self):
             lines = []
             for topic, page in self.items():
                 if topic is None:
-                    lines.append(repr(page))
+                    lines.append(page.pretty())
                 else:
-                    lines.append(repr(topic) + ": " + repr(page))
-            _ = '\n'.join(lines)
+                    lines.append(repr(topic) + ":\n" + page.pretty())
+            _ = '\n '.join(lines)
+            return _
+        
+    class _scopepage_(list):
+        def pretty(self):
+            lines = []
+            for scope, val in self:
+                if len(scope) == 0:
+                    lines.append(repr(val))
+                else:
+                    lines.append(scope.pretty() + ": " + repr(val))
+            if len(lines) == 0:
+                _ = "  [\n   ]"
+            else:
+                _ = "  [\n\t" + '\n\t'.join(lines) + "\n   ]"
+            return _
+
+    class _scope_(dict):
+        def pretty(self):
+            lines = []
+            for key, val in self.items():
+                lines.append(f"{repr(key)}: {repr(val)}")
+            _ = "\t{\n\t" + '\n\t'.join(lines) + "\n\t}"
             return _
 
     def _scope_to_hvhandle_(self, topic, **shard):
@@ -650,14 +658,14 @@ class Databuilder(Anchored, Scoped):
         path = subspace.root
         return path
     
-    def _pathbook_to_scopebook(self, pathbook):
+    def _kvhbook_to_scopebook(self, kvhbook):
         _scopebook = {}
-        for topic, pathpage in pathbook.items():
+        for topic, kvhpage in kvhbook.items():
             if not topic in _scopebook:
-                _scopebook[topic] = ()
-            for kvhandle, pathset in pathpage.items():
-                scope = self._kvhandle_to_scope_(topic, kvhandle)
-                _scopebook[topic] += (scope, pathset)
+                _scopebook[topic] = []
+            for kvhandle, val in kvhpage.items():
+                scope = Databuilder._scope_(self._kvhandle_to_scope_(topic, kvhandle))
+                _scopebook[topic].append((Databuilder._scope_(scope), val))
         _scopebook_ = Databuilder._scopebook_({topic: Databuilder._scopepage_(page) for topic, page in _scopebook.items()}) 
         return _scopebook_
 
@@ -681,7 +689,7 @@ class Databuilder(Anchored, Scoped):
         return pathbook
 
     @OVERRIDE
-    def build_pathbook_request(self, **scope):
+    def build_block_pathbook_request(self, **scope):
         blockscope = self._blockscope_(**scope)
         if self.reload:
             block_shortfall_pathbook = self.block_intent_pathbook(**blockscope)
@@ -697,9 +705,9 @@ class Databuilder(Anchored, Scoped):
             [{k: blockscope[k] for k in tscope.keys()} for tscope in shortfall_batchscope_list]
         if self.verbose:
             if len(shortfall_batchscope_list) == 0:
-                print(f"Databuilder: build_pathbook_request: no shortfalls found: returning extent")
+                print(f"Databuilder: build_block_pathbook_request: no shortfalls found: returning extent")
             else:
-                print(f"Databuilder: build_pathbook_request: requesting build of shortfall batchscopes with tags: {shortfall_batchscope_list}")
+                print(f"Databuilder: build_block_pathbook_request: requesting build of shortfall batchscopes with tags: {shortfall_batchscope_list}")
         _shortfall_batch_requests = \
             [self._build_batch_request_(self._tagscope_(**shortfall_batchscope_list[i]), **shortfall_batchscope_list[i])
                             .apply(self.pool) for i in range(len(shortfall_batchscope_list))]
@@ -708,22 +716,22 @@ class Databuilder(Anchored, Scoped):
                                           ", ".join(tag(_) for _ in shortfall_batch_requests) + \
                                           "]"
         if self.verbose:
-            print(f"build_pathbook_request: shortfall_batch_requests: " + shortfall_batch_requests_tags)
+            print(f"build_block_pathbook_request: shortfall_batch_requests: " + shortfall_batch_requests_tags)
 
         tagscope = self._tagscope_(**blockscope)
         extent_request = Request(self.block_extent, **tagscope)
         requests = shortfall_batch_requests + [extent_request]
-        build_pathbook_request = LAST(*requests)
+        build_block_pathbook_request = Request(ALL, *requests)
         #TODO: #FIX
-        #build_pathbook_request = LAST(*shortfall_batch_requests) if len(shortfall_batch_requests) > 0 else NONE()
+        #build_block_pathbook_request = LAST(*shortfall_batch_requests) if len(shortfall_batch_requests) > 0 else NONE()
         if len(shortfall_batchscope_list) > 0 and self.build_block_request_lifecycle_callback is not None:
-            _ = build_pathbook_request.with_lifecycle_callback(self.build_block_request_lifecycle_callback(**blockscope))
+            _ = build_block_pathbook_request.with_lifecycle_callback(self.build_block_request_lifecycle_callback(**blockscope))
             if self.verbose:
-                print(f"Databuilder: build_pathbook_request: will record lifecycle")
+                print(f"Databuilder: build_block_pathbook_request: will record lifecycle")
         else:
-            _ = build_pathbook_request
+            _ = build_block_pathbook_request
             if self.verbose:
-                print(f"Databuilder: build_pathbook_request: will NOT record lifecycle")
+                print(f"Databuilder: build_block_pathbook_request: will NOT record lifecycle")
         return _
 
     @OVERRIDE
@@ -859,7 +867,7 @@ class DBX:
             self.pool = pool
 
     @staticmethod
-    def show_datablocks(*, dataspace=DATABLOCKS_HOMELAKE, pretty_print=True):
+    def show_datablocks(*, dataspace=DATALAKE, pretty_print=True):
         def _chase_anchors(_dataspace, _anchorchain=()):
             filenames = _dataspace.list()
             anchorchains = []
@@ -892,12 +900,12 @@ class DBX:
                 datablock_cls_or_clstr, 
                 alias=None,
                 *,
-                dataspace=DATABLOCKS_DATALAKE,
+                dataspace=DATALAKE,
                 tmpspace=None,
                 lock_pages=False,
                 throw=True,
                 rebuild=False,
-                pool=DATABLOCKS_STDOUT_LOGGING_POOL,
+                pool=STDOUT_POOL,
                 verbose=False,
                 debug=False,  
                 pic=False,
@@ -1101,7 +1109,7 @@ class DBX:
                 _scope = None
             if _scope is not None and not scopes_equal(blockscope, _scope):
                 raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.__class__} alias {self.alias}")
-        request = self.databuilder.build_pathbook_request(**blockscope)
+        request = self.databuilder.build_block_pathbook_request(**blockscope)
         return request
     
     def display(self):
@@ -1443,19 +1451,19 @@ class DBX:
             _ = f"{repr(dbx)}.databuilder"
             return _
 
-        def __datablock(self, roots, filesystem, scope=None):
+        def datablock(self, roots, filesystem, scope=None):
             self._datablock = self.datablock_cls(roots, filesystem, scope, **self.datablock_kwargs)
             return self._datablock
 
         @property
-        def __alias_revisionspace(self):
+        def revisionspace(self):
             if self.alias is not None:
                 _ = self.anchorspace.subspace(self.alias, f"revision={str(self.revision)}",)
             else:
                 _ = self.anchorspace.subspace(f"revision={str(self.revision)}",)
             return _
 
-        def __alias_dataspace__(self, topic, **shard):
+        def _shardspace_(self, topic, **shard):
             # ignore shard, label by alias, revision, topic only
             if topic is None:
                 _ = self.revisionspace
@@ -1465,7 +1473,7 @@ class DBX:
                 print(f"ALIAS SHARDSPACE: formed for topic {repr(topic)}: {_}")
             return _
 
-        def __datablock_shardroots(self, tagscope, ensure=False) -> Union[str, Dict[str, str]]:
+        def datablock_shardroots(self, tagscope, ensure=False) -> Union[str, Dict[str, str]]:
             shardscope_list = self.scope_to_shards(**tagscope)
             assert len(shardscope_list) == 1
             shardscope = shardscope_list[0]
@@ -1483,21 +1491,21 @@ class DBX:
                 shardroots = shardspace.root
             return shardroots
 
-        def __datablock_blockroots(self, tagscope, ensure=False) -> Union[Union[str, List[str]], Dict[str, Union[str, List[str]]]]:
+        def datablock_blockroots(self, tagscope, ensure=False) -> Union[Union[str, List[str]], Dict[str, Union[str, List[str]]]]:
             #TODO: implement blocking: return a dict from topic to str|List[str] according to whether this is a shard or a block
             if len(self.block_to_shard_keys) > 0:
                 raise NotImplementedError(f"Batching not supported at the moment: topic: tagscope: {tagscope}")
             blockroots = self.datablock_shardroots(tagscope, ensure=ensure)
             return blockroots
 
-        def __datablock_batchroots(self, tagscope, ensure=False) -> Union[Union[str, List[str]], Dict[str, Union[str, List[str]]]]:
+        def datablock_batchroots(self, tagscope, ensure=False) -> Union[Union[str, List[str]], Dict[str, Union[str, List[str]]]]:
             #TODO: implement batching: return a dict from topic to str|List[str] according to whether this is a shard or a batch
             if len(self.batch_to_shard_keys) > 0:
                 raise NotImplementedError(f"Batching not supported at the moment: topic: tagscope: {tagscope}")
             batchroots = self.datablock_shardroots(tagscope, ensure=ensure)
             return batchroots
 
-        def __build_batch__(self, tagscope, **batchscope):
+        def _build_batch_(self, tagscope, **batchscope):
             datablock_batchscope = self.datablock_cls.SCOPE(**batchscope)
             datablock_shardroots = self.datablock_batchroots(tagscope, ensure=True)
             dbk = self.datablock(datablock_shardroots, scope=datablock_batchscope, filesystem=self.dataspace.filesystem)
@@ -1507,27 +1515,18 @@ class DBX:
             _ = self.block_extent_pathbook(**tagscope)
             return _
 
-        def __display_batch__(self, tagscope, **batchscope):
-            if not hasattr(self.datablock, 'display'):
-                raise NotImplementedError(f"Class {self.datablock_clstr} does not implement '.display()'")
-            datablock_batchscope = self.datablock_cls.SCOPE(**batchscope)
-            datablock_shardroots = self.datablock_batchroots(tagscope, ensure=True)
-            #FIX: make a call to display with datablock_batchscope
-            _ = self.datablock(datablock_shardroots, filesystem=self.dataspace.filesystem).display
-            return _
-
-        def __read_block__(self, tagscope, topic, **blockscope):
+        def _read_block_(self, tagscope, topic, **blockscope):
             # tagscope can be a list, opaque to the Request evaluation mechanism, but batchscope must be **-expanded to allow Request mechanism to evaluate the kwargs
             datablock_blockroots = self.datablock_blockroots(tagscope)
             datablock_blockscope = self.datablock_cls.SCOPE(**blockscope)
             if topic == None:
-                assert not hasattr(self.datablock_cls, 'TOPICS'), f"__read_block__: None topic when datablock.TOPICS == {self.datablock_cls.TOPICS} "
+                assert not hasattr(self.datablock_cls, 'TOPICS'), f"_read_block_: None topic when datablock.TOPICS == {self.datablock_cls.TOPICS} "
                 _ = self.datablock(datablock_blockroots, scope=datablock_blockscope, filesystem=self.dataspace.filesystem).read()
             else:
                 _ = self.datablock(datablock_blockroots, scope=datablock_blockscope, filesystem=self.dataspace.filesystem).read(topic)
             return _
 
-        def __shard_extent_pathpage_valid__(self, topic, tagscope, **shardscope):
+        def _shard_extent_pathpage_valid_(self, topic, tagscope, **shardscope):
             datablock_tagshardscope = self.datablock_cls.SCOPE(**shardscope)
             datablock_shardroots = self.datablock_shardroots(tagscope)
             if topic == None:
@@ -1537,7 +1536,7 @@ class DBX:
                 _ = self.datablock(datablock_shardroots, scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem).valid(topic)
             return _
         
-        def __extent_shard_metric__(self, topic, tagscope, **shardscope):
+        def _extent_shard_metric_(self, topic, tagscope, **shardscope):
             datablock_tagshardscope = self.datablock_cls.SCOPE(**shardscope)
             datablock_shardroots = self.datablock_shardroots(tagscope)
             if topic == None:
@@ -1549,18 +1548,18 @@ class DBX:
 
         rangecls = RANGE if not hasattr(dbx.datablock_cls, 'RANGE') else dbx.datablock_cls.RANGE
         SCOPE_fields = dataclasses.fields(dbx.datablock_cls.SCOPE)
-        __block_keys = [field.name for field in SCOPE_fields]
-        __block_defaults = {field.name: field.default  for field in SCOPE_fields if field.default != dataclasses.MISSING}
-        __batch_to_shard_keys = {field.name: field.name for field in SCOPE_fields if isinstance(field.type, rangecls)}
+        block_keys = [field.name for field in SCOPE_fields]
+        block_defaults = {field.name: field.default  for field in SCOPE_fields if field.default != dataclasses.MISSING}
+        batch_to_shard_keys = {field.name: field.name for field in SCOPE_fields if isinstance(field.type, rangecls)}
 
-        __module_name = DBX_PREFIX + "." + dbx.datablock_module_name
+        __module__ = DBX_PREFIX + "." + dbx.datablock_module_name
         __cls_name = dbx.datablock_cls.__name__
-        __datablock_cls = dbx.datablock_cls
-        __datablock_kwargs = dbx.datablock_kwargs
+        datablock_cls = dbx.datablock_cls
+        datablock_kwargs = dbx.datablock_kwargs
         if hasattr(dbx.datablock_cls, 'TOPICS'):
-            __topics = dbx.datablock_cls.TOPICS
+            topics = dbx.datablock_cls.TOPICS
         else:
-            __topics = [DEFAULT_TOPIC]
+            topics = [DEFAULT_TOPIC]
 
         if hasattr(dbx.datablock_cls, 'REVISION'):
             if dbx.pic:
@@ -1570,31 +1569,30 @@ class DBX:
         else:
             __revision = DEFAULT_REVISION
         databuilder_classdict = {
-                    '__module__': __module_name,
-                    'block_keys': __block_keys, 
-                    'block_defaults': __block_defaults,
-                    'batch_to_shard_keys': __batch_to_shard_keys,
+                    '__module__': __module__,
+                    'block_keys': block_keys, 
+                    'block_defaults': block_defaults,
+                    'batch_to_shard_keys': batch_to_shard_keys,
                     '__init__': __init__,
                     '__repr__': __repr__,
                     'revision': __revision,
-                    'topics': __topics,
-                    'datablock_cls': __datablock_cls,
-                    'datablock_kwargs': __datablock_kwargs,
-                    'datablock': __datablock,
-                    'datablock_blockroots': __datablock_blockroots,
-                    'datablock_batchroots': __datablock_batchroots,
-                    'datablock_shardroots': __datablock_shardroots,
-                    '_build_batch_': __build_batch__,
-                    '_read_block_':  __read_block__,
-                    'display_batch': __display_batch__,
+                    'topics': topics,
+                    'datablock_cls': datablock_cls,
+                    'datablock_kwargs': datablock_kwargs,
+                    'datablock': datablock,
+                    'datablock_blockroots': datablock_blockroots,
+                    'datablock_batchroots': datablock_batchroots,
+                    'datablock_shardroots': datablock_shardroots,
+                    '_build_batch_': _build_batch_,
+                    '_read_block_':  _read_block_,
         }
         if dbx.alias_dataspace:
-            databuilder_classdict['revisionspace'] = __alias_revisionspace
-            databuilder_classdict['_shardspace_'] = __alias_dataspace__
+            databuilder_classdict['revisionspace'] = revisionspace
+            databuilder_classdict['_shardspace_'] = _shardspace_
         if hasattr(dbx.datablock_cls, 'valid'):
-            databuilder_classdict['_shard_extent_pathpage_valid_'] = __shard_extent_pathpage_valid__
+            databuilder_classdict['_shard_extent_pathpage_valid_'] = _shard_extent_pathpage_valid_
         if hasattr(dbx.datablock_cls, 'metric'):
-            databuilder_classdict['_extent_shard_metric_'] = __extent_shard_metric__
+            databuilder_classdict['_extent_shard_metric_'] = _extent_shard_metric_
 
         databuilder_class = type(__cls_name, 
                                (Databuilder,), 
@@ -1731,7 +1729,7 @@ class DBX:
         return script_
     
 
-PICLAKE = DATABLOCKS_DATALAKE.clone("{DATALAKE}")
+PICLAKE = DATALAKE.clone("{DATALAKE}")
 def TRANSCRIBE(dbx, piclake=PICLAKE):
     print(dbx.clone(dataspace=piclake, alias_dataspace=True, pic=True, verbose=False).Datablock(verbose=True).transcribe(with_build=True))
             

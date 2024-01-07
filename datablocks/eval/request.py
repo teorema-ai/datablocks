@@ -19,6 +19,25 @@ import datablocks.dataspace
 logger = logging.getLogger(__name__)
 
 
+class ArgResponseException(Exception):
+    def __init__(self, arg):
+        self.arg = arg
+    
+    def __str__(self):
+        _ = str(self.arg.exception())
+        return _
+
+
+class KwArgResponseException(Exception):
+    def __init__(self, key, arg):
+        self.key = key
+        self.arg = arg
+    
+    def __str__(self):
+        _ = str(self.arg.exception())
+        return _
+
+
 class Future:
     def __init__(self, func, *args_responses, **kwargs_responses):
         self.func = func
@@ -29,7 +48,29 @@ class Future:
         self._exception = None
         self._traceback = None
         self._result = None
-        self._done_callback = None
+        self.settings = {}
+        self._done_callbacks = []
+
+    def add_done_callback(self, callback):
+        self._done_callbacks.append(callback)
+        if self.done():
+            callback(self)
+
+    #TODO: Factor out into a Settings "mixin"
+    def set(self, key, val):
+        self.settings[key] = val
+        return self
+    
+    def get(self, key, default=None):
+        if default is not None:
+            _ = self.settings.get(key, default)
+        else:
+            _ = self.settings[key]
+        return _
+
+    def has(self, key):
+        _ = key in self.settings
+        return _
 
     def __str__(self):
         return signature.Tagger().str_ctor(self.__class__, self.func, *self.args_responses, **self.kwargs_responses)
@@ -38,35 +79,39 @@ class Future:
         return signature.Tagger().repr_ctor(self.__class__, self.func, *self.args_responses, **self.kwargs_responses)
 
     def compute(self):
+        #DEBUG
+        #pdb.set_trace()
         if not self._done:
             try:
+                for arg in self.args_responses:
+                    if isinstance(arg, Response) and arg.exception() is not None:
+                        raise ArgResponseException(arg)
+                for key, arg in self.kwargs_responses.items():
+                    if isinstance(arg, Response) and arg.exception() is not None:
+                        raise KwArgResponseException(key, arg)
                 args = [self._arg_result(arg_response) for arg_response in self.args_responses]
                 kwargs = {key: self._arg_result(kwarg_response) for key, kwarg_response in self.kwargs_responses.items()}
-                #DEBUG
-                #pdb.set_trace()
+                
                 self._result = self.func(*args, **kwargs)
             except KeyboardInterrupt as k:
                 raise(k)
             except Exception as e:
+                if self.get('throw', False):
+                    raise(e)
                 _, exc_value, exc_traceback = utils.exc_info()
                 self._exception = exc_value
                 self._traceback = exc_traceback
             finally:
                 self._done = True
                 self._running = False
-                if self._done_callback is not None:
-                    self._done_callback(self)
+                for done_callback in self._done_callbacks:
+                    done_callback(self)
 
     def done(self):
         return self._done
 
     def running(self):
         return self._running
-
-    def add_done_callback(self, callback):
-        self._done_callback = callback
-        if self.done():
-            self._done_callback(self)
  
     def result(self):
         self.compute()
@@ -264,8 +309,6 @@ class URL_RPC(RPC):
 
 class Request:
     def __init__(self, func, *args, **kwargs):
-        #DEBUG
-        #pdb.set_trace()
         if isinstance(func, Task): # implement rebind without changing task to preserve key, id, logname, etc.
             self.task = func
         else:
@@ -291,8 +334,11 @@ class Request:
         _ = self.with_settings(**settings)
         return _
     
-    def get(self, key):
-        _ = self.settings[key]
+    def get(self, key, default=None):
+        if default is not None:
+            _ = self.settings.get(key, default)
+        else:
+            _ = self.settings[key]
         return _
 
     def has(self, key):
@@ -352,15 +398,15 @@ class Request:
         return request
 
     def __str__(self):
-        str = signature.Tagger().str_func(self.task.func, *self.args, **self.kwargs)
+        str = signature.Tagger().str_ctor(Request, self.task.func, *self.args, **self.kwargs)
         return str
 
     def __repr__(self):
-        repr = signature.Tagger().repr_func(self.task.func, *self.args, **self.kwargs)
+        repr = signature.Tagger().repr_ctor(Request, self.task.func, *self.args, **self.kwargs)
         return repr
 
     def __tag__(self):
-        _ = signature.Tagger().tag_func(self.task.func, *self.args, **self.kwargs)
+        _ = signature.Tagger().tag_ctor(Request, self.task.func, *self.args, **self.kwargs)
         return _
 
     def iargs_kargs_kwargs(self):
@@ -432,11 +478,8 @@ class Request:
 
     def evaluate(self):
         args_responses, kwargs_responses = self.evaluate_args_kwargs(self.args, self.kwargs)
-        future = Future(self.task, *args_responses, **kwargs_responses)
+        future = Future(self.task, *args_responses, **kwargs_responses).set('throw', self.get('throw', False))
         response = Response(request=self, future=future)
-        future.promise = response
-        if self.lifecycle_callback is not None:
-            self.lifecycle_callback(Task.Lifecycle.BEGIN, self, response)
         return response
 
 
@@ -472,8 +515,6 @@ class Proxy(Request):
 
     def __tag__(self):
         _ = self.request.__tag__()
-        #DEBUG
-        print(f"Proxy: __tag__: {_}")
         return _
     
     def apply(self, functor, *args, **kwargs):
@@ -579,7 +620,7 @@ class Report:
         valid_logs = 0
         valid_logs += sum([s['logs_valid'] for s in args_transcripts if 'logs_valid' in s])
         valid_logs += sum([s['logs_valid'] for s in kwargs_transcripts.values() if 'logs_valid' in s])
-        
+
         if report.request.has('summary'):
             transcript['result'] = f"SUMMARY: {report.request.get('summary')(report.result)}"
         else:
@@ -690,14 +731,26 @@ class Response:
                  request,
                  future,
                  *,
+                 start_time = None,
                  done_callback=None):
         self.request = request
         self.future = future
-        self._done_callback = done_callback
-        self.start_time = datetime.datetime.now()
+        self.start_time = start_time if start_time is not None else datetime.datetime.now()
         self.done_time = None
+        if self.request.lifecycle_callback is not None:
+                    self.request.lifecycle_callback(Task.Lifecycle.BEGIN, self.request, self)
         self.future.add_done_callback(self.done_callback)
+        if done_callback is not None:
+            self.future.add_done_callback(done_callback)
+    
+    def done_callback(self, _):
+        done_time = datetime.datetime.now()
+        self._done = True
+        self.done_time = done_time
 
+        if self.request.lifecycle_callback is not None:
+            self.request.lifecycle_callback(Task.Lifecycle.END, self.request, self)
+    
     @property
     def key(self):
         return self.request.task.key
@@ -740,7 +793,7 @@ class Response:
 
     def result(self):
         result = self.future.result()
-        if self.future.exception() is not None:
+        if self.future.exception() is not None and self.request.get('throw', False):
             raise self.future.exception().with_traceback(self.future.traceback())
         else:
             return result 
@@ -815,25 +868,8 @@ class Response:
             else:
                 r = logfile.read(size)
         return r
-
-    @staticmethod
-    def done_callback(future):
-        response = future.promise
-        done_time = datetime.datetime.now()
-        response._done = True
-        response.done_time = done_time
-
-        request = response.request
-        stage = Task.Lifecycle.END
-        if request.lifecycle_callback is not None:
-            request.lifecycle_callback(stage, request, response)
-        
-        if response._done_callback is not None:
-            response._done_callback(future)
             
 
-
-"""
 class Literal(Response):
     def __init__(self, request):
         super().__init__(request, request)
@@ -847,7 +883,7 @@ class Literal(Response):
     @property
     def done(self):
         return True
-"""
+
 
 class Closure(Response):
     def __init__(self, request):
@@ -915,18 +951,24 @@ class LAST(FIRST):
 """
 
 
+def ALL(*args):
+    return args
+
+
 def AND(first, func, *args, **kwargs):
     # ignores `first`, but it gets evaluated before being fed in
+
     _ = func(*args, **kwargs)
     return _
 
 
-def SECOND(first: Request, second: Request):
+def SECOND(first: Request, second: Request) -> Request:
     request = second.redefine(AND, first, second.task, *second.args, **second.kwargs)
     return request
 
 
-def LAST(head: Request, *tail: list[Request]):
+def LAST(head: Request, *tail: list[Request]) -> Request:
+
     if len(tail) == 0:
         return head
     else:
@@ -935,7 +977,7 @@ def LAST(head: Request, *tail: list[Request]):
         return _
     
 
-def NONE():
+def NONE() -> Request:
     def none():
         return None
     return Request(none)
@@ -1166,13 +1208,12 @@ class Graph:
 
     @property
     def request(self):
-        #DEBUG
-        #print(f"request: {self}")
-        request_reprstr = self.transcript['request'] if 'request' in self.transcript else None
-        if request_reprstr is None:
+        requestrepr = self.transcript['request'] if 'request' in self.transcript else None
+        if requestrepr is None:
             return None
-        requestrepr = eval(request_reprstr)
         request = eval(requestrepr)
+        if isinstance(request, str):
+            request = eval(request)
         return request
         '''
         requeststr = truncate_str(str(request), self.request_max_len, use_ellipsis=True) if request else None
@@ -1311,31 +1352,3 @@ class ReportSummaryGraph(Graph):
 def report_transcript_graph(*args, **kwargs):
     return report_graph(*args, **kwargs) 
 
-
-@DEPRECATED
-def report_transcript_truncate(transcript, *, result_max_len=50, request_max_len=50):
-    if isinstance(transcript, dict):
-        transcript_ = {}
-        for key, val in transcript.items():
-            if key == 'result':
-                resultstr = str(val)
-                transcript_['result'] = f"\"\"\"{truncate_str(resultstr, result_max_len, use_ellipsis=True)}...\"\"\""
-            elif key == 'request':
-                requeststr = str(val)
-                transcript_['request'] = f"\"\"\"{truncate_str(requeststr, request_max_len, use_ellipsis=True)}...\"\"\""
-            else:
-                transcript_[key] = copy.copy(val)
-            if key == 'args_transcripts':
-                transcript_['args_transcripts'] = []
-                for arg_transcript in val:
-                    arg_transcript_ = report_transcript_truncate(arg_transcript, request_max_len=request_max_len, result_max_len=result_max_len)
-                    transcript_['args_transcripts'].append(arg_transcript_)
-            if key == 'kwargs_transcripts':
-                transcript_['kwargs_transcripts'] = {}
-                for kwarg, kwarg_transcript in val.items():
-                    kwarg_transcript_ = report_transcript_truncate(kwarg_transcript, request_max_len=request_max_len, result_max_len=result_max_len)
-                    transcript_['kwargs_transcripts'][kwarg] = kwarg_transcript_
-
-    else:
-        transcript_ = transcript
-    return transcript_

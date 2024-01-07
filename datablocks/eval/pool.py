@@ -26,8 +26,8 @@ import google.auth.transport.requests
 
 import pandas as pd
 
-#import dask as dd
-#import dask.distributed
+import dask as dd
+import dask.distributed
 import ray
 import ray.util
 
@@ -145,9 +145,6 @@ class Logging:
                 now = datetime.datetime.now()
                 badge = f"{now.strftime('%Y-%m-%d')}-{self.pool.timeus()}"
                 self.logname = f"task-{self.id:028d}-{badge}.log"
-                #DEBUG
-                #print(f">>>>>>>> Task: created self.loganame: {self.logname}, self.func: {self.func}")
-                #pdb.set_trace()
 
         def __repr__(self):
             _ = signature.Tagger().repr_ctor(self.__class__, self.pool, self.func, self.cookie)
@@ -184,6 +181,7 @@ class Logging:
 
         def __call__(self, *args, **kwargs):
             """
+            #TODO: this comment may no longer be accurate.
             Rebinds must be allowed upon entry because the pool graph may (re)evaluate args/kwargs at the last minute.
             FIX: reconcile logger vs _logging_; reconcile logging and _logging_
             """
@@ -231,8 +229,10 @@ class Logging:
                     logger.addHandler(handler)
             logger.debug(f"START: Executing task:\ncookie: {self.cookie}, id: {self.id}")
             try:
-                request = Request(self.func, *args, **kwargs)
-                _ = request.compute()
+                #TODO: #REMOVE
+                #request = Request(self.func, *args, **kwargs)
+                #_ = request.compute()
+                _ = self.func(*args, **kwargs)
             finally:
                 logger.debug(f"END: Executing task:\ncookie: {self.cookie}, id: {self.id}")
                 if logstream is not None:
@@ -258,8 +258,6 @@ class Logging:
             self.throw = throw
 
         def submit(self, request):
-            #DEBUG
-            #pdb.set_trace()
             response = Request.evaluate(request) #using super-class's basic evaluation at the innermost level
             future = response.future
             return future
@@ -269,33 +267,38 @@ class Logging:
 
     class Response(Response):
         def __init__(self,
-                     *,
                      request,
-                     pool,
                      future,
+                     *,
                      start_time,
-                     done_callback=None):
+                     done_callback=None,
+                     pool):
+            '''
+            #TODO: #REMOVE
             self.request = request
-            self.pool = pool
             self.future = future
             self.start_time = start_time
-
             self.done_time = None
+            self.future.add_done_callback(self.done_callback)
+            self._done_callback = done_callback
+            '''
+            super().__init__(request, future, start_time=start_time, done_callback=done_callback)
+
+            self.pool = pool
             self._future_result = None
             self._result = None
             self._done = False
             self.task = request.task
-            self._done_callback = done_callback
 
-            future.promise = self
+            future.response = self
 
         def __repr__(self):
             tag = signature.Tagger().repr_ctor(self.__class__,
                                            request=self.request,
                                            pool=self.pool,
                                            future=self.future,
-                                           start_time=start_time,
-                                           done_callback=done_callback)
+                                           start_time=self.start_time,
+                                           done_callback=self.done_callback)
             return tag
 
         def __str__(self):
@@ -417,7 +420,7 @@ class Logging:
         self._ids = None
 
     def clone(self, **kwargs):
-        state = self.__getstate__()[0]
+        state = self.__getstate__()
         state.update(**kwargs)
         clone = self.__class__(**state)
         return clone
@@ -507,7 +510,7 @@ class Logging:
         _dataspace, _key, _version = ids.lookup_id(id)
         if _dataspace != dataspace_:
             raise ValueError(
-                f"Task id {id} pool dataspace mismatch: key: {key}\n\texpected:  {dataspace_}\n\tlooked up: {_dataspace} in db {db}")
+                f"Task id {id} pool dataspace mismatch: key: {key}\n\texpected:  {dataspace_}\n\tlooked up: {_dataspace} in ids db {ids}")
         if _key != key_:
             raise ValueError(
                 f"Task id {id} normalized key mismatch: \texpected: {key_}, looked up:{_key} in db {self.db}")
@@ -531,8 +534,6 @@ class Logging:
 
         delayed = self._delay_request(request.with_throw(self.throw))
         start_time = datetime.datetime.now()
-        #DEBUG
-        #pdb.set_trace()
         future = self._submit_delayed(delayed)
         logger.debug(f"Submitted delayed request based on task "
                      f"with id {request.task.id} "
@@ -556,8 +557,6 @@ class Logging:
 
     def _delay_request(self, request):
         _args, _kwargs = self._delay_request_args_kwargs(request)
-        #DEBUG
-        #pdb.set_trace()
         delayed = request.rebind(*_args, **_kwargs)
         return delayed
 
@@ -668,7 +667,7 @@ class Dask(Logging):
     def as_completed(self, responses):
         futures = (r.future for r in responses)
         for f in dd.distributed.as_completed(futures):
-            yield f.promise
+            yield f.response
 
     def _submit_delayed(self, delayed):
         future = self.client.compute(delayed)
@@ -799,7 +798,7 @@ class Ray(Logging):
     def as_completed(self, responses):
         futures = (r.future for r in responses)
         for f in concurrent.futures.as_completed(futures):
-            yield f.promise
+            yield f.response
 
     def evaluate(self, request):
         assert isinstance(request, self.__class__.Request)
@@ -891,7 +890,7 @@ class Multiprocess(Logging):
     def as_completed(self, responses):
         futures = (p.future for p in responses)
         for f in concurrent.futures.as_completed(futures):
-            yield f.promise
+            yield f.response
 
 
 class HTTP(Logging):
@@ -941,6 +940,7 @@ class HTTP(Logging):
                 logger.debug(f"Response status_code: {http_response.status_code}")
                 response_pickle = http_response.content
             else:
+                #FIX: serve
                 response_pickle = serve._eval(request_pickle, throw=self.pool.throw)
             response = pickle.loads(response_pickle)
             if 'result' in response:
@@ -1035,7 +1035,7 @@ class HTTP(Logging):
         return delayed
 
 
-def print_all_promises(tasks):
+def print_all_responses(tasks):
     import time
     print(len(tasks))
     for i, t in enumerate(tasks):
@@ -1043,7 +1043,7 @@ def print_all_promises(tasks):
         time.sleep(0.03)
 
 
-def done_running_failed_pending_promises(tasks, include_failed=True, *, delay_secs=0.0, details=False):
+def done_running_failed_pending_responses(tasks, include_failed=True, *, delay_secs=0.0, details=False):
     import time
     done = {i: t for i, t in enumerate(tasks) if t.done and t.exception() is None}
     print(f"Done: {len(done)}")
@@ -1077,7 +1077,7 @@ def done_running_failed_pending_promises(tasks, include_failed=True, *, delay_se
     return done, running, failed, pending
 
 
-def ipromise_results(itasks):
+def iresponse_results(itasks):
     print(f"{len(itasks)}")
     for i, t in itasks.items():
         run_time = t.done_time - t.start_time if t.done_time is not None else 0
@@ -1085,7 +1085,7 @@ def ipromise_results(itasks):
         print(f"{i}: {tag}: {t.result()}: run_time: {run_time}")
 
 
-def ipromise_logs(itasks):
+def iresponse_logs(itasks):
     import time
     print(f"{len(itasks)}")
     for i, t in itasks.items():
