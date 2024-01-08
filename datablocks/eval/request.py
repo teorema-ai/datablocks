@@ -23,20 +23,17 @@ class ArgResponseException(Exception):
     def __init__(self, arg):
         self.arg = arg
     
-    def __str__(self):
-        _ = str(self.arg.exception())
+    def __repr__(self):
+        tagger = signature.Tagger()
+        _ = tagger.repr_ctor(ArgResponseException, self.arg)
         return _
 
 
-class KwArgResponseException(Exception):
+class KwArgResponseException(ArgResponseException):
     def __init__(self, key, arg):
         self.key = key
         self.arg = arg
     
-    def __str__(self):
-        _ = str(self.arg.exception())
-        return _
-
 
 class Future:
     def __init__(self, func, *args_responses, **kwargs_responses):
@@ -155,11 +152,11 @@ class Task:
         return _
 
     def __repr__(self):
-        repr = signature.Tagger().repr_ctor(self.__class__, self.func)
+        repr = signature.Tagger().repr_ctor(Task, self.func)
         return repr
 
     def __str__(self):
-        str = signature.Tagger().str_ctor(self.__class__, self.func)
+        str = signature.Tagger().str_ctor(Task, self.func)
         return str
     
 
@@ -602,7 +599,7 @@ class Report:
                        completed=(report.status in [Report.STATUS.SUCCEEDED, Report.STATUS.FAILED]),
                        success=(report.status in [Report.STATUS.SUCCEEDED]),
                        status=str(report.status),
-                       exception=str(report.exception),
+                       exception=repr(report.exception),
                        traceback=utils.exc_traceback_string(report.traceback),
                        start_time=str(report.start_time),
                        done_time=str(report.done_time),
@@ -736,7 +733,9 @@ class Response:
         self.request = request
         self.future = future
         self.start_time = start_time if start_time is not None else datetime.datetime.now()
+        self._done = False
         self.done_time = None
+        self._done_callback = done_callback # needed for __repr__()
         if self.request.lifecycle_callback is not None:
                     self.request.lifecycle_callback(Task.Lifecycle.BEGIN, self.request, self)
         self.future.add_done_callback(self.done_callback)
@@ -775,7 +774,9 @@ class Response:
     def __repr__(self):
         return signature.Tagger().repr_ctor(self.__class__,
                                          self.request,
-                                         self.future)
+                                         self.future,
+                                         start_time=self.start_time,
+                                         done_callback=self._done_callback)
                                 
     def __tag__(self):
         return signature.Tagger().tag_ctor(self.__class__,
@@ -1221,7 +1222,22 @@ class Graph:
         '''
 
     @property
+    def exception(self):
+        #TODO: eval() before returning?  Is this safe?  Use generic __getattr__()?
+        if 'exception' in self.transcript:
+            exception = self.transcript['exception']
+            while isinstance(exception, str):
+                try:
+                    exception = eval(exception)
+                except:
+                    break
+        else:
+            exception = None
+        return exception
+
+    @property
     def result(self):
+        #TODO: eval() before returning?  Is this safe?  Use generic __getattr__()?
         result = self.transcript['result'] if 'result' in self.transcript else None
         return result
         '''
@@ -1315,6 +1331,7 @@ class Graph:
         return s
     
     def __getattr__(self, attrname):
+        #TODO: eval() before returning?  Is this safe?
         attr = self.transcript[attrname]
         return attr
 

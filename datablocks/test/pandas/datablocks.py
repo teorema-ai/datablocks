@@ -9,6 +9,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 import datablocks
+from datablocks import signature
 import datablocks.dbx
 from datablocks.dbx import Datablock
 
@@ -80,21 +81,23 @@ class PandasMultiplier(PandasAbstractDatablock):
         self.print_verbose(f"Wrote dataframe to {datapath}")
 
 class BuildException(RuntimeError):
-    pass
+    def __repr__(self):
+        return signature.Tagger().repr_ctor(self.__class__)
 
 class BuildExceptionDatablock(Datablock):
     def build(self):
-        raise BuildException("TestBuildExceptionDatablock")
+        raise BuildException()
 
 class ReadException(RuntimeError):
-    pass
+    def __repr__(self):
+        return signature.Tagger().repr_ctor(self.__class__)
 
 class ReadExceptionDatablock(Datablock):
     def build(self):
         pass
 
     def read(self):
-        raise ReadException("TestReadExceptionDatablock")
+        raise ReadException()
 
 
 def test_scope():

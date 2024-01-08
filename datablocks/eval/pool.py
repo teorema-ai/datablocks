@@ -147,7 +147,7 @@ class Logging:
                 self.logname = f"task-{self.id:028d}-{badge}.log"
 
         def __repr__(self):
-            _ = signature.Tagger().repr_ctor(self.__class__, self.pool, self.func, self.cookie)
+            _ = signature.Tagger().repr_ctor(Logging.Task, self.pool, self.func, self.cookie)
             return _
 
         def __setstate__(self, state):
@@ -271,38 +271,25 @@ class Logging:
                      future,
                      *,
                      start_time,
+                     pool,
                      done_callback=None,
-                     pool):
-            '''
-            #TODO: #REMOVE
-            self.request = request
-            self.future = future
-            self.start_time = start_time
-            self.done_time = None
-            self.future.add_done_callback(self.done_callback)
-            self._done_callback = done_callback
-            '''
+        ):
             super().__init__(request, future, start_time=start_time, done_callback=done_callback)
 
             self.pool = pool
             self._future_result = None
             self._result = None
-            self._done = False
             self.task = request.task
-
             future.response = self
 
         def __repr__(self):
-            tag = signature.Tagger().repr_ctor(self.__class__,
-                                           request=self.request,
-                                           pool=self.pool,
-                                           future=self.future,
-                                           start_time=self.start_time,
-                                           done_callback=self.done_callback)
-            return tag
-
-        def __str__(self):
-            return repr(self)
+            return signature.Tagger().repr_ctor(self.__class__,
+                                            self.request,
+                                            self.future,
+                                            start_time=self.start_time,
+                                            pool=self.pool,
+                                            done_callback=self._done_callback,
+            )
         
     class Request(Request):
         def __init__(self, pool, cookie, func, *args, **kwargs):

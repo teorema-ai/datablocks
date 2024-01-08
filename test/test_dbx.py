@@ -2,18 +2,27 @@ import datablocks
 import datablocks.dataspace
 from datablocks.eval.request import Request
 
+from datablocks.eval.request import ArgResponseException
+from datablocks.test.pandas.datablocks import BuildException
+
+
 TESTLAKE = datablocks.dataspace.Dataspace.temporary()
 TEST_FILE_POOL = datablocks.FILE_POOL.clone(dataspace=TESTLAKE, throw=False)
 VERBOSE = True
 
 
-def _test_exception(dbx, topic=None, *, verbose=True):
+def _test_build_exception(dbx, topic=None, *, verbose=True, exception_cls):
     if verbose:
         print(f"intent: {dbx}:\n", str(dbx.intent().pretty()))
-    response = dbx.build_request().evaluate()
-    response.result()
-    assert dbx.show_build_graph().exception != 'None', "Missing exception"
+    dbx.build_request().compute()
+
+    e = dbx.show_build_graph().exception
+    assert isinstance(e, ArgResponseException) , f"Incorrect exception: type: {type(e)}, {e}"
     assert len(dbx.show_build_graph().traceback) > 0, "Missing traceback"
+
+    _e = dbx.show_build_batch_graph().exception
+    assert isinstance(_e, exception_cls) , f"Incorrect exception: type: {type(_e)}, {_e}"
+    assert len(dbx.show_build_batch_graph().traceback) > 0, "Missing traceback"
         
 
 def _test(dbx, topic=None, *, build=True, read=False, show=True, check_batch_graph=True, check_batch_exception=False, clear=False, verbose=True):
@@ -64,8 +73,8 @@ def _test(dbx, topic=None, *, build=True, read=False, show=True, check_batch_gra
         assert len(dbx.show_build_batch_graph().logpath) > 0, "Empty logpath"
         assert len(dbx.show_build_batch_graph().log()) > 0, "Empty log"
         assert len(dbx.show_build_batch_graph().result) > 0, "Empty result"
-        assert dbx.show_build_batch_graph().exception == 'None', "Unexpected exception"
         assert len(dbx.show_build_batch_graph().traceback) == 0, "Unexpected traceback"
+        assert dbx.show_build_graph().exception is None, f"Unexpected exception: type: {type(dbx.show_build_graph().exception)}, {dbx.show_build_graph().exception}"
 
     if clear:
         dbx.UNSAFE_clear()
@@ -131,7 +140,7 @@ def test_pandas_datablock():
     _test(pdbk, check_batch_graph=False)
 
 
-def test_pandas_exception():
+def test_pandas_build_exception():
     pexc = datablocks.DBX('datablocks.test.pandas.datablocks.BuildExceptionDatablock', 'pexc')\
             .Databuilder(dataspace=TESTLAKE, pool=TEST_FILE_POOL)
-    _test_exception(pexc)
+    _test_build_exception(pexc, exception_cls=BuildException)
