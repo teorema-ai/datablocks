@@ -351,10 +351,10 @@ class Databuilder(Anchored, Scoped):
                  dataspace=DATALAKE,
                  tmpspace=None,
                  lock_pages=False,
-                 throw=True,
                  rebuild=False,
                  pool=STDOUT_POOL,
                  build_block_request_lifecycle_callback=None,
+                 throw=None,
                  verbose=False,
                  debug=False,          
     ):
@@ -370,6 +370,7 @@ class Databuilder(Anchored, Scoped):
         self.reload = rebuild
         self.pool = pool
         self.build_block_request_lifecycle_callback = build_block_request_lifecycle_callback
+        self.throw = throw
         self.verbose = verbose
         self.debug = debug
         if self.lock_pages:
@@ -455,6 +456,8 @@ class Databuilder(Anchored, Scoped):
     
     def block_extent_pathpage_request(self, topic, **scope):
         _ = Request(self.block_extent_pathpage, topic, **scope)
+        if self.throw is not None:
+            _ = _.set(throw=self.throw)
         return _
 
     def block_shortfall_pathpage(self, topic, **scope):
@@ -711,7 +714,11 @@ class Databuilder(Anchored, Scoped):
         _shortfall_batch_requests = \
             [self._build_batch_request_(self._tagscope_(**shortfall_batchscope_list[i]), **shortfall_batchscope_list[i])
                             .apply(self.pool) for i in range(len(shortfall_batchscope_list))]
-        shortfall_batch_requests = [_.apply(self.pool) for _ in _shortfall_batch_requests]
+        shortfall_batch_requests_ = [_.apply(self.pool) for _ in _shortfall_batch_requests]
+        if self.throw is not None:
+            shortfall_batch_requests = [_.set(throw=self.throw) for _ in shortfall_batch_requests_]
+        else:
+            shortfall_batch_requests = shortfall_batch_requests_
         shortfall_batch_requests_tags = "[" + \
                                           ", ".join(tag(_) for _ in shortfall_batch_requests) + \
                                           "]"
@@ -722,6 +729,8 @@ class Databuilder(Anchored, Scoped):
         extent_request = Request(self.block_extent, **tagscope)
         requests = shortfall_batch_requests + [extent_request]
         build_block_pathbook_request = Request(ALL, *requests)
+        if self.throw is not None:
+            build_block_pathbook_request = build_block_pathbook_request.set(throw=throw)
         #TODO: #FIX
         #build_block_pathbook_request = LAST(*shortfall_batch_requests) if len(shortfall_batch_requests) > 0 else NONE()
         if len(shortfall_batchscope_list) > 0 and self.build_block_request_lifecycle_callback is not None:
@@ -903,7 +912,7 @@ class DBX:
                 dataspace=DATALAKE,
                 tmpspace=None,
                 lock_pages=False,
-                throw=True,
+                throw=None,
                 rebuild=False,
                 pool=STDOUT_POOL,
                 verbose=False,
@@ -956,7 +965,7 @@ class DBX:
             pool=pool,
             tmpspace=tmpspace, # derive from dataspace?
             lock_pages=lock_pages,
-            throw=throw, # fold into `pool`?
+            throw=throw, 
             rebuild=rebuild, # move to build()?
             verbose=verbose,
             debug=debug,
@@ -1510,7 +1519,7 @@ class DBX:
             datablock_shardroots = self.datablock_batchroots(tagscope, ensure=True)
             dbk = self.datablock(datablock_shardroots, scope=datablock_batchscope, filesystem=self.dataspace.filesystem)
             if self.verbose:
-                print(f"DBX: building batch for datablock {dbk} constructed with kwargs {self.datablock_kwargs}")
+                print(f"DBX: building batch for datablock {type(dbk)}: {dbk} constructed with kwargs {self.datablock_kwargs}")
             dbk.build()
             _ = self.block_extent_pathbook(**tagscope)
             return _
