@@ -137,7 +137,7 @@ def test_mircoseq():
     
 
 def test_pandas_datablock():
-    pdbk = datablocks.DBX('datablocks.test.pandas.datablocks.PandasArray', f"pdbk")\
+    pdbk = datablocks.DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk')\
         .Databuilder(dataspace=TESTLAKE)
     _test(pdbk, check_batch_graph=False)
 

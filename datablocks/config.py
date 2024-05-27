@@ -21,8 +21,16 @@ if 'DATABLOCKS_LOG_LEVEL' in os.environ:
 else:
     DATABLOCKS_LOG_LEVEL = "INFO"
     
-DATABLOCKS_DATALAKE_URL = os.path.join(f'{HOME}', '.cache', 'datalake')
-DATABLOCKS_HOMELAKE_URL = os.path.join('{HOME}', '.cache', 'datalake')
+if 'DATABLOCKS_DATALAKE' in os.environ: 
+    DATABLOCKS_DATALAKE_URL = os.environ['DATABLOCKS_DATALAKE']
+elif 'DATALAKE' in os.environ:
+    DATABLOCKS_DATALAKE_URL = os.environ['DATALAKE']
+else:
+    DATABLOCKS_DATALAKE_URL = os.path.join(f'{HOME}', '.cache', 'datalake')
+
+
+DATABLOCKS_HOMELAKE_URL = os.path.join('{HOME}', '.cache', 'datalake') # used for transcription
+
 
 DATABLOCKS_CONSUL_HOST = None #'127.0.0.1'
 DATABLOCKS_CONSUL_PORT = None #'8500'

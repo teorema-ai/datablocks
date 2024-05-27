@@ -519,11 +519,21 @@ class Dataspace:
     def list(self):
         return self.listdir(self.path)
 
-    def isdir(self, path):
-        return self.filesystem.isdir(path)
+    def isdir(self, path, relative=False):
+        if not relative:
+            print(f"DEPRECATED: use of Dataspace.isdir() with an absolute path {path}")
+            fullpath = path
+        else:
+            fullpath = self.subspace(path).path
+        return self.filesystem.isdir(fullpath)
     
-    def isfile(self, path):
-        return self.filesystem.isfile(path)
+    def isfile(self, path, relative=False):
+        if not relative:
+            print(f"DEPRECATED: use of Dataspace.isfile() with an absolute path {path}")
+            fullpath = path
+        else:
+            fullpath = self.subspace(path).path
+        return self.filesystem.isfile(fullpath)
 
 DATABLOCKS_DATALAKE = Dataspace(config.DATABLOCKS_DATALAKE_URL)
 DATABLOCKS_HOMELAKE = Dataspace(config.DATABLOCKS_HOMELAKE_URL)

@@ -844,7 +844,7 @@ class DBX:
                 _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, dbx=self.dbx, revision=self.revision, topic=self.topic)
             return _
 
-    class Reader(Request):
+    class ReadRequest(Request):
         @property
         def request(self):
             _ = self.dbx.read_request(topic=self.topic)
@@ -857,7 +857,7 @@ class DBX:
             tag = tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else tag_+":"
             return tag
     
-    class Pather(Reader):
+    class PathRequest(ReadRequest):
         @property
         def request(self):
             _ = self.dbx.path_request(topic=self.topic)
@@ -868,7 +868,8 @@ class DBX:
             tag = f"[{_tag}]"
             return tag
 
-    class Builder(request.Proxy):
+    class BuildRequest(request.Proxy):
+        # TODO: impl: what are the use cases? Is provide ProvideRequest a better name?
         pass
 
     class Pool(pool.Logging):
@@ -876,21 +877,23 @@ class DBX:
             self.pool = pool
 
     @staticmethod
-    def show_datablocks(*, dataspace=DATALAKE, pretty_print=True):
+    def show_datablocks(*, dataspace=DATALAKE, pretty_print=True, debug=False):
         def _chase_anchors(_dataspace, _anchorchain=()):
-            filenames = _dataspace.list()
+            pathnames = _dataspace.list()
             anchorchains = []
-            for filename in filenames:
-                if filename.startswith('.'):
+            for pathname in pathnames:
+                if pathname.startswith('.'):
                     continue
-                elif dataspace.isfile(filename):
+                elif _dataspace.isfile(pathname, relative=True):
                     continue
-                elif filename.startswith('revision='):
-                    anchorchain = _anchorchain + (filename,)
+                elif pathname.startswith('revision='):
+                    anchorchain = _anchorchain + (pathname,)
                     anchorchains.append(anchorchain)
+                    if debug:
+                        print(f"DEBUG: show_datablocks(): chase_anchors(): addded anchorchain {anchorchain} with terminal pathname {pathname}")
                 else:
-                    dataspace_ = _dataspace.subspace(filename)
-                    anchorchain_ = _anchorchain+(filename,)
+                    dataspace_ = _dataspace.subspace(pathname)
+                    anchorchain_ = _anchorchain+(pathname,)
                     _anchorchains = _chase_anchors(dataspace_, anchorchain_)
                     anchorchains.extend(_anchorchains)
             return anchorchains
@@ -898,7 +901,17 @@ class DBX:
         datablock_dataspace = dataspace.subspace(DBX_PREFIX)
 
         anchorchains = _chase_anchors(datablock_dataspace)
-        datablocks = {'.'.join(anchorchain[:-1]): anchorchain[-1] for anchorchain in anchorchains}
+        if debug:
+            print(f"DEBUG: show_datablocks(): anchorchains: {anchorchains}")
+
+        datablocks = {}
+        for anchorchain in anchorchains:
+            path = '.'.join(anchorchain[:-1])
+            revision = anchorchain[-1]
+            if path in datablocks:
+                datablocks[path].append(revision)
+            else:
+                datablocks[path] = [revision]
         if pretty_print:
                 for key, value in datablocks.items():
                     print(f"{key}: {value}")
@@ -918,7 +931,7 @@ class DBX:
                 verbose=False,
                 debug=False,  
                 pic=False,
-                alias_dataspace=False,
+                alias_dataspace=True,
     ):
         self.alias = alias
         self.debug = debug
@@ -941,6 +954,9 @@ class DBX:
             self.datablock_cls = datablock_cls_or_clstr
             self.datablock_module_name = self.datablock_cls.__module__
             self.datablock_clstr = f"{self.datablock_module_name}.{self.datablock_cls.__name__}"
+
+        self.dataspace = dataspace
+        self.pool = pool
 
         self.datablock_kwargs = {}
         @functools.wraps(self.datablock_cls)
@@ -1020,7 +1036,7 @@ class DBX:
         if self._scope is not None:
             _scope = {}
             for key, val in self._scope.items():
-                if isinstance(val, DBX.Reader) or isinstance(val, DBX.Pather):
+                if isinstance(val, DBX.ReadRequest) or isinstance(val, DBX.PathRequest):
                     _scope[key] = val.with_pic(pic)
                 else:
                     _scope[key] = val
@@ -1063,7 +1079,7 @@ class DBX:
     def databuilder(self):
         databuilder_cls = self._make_databuilder_class()
         databuilder_kwargs = self.databuilder_kwargs
-        databuilder_kwargs['dataspace'] = databuilder_kwargs['dataspace'].with_pic(True)
+        databuilder_kwargs['dataspace'] = databuilder_kwargs['dataspace'].with_pic(True) #TODO: why with_pick(True)?
         databuilder = databuilder_cls(self.alias, 
                                       build_block_request_lifecycle_callback=self._build_block_request_lifecycle_callback_,
                                       **databuilder_kwargs)
@@ -1149,11 +1165,11 @@ class DBX:
         return request
 
     def PATH(self, topic=None):
-        _ = DBX.Pather(dbx=self, revision=self.databuilder.revision, topic=topic, pic=self.pic)
+        _ = DBX.PathRequest(dbx=self, revision=self.databuilder.revision, topic=topic, pic=self.pic)
         return _
 
     def READ(self, topic=None):
-        _ = DBX.Reader(dbx=self, topic=topic, revision=self.databuilder.revision, pic=self.pic)
+        _ = DBX.ReadRequest(dbx=self, topic=topic, revision=self.databuilder.revision, pic=self.pic)
         return _
     
     def read(self, topic=DEFAULT_TOPIC):
@@ -1189,7 +1205,7 @@ class DBX:
 
     def show_build_records(self, *, stage='ALL', full=False, columns=None, all=False, tail=5):
         """
-        All build records for a given Databuilder class, irrespective of alias and revision (see `list()` for more specific).
+        All build records for a given Databuilder class, irrespective of revision (see `show_build_record()` for retrieval of more specific information).
         'all=True' forces 'tail=None'
         """
         short = not full
@@ -1233,7 +1249,15 @@ class DBX:
         else:
             __frame = _frame
         
-        return __frame
+        if self.alias is not None:
+            if 'alias' not in __frame:
+                print(f"WARNING: no 'alias' in records dataframe (legacy records?).  Returning all records.")
+                __frame_ = __frame
+            else:
+                __frame_ = __frame[__frame['alias'] == self.alias]
+        else:
+            __frame_ = __frame
+        return __frame_
 
     def show_build_record_columns(self, *, full=True, **ignored):
         frame = self.show_build_records(full=full)
@@ -1301,8 +1325,8 @@ class DBX:
             graph = _graph
         return graph
 
-    def show_build_batch_graph(self, *, record=None, batch=0, **kwargs):
-        g = self.show_build_graph(record=record, node=(batch,), **kwargs) # argument number `batch` to the outermost Request AND
+    def show_build_batch_graph(self, *, record=None, batch=0, **graph_kwargs):
+        g = self.show_build_graph(record=record, node=(batch,), **graph_kwargs) # argument number `batch` to the outermost Request AND
         return g
     
     def show_build_batch_count(self, *, record=None):
@@ -1467,7 +1491,7 @@ class DBX:
         @property
         def revisionspace(self):
             if self.alias is not None:
-                _ = self.anchorspace.subspace(self.alias, f"revision={str(self.revision)}",)
+                _ = self.anchorspace.subspace(f"@{self.alias}", f"revision={str(self.revision)}",)
             else:
                 _ = self.anchorspace.subspace(f"revision={str(self.revision)}",)
             return _
@@ -1624,8 +1648,8 @@ class DBX:
             Examples:
             * Bash definitions (pic dataspace DATABLOCKS_PICLAKE)
             ```
-            export MIRCOHN="datablocks.DBX('datablocks.test.micron.datasets.miRCoHN', 'mircohn').Databuilder(dataspace=datablocks.DATABLOCSK_PICLAKE).Datablock(verbose=True)"
-            export MIRCOS="datablocks.DBX('datablocks.test.micron.datasets.miRCoStats', 'mircoshn').Databuilder(dataspace=datablocks.DATABLOCKS_PICLAKE).Datablock(verbose=True).SCOPE(mirco=$MIRCOHN.reader('counts'))"
+            export MIRCOHN="datablocks.DBX('datablocks.test.micron.datasets.miRCoHN', 'mircohn').Databuilder(dataspace=datablocks.DATABLOCKS_PICLAKE).Datablock(verbose=True)"
+            export MIRCOS="datablocks.DBX('datablocks.test.micron.datasets.miRCoStats', 'mircoshn').Databuilder(dataspace=datablocks.DATABLOCKS_PICLAKE).Datablock(verbose=True).SCOPE(mirco=$MIRCOHN.ReadRequest('counts'))"
             ```
             * Echo expanded definitions
             ```
@@ -1681,13 +1705,13 @@ class DBX:
             if len(dbx.scope):
                 _blockscope  = f"{dbx.datablock_clstr}.SCOPE(\n"
                 for key, arg in dbx.scope.items():
-                    if isinstance(arg, DBX.Pather):
+                    if isinstance(arg, DBX.PathRequest):
                         if arg.topic is None:
                             path = f"{arg.dbx.alias}.roots"
                         else:
                             path = f"{arg.dbx.alias}.roots[{repr(arg.topic)}]"
                         _blockscope += f"\t\t{key}={path},\n"
-                    elif isinstance(arg, DBX.Reader):
+                    elif isinstance(arg, DBX.ReadRequest):
                         topicarg = f"{repr(arg.topic)}" if arg.topic is not None else ""
                         _blockscope += f"\t\t{key}={arg.dbx.alias}.read({topicarg}),\n"
                     else:
