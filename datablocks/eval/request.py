@@ -33,6 +33,11 @@ class KwArgResponseException(ArgResponseException):
     def __init__(self, key, arg):
         self.key = key
         self.arg = arg
+
+    def __repr__(self):
+        tagger = signature.Tagger()
+        _ = tagger.repr_ctor(KwArgResponseException, self.key, self.arg)
+        return _
     
 
 class Future:
@@ -76,8 +81,6 @@ class Future:
         return signature.Tagger().repr_ctor(self.__class__, self.func, *self.args_responses, **self.kwargs_responses)
 
     def compute(self):
-        #DEBUG
-        #pdb.set_trace()
         if not self._done:
             try:
                 for arg in self.args_responses:
@@ -1230,6 +1233,7 @@ class Graph:
                 try:
                     exception = eval(exception)
                 except:
+                    print(f"WARNING: Graph: Failed to eval exception {exception}")
                     break
         else:
             exception = None

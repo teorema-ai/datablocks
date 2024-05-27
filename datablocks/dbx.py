@@ -773,7 +773,7 @@ class DBX:
 
     RECORD_SCHEMA_REVISION = '0.3.0'
 
-    class Request(request.Proxy):
+    class ProxyRequest(request.Proxy):
         @staticmethod
         def parse_url(url: str, **datablock_kwargs):
             #url = {classtr}@{revision}|{alias}:{topic}
@@ -797,27 +797,39 @@ class DBX:
             dbx = DBX(datablock_clstr, alias, **datablock_kwargs)
             return dbx, revision, topic
 
-        def __init__(self, url=None, *, dbx, revision, topic, pic=False):
-            self.url = url
-            if self.url is None:
-                self.dbx, self.revision, self.topic = dbx, revision, topic
+        def __init__(self, kind: str, spec: Union[str, tuple], pic=False):
+            """
+                kind: 'READ' | 'PATH'
+                spec: url | (dbx, revision, topic)
+            """
+            self.kind = kind
+            self.spec = spec
+            if isinstance(self.spec, tuple):
+                self.dbx, self.revision, self.topic = spec
             else:
-                self.dbx, revision, self.topic = self.parse_url(url)
+                self.dbx, self.revision, self.topic = self.parse_url(spec)
             self.pic = pic
             self.dbx = self.dbx.with_pic(pic=pic)
             if hasattr(self.dbx.datablock_cls, 'TOPICS'):
-                if topic not in self.dbx.datablock_cls.TOPICS:
-                    raise ValueError(f"Topic {topic} not from among {self.dbx.datablock_cls.TOPICS}")
+                if self.topic not in self.dbx.datablock_cls.TOPICS:
+                    raise ValueError(f"Topic {self.topic} not from among {self.dbx.datablock_cls.TOPICS}")
             if not pic:
-                if dbx.databuilder.revision != revision:
-                    raise ValueError(f"Incompatible revision {revision} from url for dbx {dbx}")
+                if self.dbx.databuilder.revision != self.revision:
+                    raise ValueError(f"Incompatible revision {self.revision} for dbx {self.dbx}")
             else:
-                if dbx.databuilder.revision != revision.format and\
-                    revision == f"{dbx.__class__.__qualname__}.REVISION":
-                        raise ValueError(f"Incompatible revision {revision} from url for dbx {dbx}")
+                if self.dbx.databuilder.revision != self.revision.format and\
+                    self.revision == f"{self.dbx.__class__.__qualname__}.REVISION":
+                        raise ValueError(f"Incompatible revision {self.revision} for dbx {self.dbx}")
+            if kind == 'READ':
+                request = self.dbx.read_request(topic=self.topic)
+            elif kind == 'PATH':
+                request = self.dbx.path_request(topic=self.topic)
+            else:
+                raise ValueError(f"Unknown ProxyRequest kind: '{kind}'")
+            super().__init__(request)
 
         def with_pic(self, pic=True):
-            _ = self.__class__(self.url, dbx=self.dbx, revision=self.revision, topic=self.topic, pic=pic)
+            _ = self.__class__(self.spec, pic=pic)
             return _
 
         def __ne__(self, other):
@@ -838,43 +850,23 @@ class DBX:
             return _ 
         
         def __repr__(self):
-            if self.url is not None:
-                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, self.url)
-            else:
-                _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, dbx=self.dbx, revision=self.revision, topic=self.topic)
+            _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, self.spec, pic=self.pic)
             return _
 
-    class ReadRequest(Request):
-        @property
-        def request(self):
-            _ = self.dbx.read_request(topic=self.topic)
-            return _
-        
         def __tag__(self):
             _tag__ = f"{DBX_PREFIX}.{self.dbx.datablock_clstr}"
             tag__ = _tag__+f"@{self.dbx.databuilder.revision}"
             tag_ =  tag__+f"#{self.dbx.alias}" if self.dbx.alias is not None else tag__+"#"
             tag = tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else tag_+":"
             return tag
-    
-    class PathRequest(ReadRequest):
-        @property
-        def request(self):
-            _ = self.dbx.path_request(topic=self.topic)
-            return _
+        
+    class ReadRequest(ProxyRequest):
+        def __init__(str, spec: Union[str, tuple], pic=False):
+            super().__init__('READ', spec, pic=pic)
 
-        def __tag__(self):
-            _tag = super().__tag__()
-            tag = f"[{_tag}]"
-            return tag
-
-    class BuildRequest(request.Proxy):
-        # TODO: impl: what are the use cases? Is provide ProvideRequest a better name?
-        pass
-
-    class Pool(pool.Logging):
-        def __init__(self, pool):
-            self.pool = pool
+    class PathRequest(ProxyRequest):
+        def __init__(str, spec: Union[str, tuple], pic=False):
+            super().__init__('PATH', spec, pic=pic)
 
     @staticmethod
     def show_datablocks(*, dataspace=DATALAKE, pretty_print=True, debug=False):
@@ -1036,7 +1028,7 @@ class DBX:
         if self._scope is not None:
             _scope = {}
             for key, val in self._scope.items():
-                if isinstance(val, DBX.ReadRequest) or isinstance(val, DBX.PathRequest):
+                if isinstance(val, DBX.ProxyRequest):
                     _scope[key] = val.with_pic(pic)
                 else:
                     _scope[key] = val
@@ -1133,7 +1125,7 @@ class DBX:
                     print(f"Failed to retrieve scope from build record, ignoring scope of record.")
                 _scope = None
             if _scope is not None and not scopes_equal(blockscope, _scope):
-                raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.__class__} alias {self.alias}")
+                raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.datablock_cls} alias {self.alias}")
         request = self.databuilder.build_block_pathbook_request(**blockscope)
         return request
     
@@ -1165,11 +1157,11 @@ class DBX:
         return request
 
     def PATH(self, topic=None):
-        _ = DBX.PathRequest(dbx=self, revision=self.databuilder.revision, topic=topic, pic=self.pic)
+        _ = DBX.PathRequest((self, self.databuilder.revision, topic), pic=self.pic)
         return _
 
     def READ(self, topic=None):
-        _ = DBX.ReadRequest(dbx=self, topic=topic, revision=self.databuilder.revision, pic=self.pic)
+        _ = DBX.ReadRequest((self, self.databuilder.revision, topic), pic=self.pic)
         return _
     
     def read(self, topic=DEFAULT_TOPIC):
@@ -1649,7 +1641,7 @@ class DBX:
             * Bash definitions (pic dataspace DATABLOCKS_PICLAKE)
             ```
             export MIRCOHN="datablocks.DBX('datablocks.test.micron.datasets.miRCoHN', 'mircohn').Databuilder(dataspace=datablocks.DATABLOCKS_PICLAKE).Datablock(verbose=True)"
-            export MIRCOS="datablocks.DBX('datablocks.test.micron.datasets.miRCoStats', 'mircoshn').Databuilder(dataspace=datablocks.DATABLOCKS_PICLAKE).Datablock(verbose=True).SCOPE(mirco=$MIRCOHN.ReadRequest('counts'))"
+            export MIRCOS="datablocks.DBX('datablocks.test.micron.datasets.miRCoStats', 'mircoshn').Databuilder(dataspace=datablocks.DATABLOCKS_PICLAKE).Datablock(verbose=True).SCOPE(mirco=$MIRCOHN.READ('counts'))"
             ```
             * Echo expanded definitions
             ```
