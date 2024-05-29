@@ -93,12 +93,43 @@ or with an alias -- records specific to this instance of the `Datablock` class
 * Build a datablock
 `dbx "help(datablocks.DBX.build)"`
 ```
->dbx "DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk').Datablock(verbose=True, build_delay_secs=10, echo_delay_secs=1).SCOPE(size=100).build()"
+>dbx ""DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk').Datablock(verbose=True, build_delay_secs=10, echo_delay_secs=1).SCOPE(size=100).build()"
+```
+or in Python
+```
+    response = DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk').Datablock(verbose=True, build_delay_secs=10, echo_delay_secs=1).SCOPE(size=100).build()
+```
+* Check result
+```
+    export PDBK="DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk') # only declaration and alias matter; scope, etc. are retrieved from build records using alias
+    >dbx "$PDBK.show_build_records()"
+    >dbx "$PDBK.show_build_graph().status"
+    >dbx "$PDBK.show_build_graph().exception"
+    >dbx "$PDBK.show_build_graph().traceback"
+    >dbx "$PDBK.show_build_graph().result"
+    >dbx "$PDBK.show_build_graph().log()"
+    >dbx "$PDBK.show_build_batch_count()"
+    >dbx "$PDBK.show_build_batch_graph()"
+```
+or in Python
+```
+    print(response.status)
+    print(response.exception())
+    print(response.traceback())
+    print(response.result())
 ```
 * Read a datablock
 `dbx "help(datablocks.DBX.read)"`
 ```
->dbx "DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk').read()"
+>export PDBK="DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk')"
+>dbx "$PDBK.topics"
+>dbx "$PDBK.scope"
+>dbx "$PDBK.extent"
+>dbx "$PDBK.intent"
+>dbx "$PDBK.valid"
+>dbx "$PDBK.metric"
+>dbx "$PDBK.shortfall"
+>dbx "$PDBK.read()"
 ```
 
 # DEBUGGING

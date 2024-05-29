@@ -24,7 +24,7 @@ STDOUT_RAY_POOL = DATABLOCKS_STDOUT_RAY_POOL
 FILE_RAY_POOL = DATABLOCKS_FILE_RAY_POOL
 
 
-def print_usage(*, console):
+def print_usage(*, console=True):
     if console:
         print(f"""Usage:\nDATALAKE_URL={{DATALAKE_URL}}\\\n"""
                       f"""{sys.argv[0]} --help | \n[package.module, package.module, ...] {{package.module.Class}}({{key}}={{val}},...).{{method}}({{key}}={{val}},...)""")

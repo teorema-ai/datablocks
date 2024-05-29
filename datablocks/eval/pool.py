@@ -436,7 +436,7 @@ class Logging:
         return _
 
     def __str__(self):
-        s = f"{signature.Tagger().ctor_name(self.__class__)}({self.name+', ' if self.name else ''}" + \
+        s = f"{signature.Tagger().ctor_name(self.__class__)}({repr(self.name)+', ' if self.name else ''}" + \
               f"dataspace={self.dataspace})"
         return s
 

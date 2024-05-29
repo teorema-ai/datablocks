@@ -20,23 +20,22 @@ logger = logging.getLogger(__name__)
 
 
 class ArgResponseException(Exception):
-    def __init__(self, arg):
-        self.arg = arg
+    def __init__(self, i):
+        self.i = i
     
     def __repr__(self):
         tagger = signature.Tagger()
-        _ = tagger.repr_ctor(ArgResponseException, self.arg)
+        _ = tagger.repr_ctor(ArgResponseException, self.i)
         return _
 
 
 class KwArgResponseException(ArgResponseException):
-    def __init__(self, key, arg):
+    def __init__(self, key):
         self.key = key
-        self.arg = arg
 
     def __repr__(self):
         tagger = signature.Tagger()
-        _ = tagger.repr_ctor(KwArgResponseException, self.key, self.arg)
+        _ = tagger.repr_ctor(KwArgResponseException, self.key)
         return _
     
 
@@ -602,7 +601,7 @@ class Report:
                        completed=(report.status in [Report.STATUS.SUCCEEDED, Report.STATUS.FAILED]),
                        success=(report.status in [Report.STATUS.SUCCEEDED]),
                        status=str(report.status),
-                       exception=repr(report.exception),
+                       exception=str(report.exception),
                        traceback=utils.exc_traceback_string(report.traceback),
                        start_time=str(report.start_time),
                        done_time=str(report.done_time),
@@ -1233,7 +1232,7 @@ class Graph:
                 try:
                     exception = eval(exception)
                 except:
-                    print(f"WARNING: Graph: Failed to eval exception {exception}")
+                    print(f"WARNING: Graph: Failed to eval exception. Returning unparsed string.")
                     break
         else:
             exception = None
@@ -1347,6 +1346,7 @@ class Graph:
         return g_
 
     def log(self, dataspace=None):
+        #TODO: why this external dataspace?
         if dataspace is None:
             dataspace = self.logspace
         if dataspace is None:

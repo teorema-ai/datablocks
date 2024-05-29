@@ -27,13 +27,19 @@ from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL as STDOUT_POOL, DATABLOCKS
 from .dataspace import DATABLOCKS_DATALAKE as DATALAKE
 
 
-def _eval(string):
+class DbxEvalError(Exception):
+    pass
+
+def dbx_eval(string):
     """
         A version of __builtins__.eval() in the context of impoirted datablocks.datablock.
     """
     import datablocks.dbx
     _eval = __builtins__['eval']
-    _ = _eval(string)
+    try:
+        _ = _eval(string)
+    except Exception as e:
+        raise DbxEvalError(string) from e
     return _
 
 
@@ -1078,22 +1084,24 @@ class DBX:
         return databuilder
 
     @property
-    @functools.lru_cache(maxsize=None)
     def scope(self):
         if self._scope is not None:
             _scope = self._scope
             if self.verbose:
-                print(f"DBX: scope: databuilder {self.databuilder} with revision {self.databuilder.revision} with alias {repr(self.databuilder.alias)}: using specified scope: {self._scope}")
+                print(f"DBX: scope: {self} with datablock revision {self.databuilder.revision} with alias {repr(self.databuilder.alias)}: using specified scope: {self._scope}")
         else:
             record = self.show_named_record(alias=self.databuilder.alias, revision=self.databuilder.revision, stage='END') 
             if record is not None:
-                _scope = _eval(record['scope'])
+                try:
+                    _scope = dbx_eval(record['scope'])
+                except DbxEvalError as ee:
+                    raise ValueError(f"Failed to parse build scope {record['scope']}") from ee
                 if self.verbose:
-                    print(f"DBX: scope: no specified scope for databuilder {self.databuilder} with revision {self.databuilder.revision} with alias {repr(self.databuilder.alias)}: using build record scope: {_scope}")
+                    print(f"DBX: scope: no specified scope for {self} with datablock revision {self.databuilder.revision} with alias {repr(self.databuilder.alias)}: using build record scope: {_scope}")
             else:
                 _scope = {}
                 if self.verbose:
-                    print(f"DBX: scope: no specified scope and no records for databuilder {self.databuilder} with revision {self.databuilder.revision} with alias {repr(self.databuilder.alias)}: using default scope")
+                    print(f"DBX: scope: no specified scope and no records for {self} with datablock revision {self.databuilder.revision} with alias {repr(self.databuilder.alias)}: using default scope")
         return _scope
     
     def build(self):
@@ -1101,8 +1109,8 @@ class DBX:
         response = request.evaluate()
         if self.verbose:
             print(f"task_id: {response.id}")
-        result = response.result()
-        return result
+        response.result()
+        return response
 
     def build_request(self):
         import datablocks
@@ -1118,7 +1126,7 @@ class DBX:
         record = self.show_named_record(alias=self.databuilder.alias, revision=self.databuilder.revision, stage='END') 
         if record is not None:
             try:
-                _scope = _eval(record['scope'])
+                _scope = dbx_eval(record['scope'])
             except Exception as e:
                 # For example, when the scope contains tags of DBX with an earlier revision.
                 if self.verbose:
@@ -1153,7 +1161,7 @@ class DBX:
         if self.scope is None:
             raise ValueError(f"{self} of revision {self.revision} has not been built yet")
         request = self.databuilder.read_block_pathpage_request(topic, **self.scope)\
-            .set(summary=lambda _: self.extent()[topic]) # TODO: #REMOVE?
+            .set(summary=lambda _: self.extent[topic]) # TODO: #REMOVE?
         return request
 
     def PATH(self, topic=None):
@@ -1165,33 +1173,46 @@ class DBX:
         return _
     
     def read(self, topic=DEFAULT_TOPIC):
+        if topic not in self.topics:
+            raise ValueError(f"Unknown topic: '{topic}' not in {self.topics}")
         read_request = self.read_request(topic)
         result = read_request.compute()
         return result
     
+    @property
     def intent(self):
         _ = self.databuilder.block_intent(**self.scope)
         return _
 
+    @property
     def extent(self):
         _ = self.databuilder.block_extent(**self.scope)
         return _
     
-    def extent_metric(self):
-        _ = self.databuilder.block_extent_metric(**self.scope)
-        return _    
-    
-    def valid(self):
-        _ = self.extent()
-        return _
-
-    def metric(self, topic=None):
-        _ = self.extent_metric()
+    @property
+    def shortfall(self):
+        _ = self.databuilder.block_shortfall(**self.scope)
         return _
     
     @property
-    def TOPICS(self):
-        return self.datablock_cls.TOPICS
+    def metric(self):
+        _ = self.databuilder.block_extent_metric(**self.scope)
+        return _    
+    @property
+    def valid(self):
+        _ = self.extent()
+        return _
+    
+    @property
+    def topics(self):
+        if hasattr(self.datablock_cls, 'TOPICS'):
+            if isinstance(self.datablock_cls.TOPICS, dict):
+                topics = list(self.datablock_cls.TOPICS.keys())
+            else:
+                topics = self.datablock_cls.TOPICS
+        else:
+            topics = [DEFAULT_TOPIC]
+        return topics
 
     BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'revision', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
 
@@ -1341,7 +1362,10 @@ class DBX:
         _record = self.show_build_record(record=record, full=True)
         if _record is not None:
             scopestr = _record['scope']
-            scope = _eval(scopestr)
+            try:
+                scope = dbx_eval(scopestr)
+            except DbxEvalError as ee:
+                raise ValueError(f"Failed to parse build scope {scopestr}") from ee
         else:
             scope = None
         return scope
