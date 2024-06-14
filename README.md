@@ -71,19 +71,17 @@ The graph is evaluated in an evaluation pool, potentially remotely, potentially 
 
 
 # EXAMPLES
-## Basic
+## BASH
 * See available datablocks
-`help(datablocks.DBX.show_datablocks)`
 ```
-    from datablocks.dbx import *
-    DBX.show_datablocks()
+    dbx "datablocks.DBX.show_datablocks()"
 ```
 
 * See a datablock build record history
 `dbx "help(datablocks.DBX.show_build_records)"`
 without an alias -- all records for this `Datablock` class
 ```
-    DBX('datablocks.test.pandas.datablocks.PandasArray').show_build_records()
+    dbx "DBX('datablocks.test.pandas.datablocks.PandasArray').show_build_records()"
 ```
 or with an alias -- records specific to this instance of the `Datablock` class
 ```
@@ -93,11 +91,14 @@ or with an alias -- records specific to this instance of the `Datablock` class
 * Build a datablock
 `dbx "help(datablocks.DBX.build)"`
 ```
->dbx ""DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk').Datablock(verbose=True, build_delay_secs=10, echo_delay_secs=1).SCOPE(size=100).build()"
+>dbx "DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk').Datablock(verbose=True, build_delay_secs=10, echo_delay_secs=1).SCOPE(size=100).build()"
 ```
 or in Python
 ```
-    response = DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk').Datablock(verbose=True, build_delay_secs=10, echo_delay_secs=1).SCOPE(size=100).build()
+    response = DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk')\
+            .Datablock(verbose=True, build_delay_secs=10, echo_delay_secs=1)\
+            .SCOPE(size=100)\
+            .build()
 ```
 * Check result
 ```

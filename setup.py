@@ -26,6 +26,6 @@ setuptools.setup(
     entry_points={'console_scripts': ['dbx=datablocks:exec',
                                       'dbx.exec=datablocks:exec',
                                       'dbx.echo=datablocks:echo']},
-    python_requires='>=3.8',
+    python_requires='>=3.7', 
     install_requires=get_requirements(),
 )

@@ -11,6 +11,7 @@ import os
 from typing import Any, TypeVar, Generic, Tuple, Union, List, Dict
 
 import fsspec
+import git
 
 
 import pyarrow.parquet as pq
@@ -698,7 +699,7 @@ class Databuilder(Anchored, Scoped):
         return pathbook
 
     @OVERRIDE
-    def build_block_pathbook_request(self, **scope):
+    def build_block_request(self, **scope):
         blockscope = self._blockscope_(**scope)
         if self.reload:
             block_shortfall_pathbook = self.block_intent_pathbook(**blockscope)
@@ -714,9 +715,9 @@ class Databuilder(Anchored, Scoped):
             [{k: blockscope[k] for k in tscope.keys()} for tscope in shortfall_batchscope_list]
         if self.verbose:
             if len(shortfall_batchscope_list) == 0:
-                print(f"Databuilder: build_block_pathbook_request: no shortfalls found: returning extent")
+                print(f"Databuilder: build_block_request: no shortfalls found: returning extent")
             else:
-                print(f"Databuilder: build_block_pathbook_request: requesting build of shortfall batchscopes with tags: {shortfall_batchscope_list}")
+                print(f"Databuilder: build_block_request: requesting build of shortfall batchscopes with tags: {shortfall_batchscope_list}")
         _shortfall_batch_requests = \
             [self._build_batch_request_(self._tagscope_(**shortfall_batchscope_list[i]), **shortfall_batchscope_list[i])
                             .apply(self.pool) for i in range(len(shortfall_batchscope_list))]
@@ -729,24 +730,24 @@ class Databuilder(Anchored, Scoped):
                                           ", ".join(tag(_) for _ in shortfall_batch_requests) + \
                                           "]"
         if self.verbose:
-            print(f"build_block_pathbook_request: shortfall_batch_requests: " + shortfall_batch_requests_tags)
+            print(f"build_block_request: shortfall_batch_requests: " + shortfall_batch_requests_tags)
 
         tagscope = self._tagscope_(**blockscope)
         extent_request = Request(self.block_extent, **tagscope)
         requests = shortfall_batch_requests + [extent_request]
-        build_block_pathbook_request = Request(ALL, *requests)
+        build_block_request = Request(ALL, *requests)
         if self.throw is not None:
-            build_block_pathbook_request = build_block_pathbook_request.set(throw=throw)
+            build_block_request = build_block_request.set(throw=throw)
         #TODO: #FIX
-        #build_block_pathbook_request = LAST(*shortfall_batch_requests) if len(shortfall_batch_requests) > 0 else NONE()
+        #build_block_request = LAST(*shortfall_batch_requests) if len(shortfall_batch_requests) > 0 else NONE()
         if len(shortfall_batchscope_list) > 0 and self.build_block_request_lifecycle_callback is not None:
-            _ = build_block_pathbook_request.with_lifecycle_callback(self.build_block_request_lifecycle_callback(**blockscope))
+            _ = build_block_request.with_lifecycle_callback(self.build_block_request_lifecycle_callback(**blockscope))
             if self.verbose:
-                print(f"Databuilder: build_block_pathbook_request: will record lifecycle")
+                print(f"Databuilder: build_block_request: will record lifecycle")
         else:
-            _ = build_block_pathbook_request
+            _ = build_block_request
             if self.verbose:
-                print(f"Databuilder: build_block_pathbook_request: will NOT record lifecycle")
+                print(f"Databuilder: build_block_request: will NOT record lifecycle")
         return _
 
     @OVERRIDE
@@ -782,50 +783,36 @@ class DBX:
     class ProxyRequest(request.Proxy):
         @staticmethod
         def parse_url(url: str, **datablock_kwargs):
-            #url = {classtr}@{revision}|{alias}:{topic}
+            #url = {classtr}@{alias}:{topic}
             tail = url
             try:
                 datablock_clstr, tail  = tail.split("@")
             except:
                 raise ValueError(f"Malformed url: {url}")
             try:
-                revision, tail  = tail.split("#")
-            except:
-                raise ValueError(f"Malformed url: {url}")
-            try:
                 alias, topic  = tail.split(":")
-                if len(alias) == 0:
-                    alias = None
-                if len(topic) == 0:
-                    topic = DEFAULT_TOPIC
             except:
                 raise ValueError(f"Malformed url: {url}")
+            if len(alias) == 0:
+                alias = None
+            if len(topic) == 0:
+                topic = DEFAULT_TOPIC
             dbx = DBX(datablock_clstr, alias, **datablock_kwargs)
-            return dbx, revision, topic
+            return dbx, topic
 
         def __init__(self, kind: str, spec: Union[str, tuple], pic=False):
             """
                 kind: 'READ' | 'PATH'
-                spec: url | (dbx, revision, topic)
+                spec: url | (dbx, topic)
             """
             self.kind = kind
             self.spec = spec
             if isinstance(self.spec, tuple):
-                self.dbx, self.revision, self.topic = spec
+                self.dbx, self.topic = spec
             else:
-                self.dbx, self.revision, self.topic = self.parse_url(spec)
+                self.dbx, self.topic = self.parse_url(spec)
             self.pic = pic
             self.dbx = self.dbx.with_pic(pic=pic)
-            if hasattr(self.dbx.datablock_cls, 'TOPICS'):
-                if self.topic not in self.dbx.datablock_cls.TOPICS:
-                    raise ValueError(f"Topic {self.topic} not from among {self.dbx.datablock_cls.TOPICS}")
-            if not pic:
-                if self.dbx.databuilder.revision != self.revision:
-                    raise ValueError(f"Incompatible revision {self.revision} for dbx {self.dbx}")
-            else:
-                if self.dbx.databuilder.revision != self.revision.format and\
-                    self.revision == f"{self.dbx.__class__.__qualname__}.REVISION":
-                        raise ValueError(f"Incompatible revision {self.revision} for dbx {self.dbx}")
             if kind == 'READ':
                 request = self.dbx.read_request(topic=self.topic)
             elif kind == 'PATH':
@@ -861,7 +848,7 @@ class DBX:
 
         def __tag__(self):
             _tag__ = f"{DBX_PREFIX}.{self.dbx.datablock_clstr}"
-            tag__ = _tag__+f"@{self.dbx.databuilder.revision}"
+            tag__ = _tag__+f"@{self.dbx.databuilder.alias}"
             tag_ =  tag__+f"#{self.dbx.alias}" if self.dbx.alias is not None else tag__+"#"
             tag = tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else tag_+":"
             return tag
@@ -930,49 +917,42 @@ class DBX:
                 debug=False,  
                 pic=False,
                 alias_dataspace=True,
+                git_repo=None,
+                git_hash=None,
     ):
+        self.datablock_cls_or_clstr = datablock_cls_or_clstr
         self.alias = alias
         self.debug = debug
         self.verbose = verbose
         self.pic = pic
         self.alias_dataspace = alias_dataspace
-
-        if isinstance(datablock_cls_or_clstr, str):
-            self.datablock_clstr = datablock_cls_or_clstr
-            datablock_clstrparts = self.datablock_clstr.split('.')
-            if len(datablock_clstrparts) == 1:
-                self.datablock_module_name = __name__
-                self.datablock_clsname = datablock_clstrparts[0]
-            else:
-                self.datablock_module_name = '.'.join(datablock_clstrparts[:-1])
-                self.datablock_clsname = datablock_clstrparts[-1]
-            mod = importlib.import_module(self.datablock_module_name)
-            self.datablock_cls = getattr(mod, self.datablock_clsname)
-        else:
-            self.datablock_cls = datablock_cls_or_clstr
-            self.datablock_module_name = self.datablock_cls.__module__
-            self.datablock_clstr = f"{self.datablock_module_name}.{self.datablock_cls.__name__}"
+        self.git_repo = git_repo
+        self.git_hash = git_hash
+        self._datablock_cls = None
+        self._datablock_clstr = None
+        self._datablock_clsname = None
+        self._datablock_module_name = None
 
         self.dataspace = dataspace
         self.pool = pool
 
         self.datablock_kwargs = {}
-        @functools.wraps(self.datablock_cls)
+        @functools.wraps(self.datablock_cls())
         def update_datablock_kwargs(**datablock_kwargs):
             self.datablock_kwargs.update(**datablock_kwargs)
             return self
         self.Datablock = update_datablock_kwargs
 
         self._scope = None # initialize to default scope
-        @functools.wraps(self.datablock_cls.SCOPE)
-        def update_scope(**scope):
+        @functools.wraps(self.datablock_cls().SCOPE)
+        def update_scope(**scope_kwargs):
             if self._scope is None:
-                self._scope = copy.copy(scope)
+                self._scope = copy.copy(scope_kwargs)
             else:
-                self._scope.update(**scope)
+                self._scope.update(**scope_kwargs)
             return self
         self.SCOPE = update_scope
-        # scope is extracted via a property, which validates the scope
+        # scope is extracted via a property, which constructs and validates the scope
 
         self.databuilder_kwargs = dict(
             dataspace=dataspace,
@@ -990,6 +970,20 @@ class DBX:
             return self
         self.Databuilder = update_databuilder_kwargs
 
+        if isinstance(self.datablock_cls_or_clstr, str):
+            self.datablock_clstr = self.datablock_cls_or_clstr
+            datablock_clstrparts = self.datablock_clstr.split('.')
+            if len(datablock_clstrparts) == 1:
+                self.datablock_module_name = __name__
+                self.datablock_clsname = datablock_clstrparts[0]
+            else:
+                self._datablock_module_name = '.'.join(datablock_clstrparts[:-1])
+                self.datablock_clsname = datablock_clstrparts[-1]
+        else:
+            self._datablock_cls = self.datablock_cls_or_clstr
+            self.datablock_module_name = self._datablock_cls.__module__
+            self.datablock_clstr = f"{self._datablock_module_name}.{self._datablock_cls.__name__}"
+
     def clone(self, 
               *,
               dataspace=None,
@@ -1001,10 +995,14 @@ class DBX:
               verbose=None,
               debug=None,  
               pic=None,
+              git_repo=None,
+              git_hash=None,
               alias_dataspace=None,
     ):
         kwargs = copy.copy(self.databuilder_kwargs)
         kwargs['pic'] = self.pic
+        kwargs['git_repo'] = self.git_repo
+        kwargs['git_hash'] = self.git_hash
         kwargs['alias_dataspace'] = self.alias_dataspace
         if dataspace is not None:
             kwargs['dataspace'] = dataspace
@@ -1024,10 +1022,14 @@ class DBX:
             kwargs['verbose'] = verbose
         if pic is not None:
             kwargs['pic'] = pic
+        if git_repo is not None:
+            kwargs['git_repo'] = git_repo
+        if git_hash is not None:
+            kwargs['git_hash'] = git_hash
         if alias_dataspace is not None:
             kwargs['alias_dataspace'] = alias_dataspace
 
-        _ = DBX(self.datablock_cls, 
+        _ = DBX(self.datablock_cls_or_clstr, 
                 self.alias,
                 **kwargs)
 
@@ -1073,9 +1075,30 @@ class DBX:
         _ =  int(hashlib.sha1(_repr.encode()).hexdigest(), 16)
         return _
 
+    def datablock_cls(self, check_git=True):
+        if self._datablock_cls is None:
+            if self.git_repo is not None and check_git:
+                repo = git.Repo(self.git_repo)
+                if self.verbose:
+                    print(f"Using git repo {self.git_repo}")
+                if repo.is_dirty():
+                    raise ValueError(f"Dirty git repo: {self.git_repo}: commit your changes")
+                if self.git_hash is not None:
+                    #TODO: lock repo and unlock in __delete__
+                    #TODO: if locked, print warning
+                    #TODO: locking DB should identify the lock owner and start time, 
+                    #TODO: so print that warning
+                    repo.checkout(self.git_hash)
+                    if self.verbose:
+                        print(f"Using git hash {self.git_hash}")
+
+            mod = importlib.import_module(self._datablock_module_name)
+            self._datablock_cls = getattr(mod, self._datablock_clsname)
+        return self._datablock_cls
+
     @property
     def databuilder(self):
-        databuilder_cls = self._make_databuilder_class()
+        databuilder_cls = self.databuilder_class()
         databuilder_kwargs = self.databuilder_kwargs
         databuilder_kwargs['dataspace'] = databuilder_kwargs['dataspace'].with_pic(True) #TODO: why with_pick(True)?
         databuilder = databuilder_cls(self.alias, 
@@ -1105,7 +1128,7 @@ class DBX:
         return _scope
     
     def build(self):
-        request = self.build_request()
+        request = self.build_block()
         response = request.evaluate()
         if self.verbose:
             print(f"task_id: {response.id}")
@@ -1133,8 +1156,8 @@ class DBX:
                     print(f"Failed to retrieve scope from build record, ignoring scope of record.")
                 _scope = None
             if _scope is not None and not scopes_equal(blockscope, _scope):
-                raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.datablock_cls} alias {self.alias}")
-        request = self.databuilder.build_block_pathbook_request(**blockscope)
+                raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.datablock_cls()} alias {self.alias}")
+        request = self.databuilder.build_block_request(**blockscope)
         return request
     
     def display(self):
@@ -1205,11 +1228,11 @@ class DBX:
     
     @property
     def topics(self):
-        if hasattr(self.datablock_cls, 'TOPICS'):
-            if isinstance(self.datablock_cls.TOPICS, dict):
-                topics = list(self.datablock_cls.TOPICS.keys())
+        if hasattr(self.datablock_cls(), 'TOPICS'):
+            if isinstance(self.datablock_cls().TOPICS, dict):
+                topics = list(self.datablock_cls().TOPICS.keys())
             else:
-                topics = self.datablock_cls.TOPICS
+                topics = self.datablock_cls().TOPICS
         else:
             topics = [DEFAULT_TOPIC]
         return topics
@@ -1484,7 +1507,7 @@ class DBX:
             record_frame.to_parquet(record_filepath, storage_options=recordspace.storage_options)
         return _write_record_lifecycle_callback
     
-    def _make_databuilder_class(dbx):
+    def databuilder_class(dbx):
         """
             Using 'dbx' instead of 'self' here to avoid confusion of the meaning of 'self' in different scopes: as a DBX instance and a Databuilder subclass instance.
             This Databuilder subclass factory using `datablock_cls` as implementation of the basic `build()`, `read()`, `valid()`, `metric()` methods.
@@ -1501,7 +1524,7 @@ class DBX:
             return _
 
         def datablock(self, roots, filesystem, scope=None):
-            self._datablock = self.datablock_cls(roots, filesystem, scope, **self.datablock_kwargs)
+            self._datablock = self.datablock_cls()(roots, filesystem, scope, **self.datablock_kwargs)
             return self._datablock
 
         @property
@@ -1526,9 +1549,9 @@ class DBX:
             shardscope_list = self.scope_to_shards(**tagscope)
             assert len(shardscope_list) == 1
             shardscope = shardscope_list[0]
-            if hasattr(self.datablock_cls, 'TOPICS'):
+            if hasattr(self.datablock_cls(), 'TOPICS'):
                 shardroots = {}
-                for _topic in self.datablock_cls.TOPICS:
+                for _topic in self.datablock_cls().TOPICS:
                     shardspace = self._shardspace_(_topic, **shardscope)
                     if ensure:
                         shardspace.ensure()
@@ -1567,34 +1590,38 @@ class DBX:
         def _read_block_(self, tagscope, topic, **blockscope):
             # tagscope can be a list, opaque to the Request evaluation mechanism, but batchscope must be **-expanded to allow Request mechanism to evaluate the kwargs
             datablock_blockroots = self.datablock_blockroots(tagscope)
-            datablock_blockscope = self.datablock_cls.SCOPE(**blockscope)
+            datablock_blockscope = self.datablock_cls().SCOPE(**blockscope)
             if topic == None:
-                assert not hasattr(self.datablock_cls, 'TOPICS'), f"_read_block_: None topic when datablock.TOPICS == {self.datablock_cls.TOPICS} "
+                assert not hasattr(self.datablock_cls(), 'TOPICS'), f"_read_block_: None topic when datablock.TOPICS == {self.datablock_cls().TOPICS} "
                 _ = self.datablock(datablock_blockroots, scope=datablock_blockscope, filesystem=self.dataspace.filesystem).read()
             else:
                 _ = self.datablock(datablock_blockroots, scope=datablock_blockscope, filesystem=self.dataspace.filesystem).read(topic)
             return _
 
         def _shard_extent_pathpage_valid_(self, topic, tagscope, **shardscope):
-            datablock_tagshardscope = self.datablock_cls.SCOPE(**shardscope)
+            datablock_tagshardscope = self.datablock_cls().SCOPE(**shardscope)
             datablock_shardroots = self.datablock_shardroots(tagscope)
             if topic == None:
-                assert not hasattr(self.datablock_cls, 'TOPICS'), f"__shard_extent_pathpage_valid__: None topic when datablock_cls.TOPICS == {getattr(self.datablock_cls, 'TOPICS')} "
+                assert (not hasattr(self.datablock_cls(), 'TOPICS'), 
+                    f"__shard_extent_pathpage_valid__: None topic when datablock_cls.TOPICS == {getattr(self.datablock_cls(), 'TOPICS')} "
+                )
                 _ = self.datablock(datablock_shardroots, scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem,).valid()
             else:
                 _ = self.datablock(datablock_shardroots, scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem).valid(topic)
             return _
         
         def _extent_shard_metric_(self, topic, tagscope, **shardscope):
-            datablock_tagshardscope = self.datablock_cls.SCOPE(**shardscope)
+            datablock_tagshardscope = self.datablock_cls().SCOPE(**shardscope)
             datablock_shardroots = self.datablock_shardroots(tagscope)
             if topic == None:
-                assert not hasattr(self.datablock_cls, 'TOPICS'), f"__extent_shard_metric__: None topic when datablock_cls.TOPICS == {getattr(self.datablock_cls, 'TOPICS')} "
+                assert (not hasattr(self.datablock_cls(), 'TOPICS'), 
+                        f"__extent_shard_metric__: None topic when datablock_cls.TOPICS == {getattr(self.datablock_cls(), 'TOPICS')} "
+                )
                 _ = self.datablock(datablock_shardroots, scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem).metric()
             else:
                 _ = self.datablock(datablock_shardroots, scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem).metric(topic)
             return _
-
+   
         rangecls = RANGE if not hasattr(dbx.datablock_cls, 'RANGE') else dbx.datablock_cls.RANGE
         SCOPE_fields = dataclasses.fields(dbx.datablock_cls.SCOPE)
         block_keys = [field.name for field in SCOPE_fields]
@@ -1602,19 +1629,20 @@ class DBX:
         batch_to_shard_keys = {field.name: field.name for field in SCOPE_fields if isinstance(field.type, rangecls)}
 
         __module__ = DBX_PREFIX + "." + dbx.datablock_module_name
-        __cls_name = dbx.datablock_cls.__name__
-        datablock_cls = dbx.datablock_cls
+        __cls_name = dbx.datablock_cls().__name__
+        datablock_cls = dbx.datablock_cls()
         datablock_kwargs = dbx.datablock_kwargs
-        if hasattr(dbx.datablock_cls, 'TOPICS'):
-            topics = dbx.datablock_cls.TOPICS
+        if hasattr(dbx.datablock_cls(), 'TOPICS'):
+            topics = dbx.datablock_cls().TOPICS
         else:
             topics = [DEFAULT_TOPIC]
 
-        if hasattr(dbx.datablock_cls, 'REVISION'):
+        #... use git_hash
+        if hasattr(dbx.datablock_cls(), 'REVISION'):
             if dbx.pic:
                 __revision = f"{{{dbx.datablock_clstr}.REVISION}}"
             else:
-                __revision = dbx.datablock_cls.REVISION
+                __revision = dbx.datablock_cls().REVISION
         else:
             __revision = DEFAULT_REVISION
         databuilder_classdict = {
@@ -1638,9 +1666,9 @@ class DBX:
         if dbx.alias_dataspace:
             databuilder_classdict['revisionspace'] = revisionspace
             databuilder_classdict['_shardspace_'] = _shardspace_
-        if hasattr(dbx.datablock_cls, 'valid'):
+        if hasattr(dbx.datablock_cls(), 'valid'):
             databuilder_classdict['_shard_extent_pathpage_valid_'] = _shard_extent_pathpage_valid_
-        if hasattr(dbx.datablock_cls, 'metric'):
+        if hasattr(dbx.datablock_cls(), 'metric'):
             databuilder_classdict['_extent_shard_metric_'] = _extent_shard_metric_
 
         databuilder_class = type(__cls_name, 
@@ -1654,7 +1682,8 @@ class DBX:
         return _
 
     def transcribe(self, with_env=(), with_linenos=False, with_display=False, verbose=False, with_build=False):
-        return DBX.Transcribe(self, with_env=with_env, with_linenos=with_linenos, with_display=with_display, with_build=with_build, verbose=verbose,)
+        return DBX.Transcribe(self, with_env=with_env, with_linenos=with_linenos, with_display=with_display, 
+                              with_build=with_build, verbose=verbose,)
 
     @staticmethod
     def Transcribe(*dbxs, with_env: Tuple[str] = (), with_linenos=False, with_build=False, with_display=tuple(), verbose=False, ):
@@ -1751,7 +1780,7 @@ class DBX:
             for key, val in __kwargs.items():
                 _kwargs += f"{key}={val},\n"
             
-            build += f"{_datablock} = " + Tagger().ctor_name(dbx.datablock_cls) + "(\n"     + \
+            build += f"{_datablock} = " + Tagger().ctor_name(dbx.datablock_cls()) + "(\n"     + \
                             (f"\troots={_blockroots},\n" if len(_blockroots) > 0 else "")      + \
                             (f"\tfilesystem={_filesystem},\n" if len(_filesystem) > 0 else "") + \
                             (f"\tscope={_blockscope},\n" if len(_blockscope) > 0 else "")      + \

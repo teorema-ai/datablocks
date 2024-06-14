@@ -5,6 +5,7 @@ import enum
 import importlib
 import inspect
 import logging
+
 import pdb
 import time
 
@@ -168,7 +169,7 @@ class RPC:
     _method_ = None
     _prototype_ = None
     """
-       * This is a callable that will instantiate an object from {ctor_url} (fully-qualified ctor name) and call its {method}.
+       * This is a callable that will instantiate an object from {ctor_fqn} (fully-qualified ctor name) and call its {method}.
        * Before the call is made the {method}'s signature is verified by comparing to {self.signature} and
          {self.__defaults__} and {self.__kwdefaults__} are used to compute the {tag}.
          - self.signature, self.__defaults__ and self.__kwdefaults__ can be overriden in a subclass
@@ -180,15 +181,17 @@ class RPC:
           - .with_method(method)
           - .with_prototype(prototype)
     """
-    def __init__(self, ctor_fqn, *, args=None, kwargs=None, _tag_=None, _str_=None):
-        self.ctor_url = ctor_fqn
+    def __init__(self, ctor, *, args=None, kwargs=None):
+        if callable(ctor):
+            self._ctor = ctor
+        else:
+            self.ctor_url = ctor
         self.ctor_args = args or []
         self.ctor_kwargs = kwargs or {}
         self._check_signature_ = False
-        self._tag = _tag_
-        self._str = _str_
         self._instance = None
         self._func = None
+        self.verbose = False
 
     @property
     def __defaults__(self):
@@ -227,6 +230,10 @@ class RPC:
 
     def with_signature_checking(self, check=True):
         self._check_signature_ = check
+        return self
+    
+    def with_verbosity(self, verbose=True):
+        self.verbose = verbose
         return self
 
     def __tag__(self):
@@ -272,12 +279,13 @@ class RPC:
 
     @property
     def ctor(self):
-        urlparts = self.ctor_url.split('.')
-        modname = '.'.join(urlparts[:-1])
-        ctorname = urlparts[-1]
-        mod = importlib.import_module(modname)
-        ctor = getattr(mod, ctorname)
-        return ctor
+        if not hasattr(self, '_ctor'):
+            urlparts = self.ctor_url.split('.')
+            modname = '.'.join(urlparts[:-1])
+            ctorname = urlparts[-1]
+            mod = importlib.import_module(modname)
+            self._ctor = getattr(mod, ctorname)
+        return self._ctor
 
     @property
     def func(self):
@@ -286,8 +294,11 @@ class RPC:
             logger.debug(f"Ctor signature: {inspect.signature(self.ctor)}")
             logger.debug(f"Ctor module: {inspect.getmodule(self.ctor)}")
             logger.debug(f"method: {self._method_}")
-            self._instance = self.ctor(*self.ctor_args, **self.ctor_kwargs)
-            self._func = getattr(self._instance, self._method_)
+            if inspect.isclass(self.ctor):
+                self._instance = self.ctor(*self.ctor_args, **self.ctor_kwargs)
+                self._func = getattr(self._instance, self._method_)
+            else:
+                self._func = self.ctor
         if self._check_signature_:
             assert inspect.signature(self._func) == self.signature
         return self._func
