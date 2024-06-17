@@ -1,3 +1,6 @@
+#DEBUG
+import pdb
+
 import collections
 from collections.abc import Callable, Iterable
 import copy
@@ -26,6 +29,7 @@ from .eval import request, pool
 from .eval.request import Request, ALL, LAST, NONE, Graph
 from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL as STDOUT_POOL, DATABLOCKS_FILE_LOGGING_POOL as FILE_POOL
 from .dataspace import DATABLOCKS_DATALAKE as DATALAKE
+from .databuilder import Databuilder, DEFAULT_TOPIC
 
 
 class DbxEvalError(Exception):
@@ -151,623 +155,6 @@ class Datablock:
         if self.debug:
             print(f"DEBUG: >>> {self.__class__.__qualname__}: {s}")
 
-
-class Anchored:
-    def __init__(self, namechain=None):
-        self.namechain = namechain
-
-    @property
-    def anchorchain(self):
-        if not hasattr(self, 'anchor'):
-            modchain = tuple(str(self.__class__.__module__).split('.'))
-            anchorclassname = self.__class__.__qualname__.split('.')[-1]
-            anchorclasschain = modchain + (anchorclassname,)
-        else:
-            anchorclasschain = self.anchor
-        if self.namechain:
-            anchorchain = anchorclasschain + self.namechain
-        else:
-            anchorchain = anchorclasschain
-        return anchorchain
-
-
-class Scoped:
-    # TODO: implement support for multiple batch_to_shard_keys
-    block_keys = []
-    block_to_shard_keys = {}
-    batch_to_shard_keys = {}
-    block_defaults = {} 
-    block_pins = {}  
-
-    def __init__(self):
-        if hasattr(self, 'block_to_shard_keys'):
-            self.shard_to_block_keys = {val: key for key, val in self.block_to_shard_keys.items()}
-        elif hasattr(self, 'shard_to_block_keys'):
-            self.block_to_shard_keys = {val: key for key, val in self.shard_to_block_keys.items()}
-        else:
-            self.block_to_shard_keys = {}
-            self.shard_to_block_keys = {}
-        if hasattr(self, 'block_keys'):
-            self.shard_keys = [key if key not in self.block_to_shard_keys else self.block_to_shard_keys[key]
-                               for key in self.block_keys]
-        elif hasattr(self, 'shard_keys'):
-            self.block_keys = [key if key not in self.shard_to_block_keys else self.shard_to_block_keys[key]
-                               for key in self.shard_keys]
-        else:
-            raise ValueError("`block_keys` or `shard_keys` must be specified")
-
-    @property
-    def batch_by_block_key(self):
-        if len(self.batch_to_shard_keys) > 1:
-            raise NotImplementedError(f"Batching by multiple keys is not supported")
-        if len(self.batch_to_shard_keys) == 1:
-            batch_by_block_key = list(self.batch_to_shard_keys.keys())[0]
-        else:
-            batch_by_block_key = None
-        return batch_by_block_key
-
-    # TODO: collect scope normalization code from _block2* to here
-    def _blockscope_(self, **scope):
-        def blockify(key, val):
-            if key in self.shard_to_block_keys:
-                _key = self.shard_to_block_keys[key]
-                if not isinstance(val, RANGE):
-                    _val = RANGE([val]) 
-                else:
-                    _val = val
-            elif key in self.block_keys:
-                _key, _val = key, val
-            else:
-                raise ValueError(f"key={key} with val={val} is neither a block key nor a shard key")
-            return _key, _val
-        _blockscope = {}
-        for key, val in scope.items():
-            k, v = blockify(key, val)
-            _blockscope[k] = v
-        block_ = {}
-        for key in self.block_keys:
-            if key in _blockscope:
-                key_ = key
-                val_ = _blockscope[key]
-            elif key in self.block_defaults:
-                key_ = key
-                val_ = self.block_defaults[key]
-            elif key in self.block_pins:
-                key_ = key
-                val_ = self.block_pins[key]
-            else:
-                raise ValueError(f"MISSING scope argument '{key}'? Details: block_key={key} is neither in blockified _blockscope={_blockscope} "
-                                 f"nor in block_defaults={self.block_defaults}, or in block_pins={self.block_pins}")
-            if key_ in self.block_pins and val_ != self.block_pins[key_]:
-                raise ValueError(f"block key {key_} has value {val_}, which contradicts pinned value {self.block_pins[key_]}")
-            block_[key_] = val_
-        return block_
-
-    def _tagscope_(self, **scope):
-        tagscope = Tagger().tag_dict(scope)
-        return tagscope
-
-    def scope_to_shards(self, **scope):
-        def _scope_to_kwargs(scope, plural_key_counters):
-            kwargs = {}
-            for key, val in scope.items():
-                if key in self.block_to_shard_keys:
-                    skey = self.block_to_shard_keys[key]
-                    counter = plural_key_counters[key]
-                    kwargs[skey] = val[counter]
-                else:
-                    skey = key
-                    kwargs[skey] = val
-            return kwargs
-
-        for key in scope.keys():
-            if key not in self.shard_keys and key not in self.block_to_shard_keys:
-                raise ValueError(f"Unknown key '{key}' is not in databuilder keys {list(self.shard_keys)} "
-                                 f"or among the plurals of any known key {list(self.block_to_shard_keys.keys())}")
-            if key in self.block_to_shard_keys and not isinstance(scope[key], collections.Iterable):
-                raise ValueError(f"Value for plural key {key} is not iterable: {scope[key]}")
-
-        # Normalize keyvals to plural, wherever possible
-        scope_ = {}
-        for key, val in scope.items():
-            if key in self.shard_to_block_keys:
-                key_, val_ = self.shard_to_block_keys[key], [val]
-            else:
-                key_, val_ = key, val
-            scope_[key_] = val_
-
-        # Set scope keys in the order of self.keys
-        _scope = {key: scope_[key] for key in self.scope_keys}
-
-        plural_key_counters = {key: 0 for key in reversed(self.scope_keys)
-                               if key in self.block_to_shard_keys}
-        kwargs_list = []
-        carry = False
-        while not carry:
-            kwargs = _scope_to_kwargs(_scope, plural_key_counters)
-            kwargs_list.append(kwargs)
-            if len(plural_key_counters) > 0:
-                for key in plural_key_counters:
-                    plural_key_counters[key] += 1
-                    if plural_key_counters[key] < len(_scope[key]):
-                        carry = False
-                        break
-                    else:
-                        plural_key_counters[key] = 0
-                        carry = True
-            else:
-                carry = True
-        return kwargs_list
-
-    # TODO: --> _handles_to_batches_?
-    def _kvhandles_to_batches_(self, *kvhandles):
-        # We assume that all keys are always the same -- equal to self.keys
-        # Nontrivial grouping of kwargs into batches is possible only when cls.batch_by_plural_key is in cls.keys
-        if len(kvhandles) == 0:
-            batch_list = []
-        else:
-            vals_list = [tuple(val for _, val in kvhandle) for kvhandle in kvhandles]
-            batch_list = []
-            # TODO: all these checks in __init__
-            if self.batch_by_block_key is not None and \
-                    self.batch_by_block_key in self.block_to_shard_keys and \
-                    self.batch_by_block_key in self.scope_keys:
-                batch_by_singular_key = self.block_to_shard_keys[self.batch_by_block_key]
-                groupbykeys = [skey for skey in self.shard_keys if skey != batch_by_singular_key]
-                if len(groupbykeys) > 0:
-                    frame = pd.DataFrame.from_records(vals_list, columns=self.shard_keys)
-                    groups = frame.groupby(groupbykeys)
-                    for groupbyvals, groupframe in groups:
-                        if len(groupbykeys) == 1:
-                            groupbyvals = (groupbyvals,)
-                        batch = {groupbykeys[i]: groupbyvals[i] for i in range(len(groupbykeys))}
-                        batch[self.batch_by_block_key] = groupframe[batch_by_singular_key].tolist()
-                        batch_list.append(batch)
-                else:
-                    batch_list = [{self.batch_by_block_key: [vals[0] for vals in vals_list]}]
-            else:
-                for vals in vals_list:
-                    batch = {self.shard_keys[i]: vals[i] for i in range(len(self.shard_keys))}
-                    batch_list.append(batch)
-        return batch_list
-
-
-class KVHandle(tuple):
-    def __call__(self, *args, **kwargs) -> Any:
-        return super().__call__(*args, **kwargs)
-    
-    def __str__(self):
-        dict_ = {key: val for key, val in self}
-        str_ = f"{dict_}"
-        return str_
-
-
-DEFAULT_TOPIC = None
-DEFAULT_REVISION = '0.0.0'
-
-class Databuilder(Anchored, Scoped): 
-    # TODO: implement support for multiple batch_to_shard_keys
-    revision = DEFAULT_REVISION
-    topics = [DEFAULT_TOPIC]
-    signature = Signature((), ('dataspace', 'revision',)) # extract these attrs and use in __tag__
-
-    # TODO: make dataspace, revision position-only and adjust Signature
-    def __init__(self,
-                 alias=None,
-                 *,
-                 dataspace=DATALAKE,
-                 tmpspace=None,
-                 lock_pages=False,
-                 rebuild=False,
-                 pool=STDOUT_POOL,
-                 build_block_request_lifecycle_callback=None,
-                 throw=None,
-                 verbose=False,
-                 debug=False,          
-    ):
-        Anchored.__init__(self)
-        Scoped.__init__(self)
-        self.alias = alias
-        self.dataspace = dataspace
-        self._tmpspace = tmpspace
-        self.anchorspace = dataspace.subspace(*self.anchorchain)
-        #self.revisionspace = self.anchorspace.subspace(f"revision={str(self.revision)}",)
-        self.lock_pages = lock_pages
-        self.throw = throw
-        self.reload = rebuild
-        self.pool = pool
-        self.build_block_request_lifecycle_callback = build_block_request_lifecycle_callback
-        self.throw = throw
-        self.verbose = verbose
-        self.debug = debug
-        if self.lock_pages:
-            raise NotImplementedError("self.lock_pages not implemented for Databuilder")
-        if hasattr(self, 'block_to_shard_keys'):
-            self.shard_to_block_keys = {val: key for key, val in self.block_to_shard_keys.items()}
-        elif hasattr(self, 'shard_to_block_keys'):
-            self.block_to_shard_keys = {val: key for key, val in self.shard_to_block_keys.items()}
-        else:
-            self.block_to_shard_keys = {}
-            self.shard_to_block_keys = {}
-        if hasattr(self, 'scope_keys'):
-            self.shard_keys = [key if key not in self.block_to_shard_keys else self.block_to_shard_keys[key]
-                               for key in self.scope_keys]
-        elif hasattr(self, 'shard_keys'):
-            self.scope_keys = [key if key not in self.shard_to_block_keys else self.shard_to_block_keys[key]
-                               for key in self.shard_keys]
-        else:
-            raise ValueError("`scope_keys` or `shard_keys` must be specified")
-
-    def __repr__(self):
-        return self.__tag__()
-
-    def __tag__(self):
-        if hasattr(self, 'signature'):
-            schema = self.signature.schema
-            argattrs = schema[0]
-            args = [getattr(self, attr) for attr in argattrs]
-            kwargattrs = schema[1]
-            kwargs = {attr: getattr(self, attr) for attr in kwargattrs}
-            repr = Tagger().tag_ctor(self.__class__, *args, **kwargs)
-            return repr
-        else:
-            repr = tag.Tagger().tag_ctor(self.__class__)
-
-    @property
-    def revisionspace(self):
-        return self.anchorspace.subspace(f"revision={str(self.revision)}",)
-
-    @property
-    def tmpspace(self):
-        if self._tmpspace is None:
-            self._tmpspace = self.revisionspace.temporary(self.revisionspace.subspace('tmp').ensure().root)
-        return self._tmpspace
-
-    def block_intent_pathpage(self, topic, **scope):
-        blockscope = self._blockscope_(**scope)
-        tagblockscope = self._tagscope_(**blockscope)
-        if topic not in self.topics:
-            raise ValueError(f"Unknown topic {topic} is not among {self.topics}")
-        shard_list = self.scope_to_shards(**tagblockscope)
-        kvhandle_pathshard_list = []
-        for shard in shard_list:
-            kvhandle = self._scope_to_kvhandle_(topic, **shard)
-            pathshard = self._shardspace_(topic, **shard).root
-            kvhandle_pathshard_list.append((kvhandle, pathshard))
-        block_intent_pathpage = {kvhandle: pathshard for kvhandle, pathshard in kvhandle_pathshard_list}
-        return block_intent_pathpage
-
-    @OVERRIDE
-    def _shard_extent_pathpage_valid_(self, topic, tagscope, **shardscope):
-        pathset = self._shardspace_(topic, **tagscope).root
-        valid = self.revisionspace.filesystem.isdir(pathset)
-        if self.debug:
-            if valid:
-                print(f"_shard_extent_pathpage_valid_: VALID: shard with topic {repr(topic)} with scope with tag {tagscope}")
-            else:
-                print(f"_shard_extent_pathpage_valid_: INVALID shard with topic {repr(topic)} with scope with tag {tagscope}")
-        return valid
-
-    def block_extent_pathpage(self, topic, **scope):
-        if topic not in self.topics:
-            raise ValueError(f"Unknown topic {topic} is not among {self.topics}")
-        block_intent_pathpage = self.block_intent_pathpage(topic, **scope)
-        block_extent_pathpage = {}
-        for kvhandle, shard_pathset in block_intent_pathpage.items():
-            shardscope = self._kvhandle_to_scope_(topic, kvhandle)
-            tagscope = self._tagscope_(**shardscope)
-            valid = self._shard_extent_pathpage_valid_(topic, tagscope, **shardscope)
-            if valid:
-                block_extent_pathpage[kvhandle] = shard_pathset
-        return block_extent_pathpage
-    
-    def block_extent_pathpage_request(self, topic, **scope):
-        _ = Request(self.block_extent_pathpage, topic, **scope)
-        if self.throw is not None:
-            _ = _.set(throw=self.throw)
-        return _
-
-    def block_shortfall_pathpage(self, topic, **scope):
-        block_intent_pathpage = self.block_intent_pathpage(topic, **scope)
-        block_extent_pathpage = self.block_extent_pathpage(topic, **scope)
-        block_shortfall_pathpage = {}
-        for kvhandle, intent_pathshard in block_intent_pathpage.items():
-            if isinstance(intent_pathshard, str):
-                if kvhandle not in block_extent_pathpage or block_extent_pathpage[kvhandle] != intent_pathshard:
-                    shortfall_pathshard = intent_pathshard
-                else:
-                    shortfall_pathshard = []
-            else:
-                if kvhandle not in block_extent_pathpage:
-                    shortfall_pathshard = intent_pathshard
-                else:
-                    extent_pathshard = block_extent_pathpage[kvhandle]
-                    shortfall_pathshard = [intent_filepath for intent_filepath in intent_pathshard
-                                             if intent_filepath not in extent_pathshard]
-            if len(shortfall_pathshard) == 0:
-                continue
-            block_shortfall_pathpage[kvhandle] = shortfall_pathshard
-        return block_shortfall_pathpage
-
-    #REMOVE?
-    def block_intent_pathbook(self, **scope):
-        return self._page_pathbook("intent", **scope)
-
-    #REMOVE?
-    def block_extent_pathbook(self, **scope):
-        return self._page_pathbook("extent", **scope)
-
-    @staticmethod
-    def collate_pathpages(topic, *pathpages):
-        # Each pathpage is a dict {kvhandle -> filepathset}.
-        # `collate` is just a union of dicts.
-        # Assuming each kvhandle exists only once in pathpages or only the last occurrence matters.
-        collated_pathpage = {kvhandle: filepathset for pathpage in pathpages for kvhandle, filepathset in pathpage.items()}
-        return collated_pathpage
-
-    @staticmethod
-    def collate_pathbooks(*pathbooks):
-        # Collate all pages from all books within a topic
-        topic_pathpages = {}
-        for pathbook in pathbooks:
-            for topic, pathpage in pathbook.items():
-                if topic in topic_pathpages:
-                    topic_pathpages[topic].append(pathpage)
-                else:
-                    topic_pathpages[topic] = [pathpage]
-        collated_pathbook = \
-            {topic: Databuilder.collate_pathpages(topic, *pathpages) \
-             for topic, pathpages in topic_pathpages.items()}
-        return collated_pathbook
-
-    def block_intent(self, **scope):
-        blockscope = self._blockscope_(**scope)
-        tagscope = self._tagscope_(**blockscope)
-        block_intent_pathbook = self.block_intent_pathbook(**tagscope)
-        _block_intent_pathbook = self._kvhbook_to_scopebook(block_intent_pathbook)
-        return _block_intent_pathbook
-
-    def block_extent(self, **scope):
-        blockscope = self._blockscope_(**scope)
-        #tagscope = self._tagscope_(**blockscope)
-        block_extent_pathbook = self.block_extent_pathbook(**blockscope)
-        extent = self._kvhbook_to_scopebook(block_extent_pathbook)
-        return extent
-
-    def block_shortfall(self, **scope):
-        blockscope = self._blockscope_(**scope)
-        #tagscope = self._tagscope_(**blockscope)
-        block_shortfall_pathbook = self.block_shortfall_pathbook(**blockscope)
-        _block_shortfall_pathbook = self._kvhbook_to_scopebook(block_shortfall_pathbook)
-        return _block_shortfall_pathbook
-
-    #RENAME: -> _shard_extent_metric_
-    def _extent_shard_metric_(self, topic, tagscope, **shardscope):
-        block_extent_pathpage = self.block_extent_pathpage(topic, **shardscope)
-        if self.debug:
-            print(f"_extent_shard_metric_: topic: {repr(topic)}: shardspace: {shardscope}: block_extent_pathpage: {block_extent_pathpage}")
-        if len(block_extent_pathpage) > 1:
-            raise ValueError(f"Too many shards in block_extent_pathpage: {block_extent_pathpage}")
-        if len(block_extent_pathpage) == 0:
-            metric = 0
-        else:
-            pathset = list(block_extent_pathpage.values())[0]
-            if isinstance(pathset, str):
-                metric = 1
-            else:
-                metric = len(pathset)
-        return metric
-    
-    def block_extent_metric(self, **scope):
-        blockscope = self._blockscope_(**scope)
-        extent = self.block_extent(**blockscope)
-        _extent_metric_book = {}
-        for topic, page in extent.items():
-            metric_page = []
-            for shardscope, _ in page:
-                tagscope = self._tagscope_(**shardscope)
-                shardmetric = self._extent_shard_metric_(topic, tagscope, **shardscope)
-                #FIX: refactor via *_to_scopebook()
-                metric_page.append((shardscope, shardmetric))
-            _extent_metric_book[topic] = Databuilder._scopepage_(metric_page)
-        extent_metric_book = Databuilder._scopebook_(_extent_metric_book)
-        return extent_metric_book
-
-    def block_shortfall_pathbook(self, **scope):
-        blockscope = self._blockscope_(**scope)
-        pagekvhandles_list = [set(self.block_shortfall_pathpage(topic, **blockscope).keys()) for topic in self.topics]
-        bookkvhandleset = set().union(*pagekvhandles_list)
-        block_shortfall_pathbook = {}
-        for topic in self.topics:
-            block_shortfall_pathpage = {}
-            for kvhandle in bookkvhandleset:
-                scope = {key: val for key, val in kvhandle}
-                filepathset = self._shardspace_(topic, **blockscope).root
-                block_shortfall_pathpage[kvhandle] = filepathset
-            block_shortfall_pathbook[topic] = block_shortfall_pathpage
-        return block_shortfall_pathbook
-    
-    @OVERRIDE
-    def _shardspace_(self, topic, **shard):
-        #TODO: ensure topic=None is handled correctly: `topic == None` must only be allowed when `self.topics == None` 
-        #TODO: disallow the current default `self.topics == [None]` -> `self.topic = None`
-        #TODO: when `self.topics is not None` it must be a list of valid str
-        #TODO: `self.topics == None` must mean that `_shardspace_` generates a unique space corresponding to an `hvhandle` with no topic head
-        #TODO: `scope_to_hvhandle` with topic==None must generate an hvhandle with no topic head
-        tagshard = self._tagscope_(**shard)
-        hvhandle = self._scope_to_hvhandle_(topic, **tagshard)
-        subspace = self.revisionspace.subspace(*hvhandle)
-        if self.debug:
-            print(f"SHARDSPACE: formed for topic {repr(topic)} and shard with tag {tagshard}: {subspace}")
-        return subspace
-    
-    class _scopebook_(dict):
-        def pretty(self):
-            lines = []
-            for topic, page in self.items():
-                if topic is None:
-                    lines.append(page.pretty())
-                else:
-                    lines.append(repr(topic) + ":\n" + page.pretty())
-            _ = '\n '.join(lines)
-            return _
-        
-    class _scopepage_(list):
-        def pretty(self):
-            lines = []
-            for scope, val in self:
-                if len(scope) == 0:
-                    lines.append(repr(val))
-                else:
-                    lines.append(scope.pretty() + ": " + repr(val))
-            if len(lines) == 0:
-                _ = "  [\n   ]"
-            else:
-                _ = "  [\n\t" + '\n\t'.join(lines) + "\n   ]"
-            return _
-
-    class _scope_(dict):
-        def pretty(self):
-            lines = []
-            for key, val in self.items():
-                lines.append(f"{repr(key)}: {repr(val)}")
-            _ = "\t{\n\t" + '\n\t'.join(lines) + "\n\t}"
-            return _
-
-    def _scope_to_hvhandle_(self, topic, **shard):
-        if topic is not None:
-            shardhivechain = [topic]
-        else:
-            shardhivechain = []
-        for key in self.shard_keys:
-            shardhivechain.append(f"{key}={shard[key]}")
-        return shardhivechain
-
-    def _scope_to_kvhandle_(self, topic, **scope):
-        _kvhandle = tuple((key, scope[key]) for key in self.shard_keys)
-        kvhandle = KVHandle(_kvhandle)
-        return kvhandle
-
-    def _kvhandle_to_scope_(self, topic, kvhandle):
-        return {key: val for key, val in kvhandle}
-
-    def _kvhandle_to_hvhandle_(self, topic, kvhandle):
-        scope = self._kvhandle_to_scope_(topic, kvhandle)
-        hivechain = self._scope_to_hvhandle_(topic, **scope)
-        return hivechain
-
-    def _kvhandle_to_filename(self, topic, kvhandle, extension=None):
-        datachain = self._kvhandle_to_hvhandle_(topic, kvhandle)
-        name = '.'.join(datachain)
-        filename = name if extension is None else name+'.'+extension
-        return filename
-
-    def _kvhandle_to_dirpath(self, topic, kvhandle):
-        datachain = self._kvhandle_to_hvhandle_(topic, kvhandle)
-        subspace = self.revisionspace.subspace(*datachain)
-        path = subspace.root
-        return path
-    
-    def _kvhbook_to_scopebook(self, kvhbook):
-        _scopebook = {}
-        for topic, kvhpage in kvhbook.items():
-            if not topic in _scopebook:
-                _scopebook[topic] = []
-            for kvhandle, val in kvhpage.items():
-                scope = Databuilder._scope_(self._kvhandle_to_scope_(topic, kvhandle))
-                _scopebook[topic].append((Databuilder._scope_(scope), val))
-        _scopebook_ = Databuilder._scopebook_({topic: Databuilder._scopepage_(page) for topic, page in _scopebook.items()}) 
-        return _scopebook_
-
-    def _lock_kvhandle(self, topic, kvhandle):
-        if self.lock_pages:
-            hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
-            self.revisionspace.subspace(*hivechain).acquire()
-
-    def _unlock_kvhandle(self, topic, kvhandle):
-        if self.lock_pages:
-            hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
-            self.revisionspace.subspace(*hivechain).release()
-
-    #REMOVE: unroll inplace where necessary
-    def _page_pathbook(self, domain, **kwargs):
-        # This pathbook is computed by computing a page for each topic separately, 
-        # via a dedicated function call with topic as an arg, using a domain-specific
-        # method.  domain: 'intent'|'extent'|'shortfall'
-        _pathpage = getattr(self, f"block_{domain}_pathpage")
-        pathbook = {topic: _pathpage(topic, **kwargs) for topic in self.topics}
-        return pathbook
-
-    @OVERRIDE
-    def build_block_request(self, **scope):
-        blockscope = self._blockscope_(**scope)
-        if self.reload:
-            block_shortfall_pathbook = self.block_intent_pathbook(**blockscope)
-        else:
-            block_shortfall_pathbook = self.block_shortfall_pathbook(**blockscope)
-        block_shortfall_pathbook_kvhandles_lists = [list(block_shortfall_pathbook[topic].keys()) for topic in self.topics]
-        block_shortfall_pathbook_kvhandles_list = [_ for __ in block_shortfall_pathbook_kvhandles_lists for _ in __]
-        block_shortfall_pathbook_kvhandles = list(set(block_shortfall_pathbook_kvhandles_list))
-
-        shortfall_batchscope_list = \
-            self._kvhandles_to_batches_(*block_shortfall_pathbook_kvhandles)
-        shortfall_batchscope_list = \
-            [{k: blockscope[k] for k in tscope.keys()} for tscope in shortfall_batchscope_list]
-        if self.verbose:
-            if len(shortfall_batchscope_list) == 0:
-                print(f"Databuilder: build_block_request: no shortfalls found: returning extent")
-            else:
-                print(f"Databuilder: build_block_request: requesting build of shortfall batchscopes with tags: {shortfall_batchscope_list}")
-        _shortfall_batch_requests = \
-            [self._build_batch_request_(self._tagscope_(**shortfall_batchscope_list[i]), **shortfall_batchscope_list[i])
-                            .apply(self.pool) for i in range(len(shortfall_batchscope_list))]
-        shortfall_batch_requests_ = [_.apply(self.pool) for _ in _shortfall_batch_requests]
-        if self.throw is not None:
-            shortfall_batch_requests = [_.set(throw=self.throw) for _ in shortfall_batch_requests_]
-        else:
-            shortfall_batch_requests = shortfall_batch_requests_
-        shortfall_batch_requests_tags = "[" + \
-                                          ", ".join(tag(_) for _ in shortfall_batch_requests) + \
-                                          "]"
-        if self.verbose:
-            print(f"build_block_request: shortfall_batch_requests: " + shortfall_batch_requests_tags)
-
-        tagscope = self._tagscope_(**blockscope)
-        extent_request = Request(self.block_extent, **tagscope)
-        requests = shortfall_batch_requests + [extent_request]
-        build_block_request = Request(ALL, *requests)
-        if self.throw is not None:
-            build_block_request = build_block_request.set(throw=throw)
-        #TODO: #FIX
-        #build_block_request = LAST(*shortfall_batch_requests) if len(shortfall_batch_requests) > 0 else NONE()
-        if len(shortfall_batchscope_list) > 0 and self.build_block_request_lifecycle_callback is not None:
-            _ = build_block_request.with_lifecycle_callback(self.build_block_request_lifecycle_callback(**blockscope))
-            if self.verbose:
-                print(f"Databuilder: build_block_request: will record lifecycle")
-        else:
-            _ = build_block_request
-            if self.verbose:
-                print(f"Databuilder: build_block_request: will NOT record lifecycle")
-        return _
-
-    @OVERRIDE
-    # tagscope is necessary since batchscope will be expanded before being passed to _build_batch_
-    def _build_batch_request_(self, tagscope, **batchscope):
-        self.revisionspace.ensure()
-        return Request(self._build_batch_, tagscope, **batchscope)
-
-    @OVERRIDE
-    def _build_batch_(self, tagscope, **batchscope):
-        raise NotImplementedError()
-
-    @OVERRIDE
-    # tagbatchscope is necessary since batchscope will be expanded before being passed to _read_block_
-    def read_block_pathpage_request(self, topic, **blockscope):
-        _blockscope = self._blockscope_(**blockscope)
-        _tagscope = self._tagscope_(**_blockscope)
-        request = Request(self._read_block_, _tagscope, topic, **blockscope)
-        return request
-    
    
 class DBX:
     """
@@ -805,6 +192,7 @@ class DBX:
                 kind: 'READ' | 'PATH'
                 spec: url | (dbx, topic)
             """
+            #pdb.set_trace()
             self.kind = kind
             self.spec = spec
             if isinstance(self.spec, tuple):
@@ -917,34 +305,34 @@ class DBX:
                 debug=False,  
                 pic=False,
                 alias_dataspace=True,
-                git_repo=None,
-                git_hash=None,
+                repo=None,
+                revision=None,
     ):
-        self.datablock_cls_or_clstr = datablock_cls_or_clstr
+        self.spec = self.datablock_cls_or_clstr = datablock_cls_or_clstr
+        #pdb.set_trace()
         self.alias = alias
         self.debug = debug
         self.verbose = verbose
         self.pic = pic
         self.alias_dataspace = alias_dataspace
-        self.git_repo = git_repo
-        self.git_hash = git_hash
+        self.repo = repo
+        self.revision = revision
+
+        self.datablock_module_name = None
+        self.datablock_clstr = None
+        self.datablock_clsname = None
         self._datablock_cls = None
-        self._datablock_clstr = None
-        self._datablock_clsname = None
-        self._datablock_module_name = None
 
         self.dataspace = dataspace
         self.pool = pool
 
         self.datablock_kwargs = {}
-        @functools.wraps(self.datablock_cls())
         def update_datablock_kwargs(**datablock_kwargs):
             self.datablock_kwargs.update(**datablock_kwargs)
             return self
         self.Datablock = update_datablock_kwargs
 
         self._scope = None # initialize to default scope
-        @functools.wraps(self.datablock_cls().SCOPE)
         def update_scope(**scope_kwargs):
             if self._scope is None:
                 self._scope = copy.copy(scope_kwargs)
@@ -970,19 +358,20 @@ class DBX:
             return self
         self.Databuilder = update_databuilder_kwargs
 
+        #pdb.set_trace() #DEBUG
         if isinstance(self.datablock_cls_or_clstr, str):
             self.datablock_clstr = self.datablock_cls_or_clstr
             datablock_clstrparts = self.datablock_clstr.split('.')
             if len(datablock_clstrparts) == 1:
                 self.datablock_module_name = __name__
-                self.datablock_clsname = datablock_clstrparts[0]
             else:
-                self._datablock_module_name = '.'.join(datablock_clstrparts[:-1])
-                self.datablock_clsname = datablock_clstrparts[-1]
+                self.datablock_module_name = '.'.join(datablock_clstrparts[:-1])
+            self.datablock_clsname = datablock_clstrparts[-1]
         else:
             self._datablock_cls = self.datablock_cls_or_clstr
+            self.datablock_clsname = self._datablock_cls.__qualname__
             self.datablock_module_name = self._datablock_cls.__module__
-            self.datablock_clstr = f"{self._datablock_module_name}.{self._datablock_cls.__name__}"
+            self.datablock_clstr = f"{self.datablock_module_name}.{self._datablock_cls.__name__}"
 
     def clone(self, 
               *,
@@ -995,14 +384,14 @@ class DBX:
               verbose=None,
               debug=None,  
               pic=None,
-              git_repo=None,
-              git_hash=None,
+              repo=None,
+              revision=None,
               alias_dataspace=None,
     ):
         kwargs = copy.copy(self.databuilder_kwargs)
         kwargs['pic'] = self.pic
-        kwargs['git_repo'] = self.git_repo
-        kwargs['git_hash'] = self.git_hash
+        kwargs['repo'] = self.repo
+        kwargs['revision'] = self.revision
         kwargs['alias_dataspace'] = self.alias_dataspace
         if dataspace is not None:
             kwargs['dataspace'] = dataspace
@@ -1022,10 +411,10 @@ class DBX:
             kwargs['verbose'] = verbose
         if pic is not None:
             kwargs['pic'] = pic
-        if git_repo is not None:
-            kwargs['git_repo'] = git_repo
-        if git_hash is not None:
-            kwargs['git_hash'] = git_hash
+        if repo is not None:
+            kwargs['repo'] = repo
+        if revision is not None:
+            kwargs['revision'] = revision
         if alias_dataspace is not None:
             kwargs['alias_dataspace'] = alias_dataspace
 
@@ -1075,25 +464,25 @@ class DBX:
         _ =  int(hashlib.sha1(_repr.encode()).hexdigest(), 16)
         return _
 
-    def datablock_cls(self, check_git=True):
+    def datablock_cls(self, check_repo=True):
+        #pdb.set_trace() #DEBUG
         if self._datablock_cls is None:
-            if self.git_repo is not None and check_git:
-                repo = git.Repo(self.git_repo)
+            if self.repo is not None and check_repo:
+                repo = git.Repo(self.repo)
                 if self.verbose:
-                    print(f"Using git repo {self.git_repo}")
+                    print(f"Using git repo {self.repo}")
                 if repo.is_dirty():
-                    raise ValueError(f"Dirty git repo: {self.git_repo}: commit your changes")
-                if self.git_hash is not None:
+                    raise ValueError(f"Dirty git repo: {self.repo}: commit your changes")
+                if self.revision is not None:
                     #TODO: lock repo and unlock in __delete__
                     #TODO: if locked, print warning
                     #TODO: locking DB should identify the lock owner and start time, 
                     #TODO: so print that warning
-                    repo.checkout(self.git_hash)
+                    repo.checkout(self.revision)
                     if self.verbose:
-                        print(f"Using git hash {self.git_hash}")
-
-            mod = importlib.import_module(self._datablock_module_name)
-            self._datablock_cls = getattr(mod, self._datablock_clsname)
+                        print(f"Using git revision {self.revision}")
+            mod = importlib.import_module(self.datablock_module_name)
+            self._datablock_cls = getattr(mod, self.datablock_clsname)
         return self._datablock_cls
 
     @property
@@ -1108,10 +497,11 @@ class DBX:
 
     @property
     def scope(self):
+        pdb.set_trace()
         if self._scope is not None:
             _scope = self._scope
             if self.verbose:
-                print(f"DBX: scope: {self} with datablock revision {self.databuilder.revision} with alias {repr(self.databuilder.alias)}: using specified scope: {self._scope}")
+                print(f"DBX: scope: {self} for datablock with alias {repr(self.databuilder.alias)}: using specified scope: {self._scope}")
         else:
             record = self.show_named_record(alias=self.databuilder.alias, revision=self.databuilder.revision, stage='END') 
             if record is not None:
@@ -1182,17 +572,19 @@ class DBX:
 
     def read_request(self, topic=DEFAULT_TOPIC):
         if self.scope is None:
-            raise ValueError(f"{self} of revision {self.revision} has not been built yet")
+            raise ValueError(f"'None' scope, perhaps {self} of revision {self.revision} has not been built yet")
+        #pdb.set_trace()
         request = self.databuilder.read_block_pathpage_request(topic, **self.scope)\
             .set(summary=lambda _: self.extent[topic]) # TODO: #REMOVE?
         return request
 
     def PATH(self, topic=None):
-        _ = DBX.PathRequest((self, self.databuilder.revision, topic), pic=self.pic)
+        _ = DBX.PathRequest((self, topic), pic=self.pic)
         return _
 
     def READ(self, topic=None):
-        _ = DBX.ReadRequest((self, self.databuilder.revision, topic), pic=self.pic)
+        #pdb.set_trace()
+        _ = DBX.ReadRequest((self, topic), pic=self.pic)
         return _
     
     def read(self, topic=DEFAULT_TOPIC):
@@ -1602,9 +994,9 @@ class DBX:
             datablock_tagshardscope = self.datablock_cls().SCOPE(**shardscope)
             datablock_shardroots = self.datablock_shardroots(tagscope)
             if topic == None:
-                assert (not hasattr(self.datablock_cls(), 'TOPICS'), 
+                assert not hasattr(self.datablock_cls(), 'TOPICS'), \
                     f"__shard_extent_pathpage_valid__: None topic when datablock_cls.TOPICS == {getattr(self.datablock_cls(), 'TOPICS')} "
-                )
+                
                 _ = self.datablock(datablock_shardroots, scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem,).valid()
             else:
                 _ = self.datablock(datablock_shardroots, scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem).valid(topic)
@@ -1614,16 +1006,16 @@ class DBX:
             datablock_tagshardscope = self.datablock_cls().SCOPE(**shardscope)
             datablock_shardroots = self.datablock_shardroots(tagscope)
             if topic == None:
-                assert (not hasattr(self.datablock_cls(), 'TOPICS'), 
+                assert not hasattr(self.datablock_cls(), 'TOPICS'), \
                         f"__extent_shard_metric__: None topic when datablock_cls.TOPICS == {getattr(self.datablock_cls(), 'TOPICS')} "
-                )
+                
                 _ = self.datablock(datablock_shardroots, scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem).metric()
             else:
                 _ = self.datablock(datablock_shardroots, scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem).metric(topic)
             return _
    
-        rangecls = RANGE if not hasattr(dbx.datablock_cls, 'RANGE') else dbx.datablock_cls.RANGE
-        SCOPE_fields = dataclasses.fields(dbx.datablock_cls.SCOPE)
+        rangecls = RANGE if not hasattr(dbx.datablock_cls(), 'RANGE') else dbx.datablock_cls().RANGE
+        SCOPE_fields = dataclasses.fields(dbx.datablock_cls().SCOPE)
         block_keys = [field.name for field in SCOPE_fields]
         block_defaults = {field.name: field.default  for field in SCOPE_fields if field.default != dataclasses.MISSING}
         batch_to_shard_keys = {field.name: field.name for field in SCOPE_fields if isinstance(field.type, rangecls)}
@@ -1637,7 +1029,7 @@ class DBX:
         else:
             topics = [DEFAULT_TOPIC]
 
-        #... use git_hash
+        #... use rev
         if hasattr(dbx.datablock_cls(), 'REVISION'):
             if dbx.pic:
                 __revision = f"{{{dbx.datablock_clstr}.REVISION}}"

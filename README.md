@@ -8,9 +8,7 @@ It is an experiment dataset management toolkit.
     class Datablock:
         TOPICS: dict # {topic -> root} 
         |
-        FILENAME: str
-
-        [REVISION: str]
+        FILENAME: str #TODO: -> PATHNAME
         
         @dataclass
         def SCOPE:
@@ -47,9 +45,9 @@ For convenience, `Datablock` can be made to be descendant of the abstract `datab
 `pip install -e $DATABLOCKS`
 
 * DBX definition:
-`datablocks.dbx.DBX(Datablock, 'alias', verbose: bool, debug: bool, **databuilder_kwargs)` 
+`datablocks.dbx.DBX(datablock: Datablock, alias: str, verbose: bool, debug: bool, **databuilder_kwargs)` 
     or 
- `datablocks.dbx.DBX('path.to.Datablock', 'alias', ...)`
+ `datablocks.dbx.DBX(path_to_datablock:str, alias:str, alias: str, verbose: bool, debug: bool, **databuilder_kwargs)`
 can be used to 
     - build and cache a dataset
     - interrogate its build history, 
@@ -60,7 +58,8 @@ can be used to
 If `**scope` includes the result of other `DBX` as input specified as follows
 ```
     dbarray10 = datablocks.dbx.DBX(datablocks.test.datasets.PandasArray, 'dbarray10')
-    datablocks.dbx.DBX(datablocks.test.datasets.PandasMultiplier, 'dbmult10_3').SCOPE(input=dbarray10.READ(topic), multiplier=3.0)
+    datablocks.dbx.DBX(datablocks.test.datasets.PandasMultiplier, 'dbmult10_3')\
+        .SCOPE(input=dbarray10.READ(topic), multiplier=3.0)
 ```
 then `DBX` builds a lazy execution graph, whose nodes include (1) reading `dbarray10`, (2) building `dbmult10_3` from the inputs.
 The graph is evaluated in an evaluation pool, potentially remotely, potentially in parallel, depending on the pool type.
@@ -70,13 +69,12 @@ The graph is evaluated in an evaluation pool, potentially remotely, potentially 
     #...
 
 
-# EXAMPLES
+# BASIC EXAMPLES
 ## BASH
 * See available datablocks
 ```
     dbx "datablocks.DBX.show_datablocks()"
 ```
-
 * See a datablock build record history
 `dbx "help(datablocks.DBX.show_build_records)"`
 without an alias -- all records for this `Datablock` class
@@ -85,57 +83,46 @@ without an alias -- all records for this `Datablock` class
 ```
 or with an alias -- records specific to this instance of the `Datablock` class
 ```
-    DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk').show_build_records()
+    DBX('datablocks.test.pandas.datablocks.PandasArray', 'dbk').show_build_records()
 ```
 
 * Build a datablock
 `dbx "help(datablocks.DBX.build)"`
 ```
->dbx "DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk').Datablock(verbose=True, build_delay_secs=10, echo_delay_secs=1).SCOPE(size=100).build()"
+>dbx "DBX('datablocks.test.pandas.datablocks.PandasArray', 'dbk')\
+    .Datablock(verbose=True, build_delay_secs=10, echo_delay_secs=1)\
+    .SCOPE(size=100).build()"
 ```
-or in Python
-```
-    response = DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk')\
-            .Datablock(verbose=True, build_delay_secs=10, echo_delay_secs=1)\
-            .SCOPE(size=100)\
-            .build()
-```
+
 * Check result
 ```
-    export PDBK="DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk') # only declaration and alias matter; scope, etc. are retrieved from build records using alias
-    >dbx "$PDBK.show_build_records()"
-    >dbx "$PDBK.show_build_graph().status"
-    >dbx "$PDBK.show_build_graph().exception"
-    >dbx "$PDBK.show_build_graph().traceback"
-    >dbx "$PDBK.show_build_graph().result"
-    >dbx "$PDBK.show_build_graph().log()"
-    >dbx "$PDBK.show_build_batch_count()"
-    >dbx "$PDBK.show_build_batch_graph()"
-```
-or in Python
-```
-    print(response.status)
-    print(response.exception())
-    print(response.traceback())
-    print(response.result())
+    export DBK="DBX('datablocks.test.pandas.datablocks.PandasArray', 'dbk') # only declaration and alias matter; scope, etc. are retrieved from build records using alias
+    >dbx "$DBK.show_build_records()"
+    >dbx "$DBK.show_build_graph().status"
+    >dbx "$DBK.show_build_graph().exception"
+    >dbx "$DBK.show_build_graph().traceback"
+    >dbx "$DBK.show_build_graph().result"
+    >dbx "$DBK.show_build_graph().log()"
+    >dbx "$DBK.show_build_batch_count()"
+    >dbx "$DBK.show_build_batch_graph()"
 ```
 * Read a datablock
 `dbx "help(datablocks.DBX.read)"`
 ```
->export PDBK="DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk')"
->dbx "$PDBK.topics"
->dbx "$PDBK.scope"
->dbx "$PDBK.extent"
->dbx "$PDBK.intent"
->dbx "$PDBK.valid"
->dbx "$PDBK.metric"
->dbx "$PDBK.shortfall"
->dbx "$PDBK.read()"
+>export DBK="DBX('datablocks.test.pandas.datablocks.PandasArray', 'dbk')"
+>dbx "$DBK.topics"
+>dbx "$DBK.scope"
+>dbx "$DBK.extent"
+>dbx "$DBK.intent"
+>dbx "$DBK.valid"
+>dbx "$DBK.metric"
+>dbx "$DBK.shortfall"
+>dbx "$DBK.read()"
 ```
 
 # DEBUGGING
 ```
-    export PDA="DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk')" 
+    export PDA="DBX('datablocks.test.pandas.datablocks.PandasArray', 'pda')" 
     dbx "$PDA.build()"
 
     * block build records' tail: [returns a dataframe that can be subqueries]
@@ -184,17 +171,6 @@ or in Python
         Use the output of `show_block_graph` to determine list of node indices:
       
 ```
-or in Python
-```
-    from datablocks.dbx import DBX
-    import datablocks.test.pandas.datablocks
-
-    PDA=DBX(datablocks.test.pandas.datablocks.PandasArray, 'pdbk')
-    # or
-    PDA=DBX("datablocks.test.pandas.datablocks.PandasArray", 'pdbk')
-    PDA.build()
-    # etc
-```
 
 # TRANSCRIBE
 #... #TODO
@@ -212,20 +188,26 @@ default
 * DATALAKE=$HOME/.cache/datalake
 
 
-# FULL FEATURED EXAMPLES
-## MICRON
+# FULL FEATURED EXAMPLES: MICRON
+## BASH
 * `datablocks
 ```
-# Define
-export MIRCOHN="datablocks.DBX('datablocks.test.micron.datasets.miRCoHN')"
-export MIRCOS="datablocks.DBX('datablocks.test.micron.datasets.miRCoStats').SCOPE(mirco=$MIRCOHN.data('counts'))"
-# Examine
-dbx.echo "$MIRCOS"
+#> Define
+export DATALAKE=$HOME/.cache/testlake
+rm -rf $DATELAKE
+export MIRCOHN="datablocks.DBX('datablocks_test.micron.micron_dbk.miRCoHN', verbose=True)"
+export MIRCOS="datablocks.DBX('datablocks_test.micron.micron_dbk.miRCoStats').SCOPE(mirco=$MIRCOHN.READ('counts'))"
+#> Examine
+echo "$MIRCOS"
 dbx "$MIRCOS"
+dbx "help(datablocks_test.micron_dbk.miRCoHN)"
+dbx "help(datablocks_test.micron_dbk.miRCoHN.SCOPE)"
+
 dbx "$MIRCOS.SCOPE"
 dbx "$MIRCOS.intent()"
 dbx "$MIRCOS.extent()"
-# Build
+#> Build
+#... Start with miRCoHN: upstream dependency
 ...
 
 ```
