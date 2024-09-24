@@ -188,29 +188,5 @@ default
 * DATALAKE=$HOME/.cache/datalake
 
 
-# FULL FEATURED EXAMPLES: MICRON
-## BASH
-* `datablocks
-```
-#> Define
-export DATALAKE=$HOME/.cache/testlake
-rm -rf $DATELAKE
-export MIRCOHN="datablocks.DBX('datablocks_test.micron.micron_dbk.miRCoHN', verbose=True)"
-export MIRCOS="datablocks.DBX('datablocks_test.micron.micron_dbk.miRCoStats').SCOPE(mirco=$MIRCOHN.READ('counts'))"
-#> Examine
-echo "$MIRCOS"
-dbx "$MIRCOS"
-dbx "help(datablocks_test.micron_dbk.miRCoHN)"
-dbx "help(datablocks_test.micron_dbk.miRCoHN.SCOPE)"
-
-dbx "$MIRCOS.SCOPE"
-dbx "$MIRCOS.intent()"
-dbx "$MIRCOS.extent()"
-#> Build
-#... Start with miRCoHN: upstream dependency
-...
-
-```
-
 # DESIGN
 * Futures throw contained exceptions upon `result()`, Responses do not [#TODO: should they?]

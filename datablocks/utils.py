@@ -12,6 +12,8 @@ import sys
 import time
 import traceback
 
+import git 
+
 import numpy as np
 import pandas as pd
 
@@ -20,6 +22,10 @@ import pyarrow.parquet
 
 
 logger = logging.getLogger(__name__)
+
+
+def serializable(_):
+    return _
 
 
 def DEPRECATED(_):
@@ -493,3 +499,29 @@ def docstr(docstr):
         f.__doc__ = docstr
         return f
     return decorator
+
+
+def setup_repo(repo, revision, *, verbose=False):
+        if repo is not None:
+            repo = git.Repo(repo)
+            if verbose:
+                print(f"Using git repo {repo}")
+            if repo.is_dirty():
+                raise ValueError(f"Dirty git repo: {repo}: commit your changes")
+            if revision is not None:
+                #TODO: lock repo and unlock in __delete__
+                #TODO: if locked, print warning
+                #TODO: locking DB should identify the lock owner and start time, 
+                #TODO: so print that warning
+                repo.checkout(revision)
+                if verbose:
+                    print(f"Using git revision {revision}")
+
+
+class RepoMixin:
+    def setup_repo(self):
+        verbose = False if not getattr(self, 'revision') else self.revision
+        setup_repo(self.repo, self.revision)
+    
+
+

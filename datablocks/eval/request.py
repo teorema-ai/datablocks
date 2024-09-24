@@ -6,12 +6,13 @@ import importlib
 import inspect
 import logging
 
+
 import pdb
 import time
 
 from .. import utils
 from .. import signature
-from ..utils import REPLACE, REMOVE, DEPRECATED, ALIAS, truncate_str
+from ..utils import DEPRECATED, ALIAS, RepoMixin
 
 # eval support
 _eval = __builtins__['eval']
@@ -165,11 +166,11 @@ class Task:
 
 # TODO: split into RPCClass (holding ctor + ctor_args, ctor_kwargs)
 # TODO: and RPCMethod holding an instance of RPCClass and _method_, _prototype_
-class RPC:
+class RPC(RepoMixin):
     _method_ = None
     _prototype_ = None
     """
-       * This is a callable that will instantiate an object from {ctor_fqn} (fully-qualified ctor name) and call its {method}.
+       * This is a callable that will instantiate an object from {ctor} (fully-qualified ctor name) and call its {method}.
        * Before the call is made the {method}'s signature is verified by comparing to {self.signature} and
          {self.__defaults__} and {self.__kwdefaults__} are used to compute the {tag}.
          - self.signature, self.__defaults__ and self.__kwdefaults__ can be overriden in a subclass
@@ -181,11 +182,13 @@ class RPC:
           - .with_method(method)
           - .with_prototype(prototype)
     """
-    def __init__(self, ctor, *, args=None, kwargs=None):
+    def __init__(self, ctor, *, repo=None, revision=None, args=None, kwargs=None):
         if callable(ctor):
             self._ctor = ctor
         else:
             self.ctor_url = ctor
+        self.repo = repo
+        self.revision = revision
         self.ctor_args = args or []
         self.ctor_kwargs = kwargs or {}
         self._check_signature_ = False
@@ -274,11 +277,12 @@ class RPC:
         return repr_
 
     def __call__(self, *args, **kwargs):
-        r = self.func(*args, **kwargs)
+        r = self.get_func()(*args, **kwargs)
         return r
 
-    @property
-    def ctor(self):
+    def make_ctor(self):
+        if self.repo is not None:
+            self.setup_repo()
         if not hasattr(self, '_ctor'):
             urlparts = self.ctor_url.split('.')
             modname = '.'.join(urlparts[:-1])
@@ -287,18 +291,18 @@ class RPC:
             self._ctor = getattr(mod, ctorname)
         return self._ctor
 
-    @property
-    def func(self):
+    def get_func(self):
         if self._func is None:
             logger.debug(f"Instantiating {self.ctor}")
             logger.debug(f"Ctor signature: {inspect.signature(self.ctor)}")
             logger.debug(f"Ctor module: {inspect.getmodule(self.ctor)}")
             logger.debug(f"method: {self._method_}")
-            if inspect.isclass(self.ctor):
+            ctor = self.make_ctor()
+            if inspect.isclass(ctor):
                 self._instance = self.ctor(*self.ctor_args, **self.ctor_kwargs)
                 self._func = getattr(self._instance, self._method_)
             else:
-                self._func = self.ctor
+                self._func = ctor
         if self._check_signature_:
             assert inspect.signature(self._func) == self.signature
         return self._func
