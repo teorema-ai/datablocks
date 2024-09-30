@@ -20,8 +20,12 @@ import pandas as pd
 
 
 from . import signature
-from .signature import Signature, ctor_name
-from .signature import tag, Tagger
+from .signature import (
+    Signature, 
+    ctor_name,
+    tag, 
+    Tagger,
+)
 from .utils import OVERRIDE, serializable, microseconds_since_epoch, datetime_to_microsecond_str
 from .eval import request, pool
 from .eval.request import Request, ALL, LAST, NONE, Graph
@@ -235,7 +239,8 @@ class DBX:
             return _ 
         
         def __repr__(self):
-            _ = Tagger(tag_defaults=False).repr_ctor(self.__class__, self.spec, pic=self.pic)
+            _ = repr(self.dbx) + \
+                f".{self.kind}({self.topic if self.topic is not None else ''})"
             return _
 
         def __tag__(self):
@@ -402,7 +407,7 @@ class DBX:
                 self._datablock_cls = self.spec
                 self._datablock_clsname = self._datablock_cls.__qualname__
                 self._datablock_module_name = self._datablock_cls.__module__
-                self._datablock_clstr = f"{self.datablock_module_name}.{self._datablock_cls.__name__}"
+                self._datablock_clstr = f"{self._datablock_module_name}.{self._datablock_cls.__name__}"
         return self
     
     def clone(self, 
@@ -441,10 +446,7 @@ class DBX:
         _ = self.clone(pic=pic)
         return _
 
-    #TODO: __repr__()?  Needed for Graph transcript? 
-    # No, because Graph knows nothing about DBX, only about Request
-
-    def __str__(self):
+    def __repr__(self):
         args = (self.spec, self.alias) if self.alias else (self.spec,)
         kwargs = {'pic': self.pic} if self.pic else {}
         _ =  Tagger(tag_defaults=False).str_ctor(self.__class__, *args, **kwargs)
@@ -478,8 +480,9 @@ class DBX:
     @property
     def databuilder(self):
         databuilder_cls = self.databuilder_cls()
-        databuilder_kwargs = self.databuilder_kwargs_
-        databuilder_kwargs['dataspace'] = databuilder_kwargs['dataspace'].with_pic(True) #TODO: why with_pick(True)?
+        databuilder_kwargs = copy.copy(self.databuilder_kwargs_)
+        if 'dataspace' in databuilder_kwargs:
+            databuilder_kwargs['dataspace'] = databuilder_kwargs['dataspace'].with_pic(True) #TODO: why with_pick(True)?
         databuilder = databuilder_cls(self.alias, 
                                       build_block_request_lifecycle_callback=self._build_block_request_lifecycle_callback_,
                                       **databuilder_kwargs)
@@ -491,7 +494,7 @@ class DBX:
         if self._scope is not None:
             _scope = self._scope
             if self.verbose:
-                print(f"DBX: scope: {self} for datablock with alias {repr(self.databuilder.alias)}: using specified scope: {self._scope}")
+                print(f"DBX: scope for datablock with alias {repr(self.databuilder.alias)}: using specified scope: {self._scope}")
         else:
             record = self.show_named_record(alias=self.databuilder.alias, revision=self.revision, stage='END') 
             if record is not None:
@@ -500,11 +503,14 @@ class DBX:
                 except DBXEvalError as ee:
                     raise ValueError(f"Failed to parse build scope {record['scope']}") from ee
                 if self.verbose:
-                    print(f"DBX: scope: no specified scope for {self} with datablock with alias {repr(self.databuilder.alias)}: using build record scope: {_scope}")
+                    print(f"DBX: scope: no specified scope for {self} with datablock with alias {repr(self.databuilder.alias)}")
+                    print(f"DBX: scope: using build record scope: {_scope}")
             else:
-                _scope = {}
                 if self.verbose:
-                    print(f"DBX: scope: no specified scope and no records for {self} with alias {repr(self.databuilder.alias)}: using default scope")
+                    print(f"DBX: scope: no specified scope and no build records for {self} with alias {repr(self.databuilder.alias)}")
+                    print(f"DBX: scope: constructing scope from kwargs:\n{self.datablock_scope_kwargs_}")
+                    _scope = self.datablock_cls().SCOPE(**self.datablock_scope_kwargs_)
+            self._scope = _scope
         return _scope
     
     @property
@@ -1010,7 +1016,7 @@ class DBX:
         block_defaults = {field.name: field.default  for field in SCOPE_fields if field.default != dataclasses.MISSING}
         batch_to_shard_keys = {field.name: field.name for field in SCOPE_fields if isinstance(field.type, rangecls)}
 
-        __module__ = DBX_PREFIX + "." + dbx.datablock_module_name
+        __module__ = DBX_PREFIX + "." + dbx._datablock_module_name
         __cls_name = dbx.datablock_cls().__name__
         datablock_cls = dbx.datablock_cls()
         datablock_kwargs = dbx.datablock_kwargs_
@@ -1111,7 +1117,7 @@ class DBX:
             return _roots       
 
         for dbx in dbxs:
-            imports[dbx.datablock_module_name]= f"import {dbx.datablock_module_name}\n"
+            imports[dbx._datablock_module_name]= f"import {dbx._datablock_module_name}\n"
             _datablock = f"{dbx.alias}"
             build += f"# {tag(dbx)}\n"
             blockscope = dbx.databuilder._blockscope_(**dbx.scope)

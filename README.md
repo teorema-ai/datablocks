@@ -189,4 +189,8 @@ default
 
 
 # DESIGN
+* We build blocks and read blocks, which under the hood may be broken up into batches
+  . and written one shard at a time.
+  . Shards are necessary to resume partial builds or combine overlapping blocks.
+  . Distinction between block/batch/shard appears only when SCOPE variables are of type BATCH, which means, they encapsulate multiple shards in one serial build.
 * Futures throw contained exceptions upon `result()`, Responses do not [#TODO: should they?]
