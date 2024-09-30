@@ -1,5 +1,4 @@
-#DEBUG
-import pdb
+import pdb #DEBUG
 
 import copy
 import dataclasses
@@ -244,10 +243,9 @@ class DBX:
             return _
 
         def __tag__(self):
-            _tag__ = f"{DBX_PREFIX}.{self.dbx.datablock_clstr}"
-            tag__ = _tag__+f"@{self.dbx.databuilder.alias}"
-            tag_ =  tag__+f"#{self.dbx.alias}" if self.dbx.alias is not None else tag__+"#"
-            tag = tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else tag_+":"
+            tag__ = f"{DBX_PREFIX}.{self.dbx._datablock_clstr}"
+            tag_ = tag__+f"@{self.dbx.databuilder.alias}#{self.dbx.databuilder.revision}"
+            tag = tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else tag_+""
             return tag
         
     class ReadRequest(ProxyRequest):
@@ -280,7 +278,7 @@ class DBX:
                     anchorchains.extend(_anchorchains)
             return anchorchains
         
-        datablock_dataspace = dataspace.subspace(DBX_PREFIX)
+        datablock_dataspace = dataspace.subspace(DBX_PREFIX).ensure()
 
         anchorchains = _chase_anchors(datablock_dataspace)
         if debug:
@@ -323,7 +321,7 @@ class DBX:
                 self.datablock_scope_kwargs_ = {}
 
     def __init__(self, 
-                spec: Optional[Union[Datablock, str]] = None, #cls or clstr
+                spec: Optional[Union[type, str]] = None, #Datablock cls or clstr
                 alias=None,
                 *,
                 pic=False,
@@ -604,23 +602,24 @@ class DBX:
     
     @property
     def intent(self):
-        _ = self.databuilder.block_intent(**self.scope)
+        _ = self.databuilder.block_intent(**asdict(self.scope))
         return _
 
     @property
     def extent(self):
-        _ = self.databuilder.block_extent(**self.scope)
+        _ = self.databuilder.block_extent(**asdict(self.scope))
         return _
     
     @property
     def shortfall(self):
-        _ = self.databuilder.block_shortfall(**self.scope)
+        _ = self.databuilder.block_shortfall(**asdict(self.scope))
         return _
     
     @property
     def metric(self):
-        _ = self.databuilder.block_extent_metric(**self.scope)
-        return _    
+        _ = self.databuilder.block_extent_metric(**asdict(self.scope))
+        return _
+
     @property
     def valid(self):
         _ = self.extent()
@@ -912,7 +911,9 @@ class DBX:
             return _
 
         def datablock(self, roots, filesystem, scope=None):
-            self._datablock = self.datablock_cls()(roots, filesystem, scope, **self.datablock_kwargs)
+            #pdb.set_trace() #DEBUG
+            datablock_cls = dbx.datablock_cls()
+            self._datablock = datablock_cls(roots, filesystem, scope, **dbx.datablock_kwargs_)
             return self._datablock
 
         @property
@@ -937,9 +938,9 @@ class DBX:
             shardscope_list = self.scope_to_shards(**tagscope)
             assert len(shardscope_list) == 1
             shardscope = shardscope_list[0]
-            if hasattr(self.datablock_cls(), 'TOPICS'):
+            if hasattr(dbx.datablock_cls(), 'TOPICS'):
                 shardroots = {}
-                for _topic in self.datablock_cls().TOPICS:
+                for _topic in dbx.datablock_cls().TOPICS:
                     shardspace = self._shardspace_(_topic, **shardscope)
                     if ensure:
                         shardspace.ensure()
@@ -966,11 +967,11 @@ class DBX:
             return batchroots
 
         def _build_batch_(self, tagscope, **batchscope):
-            datablock_batchscope = self.datablock_cls.SCOPE(**batchscope)
-            datablock_shardroots = self.datablock_batchroots(tagscope, ensure=True)
+            datablock_batchscope = dbx.datablock_cls.SCOPE(**batchscope)
+            datablock_shardroots = dbx.datablock_batchroots(tagscope, ensure=True)
             dbk = self.datablock(datablock_shardroots, scope=datablock_batchscope, filesystem=self.dataspace.filesystem)
             if self.verbose:
-                print(f"DBX: building batch for datablock {type(dbk)}: {dbk} constructed with kwargs {self.datablock_kwargs}")
+                print(f"DBX: building batch for datablock {type(dbk)}: {dbk} constructed with kwargs {dbx.datablock_kwargs_}")
             dbk.build()
             _ = self.block_extent_pathbook(**tagscope)
             return _
@@ -978,20 +979,20 @@ class DBX:
         def _read_block_(self, tagscope, topic, **blockscope):
             # tagscope can be a list, opaque to the Request evaluation mechanism, but batchscope must be **-expanded to allow Request mechanism to evaluate the kwargs
             datablock_blockroots = self.datablock_blockroots(tagscope)
-            datablock_blockscope = self.datablock_cls().SCOPE(**blockscope)
+            datablock_blockscope = dbx.datablock_cls().SCOPE(**blockscope)
             if topic == None:
-                assert not hasattr(self.datablock_cls(), 'TOPICS'), f"_read_block_: None topic when datablock.TOPICS == {self.datablock_cls().TOPICS} "
+                assert not hasattr(dbx.datablock_cls(), 'TOPICS'), f"_read_block_: None topic when datablock.TOPICS == {dbx.datablock_cls().TOPICS} "
                 _ = self.datablock(datablock_blockroots, scope=datablock_blockscope, filesystem=self.dataspace.filesystem).read()
             else:
                 _ = self.datablock(datablock_blockroots, scope=datablock_blockscope, filesystem=self.dataspace.filesystem).read(topic)
             return _
 
         def _shard_extent_page_valid_(self, topic, tagscope, **shardscope):
-            datablock_tagshardscope = self.datablock_cls().SCOPE(**shardscope)
+            datablock_tagshardscope = dbx.datablock_cls().SCOPE(**shardscope)
             datablock_shardroots = self.datablock_shardroots(tagscope)
             if topic == None:
-                assert not hasattr(self.datablock_cls(), 'TOPICS'), \
-                    f"__shard_extent_page_valid__: None topic when datablock_cls.TOPICS == {getattr(self.datablock_cls(), 'TOPICS')} "
+                assert not hasattr(dbx.datablock_cls(), 'TOPICS'), \
+                    f"__shard_extent_page_valid__: None topic when datablock_cls.TOPICS == {getattr(dbx.datablock_cls(), 'TOPICS')} "
                 
                 _ = self.datablock(datablock_shardroots, scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem,).valid()
             else:
@@ -999,11 +1000,11 @@ class DBX:
             return _
         
         def _extent_shard_metric_(self, topic, tagscope, **shardscope):
-            datablock_tagshardscope = self.datablock_cls().SCOPE(**shardscope)
+            datablock_tagshardscope = dbx.datablock_cls().SCOPE(**shardscope)
             datablock_shardroots = self.datablock_shardroots(tagscope)
             if topic == None:
                 assert not hasattr(self.datablock_cls(), 'TOPICS'), \
-                        f"__extent_shard_metric__: None topic when datablock_cls.TOPICS == {getattr(self.datablock_cls(), 'TOPICS')} "
+                        f"__extent_shard_metric__: None topic when datablock_cls.TOPICS == {getattr(dbx.datablock_cls(), 'TOPICS')} "
                 
                 _ = self.datablock(datablock_shardroots, scope=datablock_tagshardscope, filesystem=self.dataspace.filesystem).metric()
             else:
@@ -1018,8 +1019,8 @@ class DBX:
 
         __module__ = DBX_PREFIX + "." + dbx._datablock_module_name
         __cls_name = dbx.datablock_cls().__name__
-        datablock_cls = dbx.datablock_cls()
-        datablock_kwargs = dbx.datablock_kwargs_
+        #datablock_cls = dbx.datablock_cls 
+        #datablock_kwargs = dbx.datablock_kwargs_
         if hasattr(dbx.datablock_cls(), 'TOPICS'):
             topics = dbx.datablock_cls().TOPICS
         else:
@@ -1035,8 +1036,8 @@ class DBX:
                     '__repr__': __repr__,
                     'revision': __revision,
                     'topics': topics,
-                    'datablock_cls': datablock_cls,
-                    'datablock_kwargs': datablock_kwargs,
+                    #'datablock_cls': datablock_cls,
+                    #'datablock_kwargs': datablock_kwargs,
                     'datablock': datablock,
                     'datablock_blockroots': datablock_blockroots,
                     'datablock_batchroots': datablock_batchroots,
@@ -1151,7 +1152,7 @@ class DBX:
                 _filesystem = signature.Tagger().tag_func("fsspec.filesystem", protocol, **storage_options) 
             else:
                 _filesystem = ""        
-            _, __kwargs = Tagger().tag_args_kwargs(**dbx.datablock_kwargs)
+            _, __kwargs = Tagger().tag_args_kwargs(**dbx.datablock_kwargs_)
             _kwargs = ""
             for key, val in __kwargs.items():
                 _kwargs += f"{key}={val},\n"

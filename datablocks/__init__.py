@@ -24,6 +24,25 @@ STDOUT_RAY_POOL = DATABLOCKS_STDOUT_RAY_POOL
 FILE_RAY_POOL = DATABLOCKS_FILE_RAY_POOL
 
 
+def sprint(x, indent=0):
+    prefix = "".join(['\t']*indent)
+    if isinstance(x, dict):
+        s = ""
+        for k, v in x.items():
+            s += f"{prefix}{k}: "
+            if isinstance(v, dict):
+                s += "\n" + sprint(v, indent=indent+1)
+            else:
+                s += f"{v}"
+    else:
+        s = f"{prefix}{x}"
+    return s
+
+
+def pprint(x, indent=0):
+    print(sprint(x, indent=indent))
+
+
 def print_usage(*, console=True):
     if console:
         print(f"""Usage:\nDATALAKE_URL={{DATALAKE_URL}}\\\n"""
@@ -32,12 +51,19 @@ def print_usage(*, console=True):
         print(f"""Usage:\n{__name__}.exed("--help")  |\n{__name__}.exec("{{package.module.Class}}({{key}}={{val}},...).{{method}}({{key}}={{val}},...)""")
 
 
-def echo():
-    argstr = sys.argv[1]
-    print(argstr)
+def debug(argstr=None):
+    exec(argstr, debug=True)
 
 
-def exec(argstr=None):
+def exec_print(argstr=None):
+    pprint(exec(argstr))
+
+
+def debug_print(argstr=None):
+    print(debug(argstr))
+
+
+def exec(argstr=None, *, debug=False):
     import datablocks.dbx
     def import_mod(path):
         path_parts = path.split('.')
@@ -106,7 +132,8 @@ def exec(argstr=None):
     else:
         _ = r
     """
-    #print(f"exec: {s}")
+    if debug:
+        print(f"dbx: exec: {s}")
     _ = _eval(s)
     return _    
 

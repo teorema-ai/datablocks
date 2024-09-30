@@ -8,6 +8,7 @@ import hashlib
 import importlib
 import logging
 import os
+import pdb #DEBUG
 from typing import Any, TypeVar, Generic, Tuple, Union, List, Dict
 
 import fsspec
@@ -327,17 +328,6 @@ class Databuilder(Anchored, Scoped):
         block_intent_page = {kvhandle: pathshard for kvhandle, pathshard in kvhandle_pathshard_list}
         return block_intent_page
 
-    @OVERRIDE
-    def _shard_extent_page_valid_(self, topic, tagscope, **shardscope):
-        pathset = self._shardspace_(topic, **tagscope).root
-        valid = self.revisionspace.filesystem.isdir(pathset)
-        if self.debug:
-            if valid:
-                print(f"_shard_extent_page_valid_: VALID: shard with topic {repr(topic)} with scope with tag {tagscope}")
-            else:
-                print(f"_shard_extent_page_valid_: INVALID shard with topic {repr(topic)} with scope with tag {tagscope}")
-        return valid
-
     def block_extent_page(self, topic, **scope):
         if topic not in self.topics:
             raise ValueError(f"Unknown topic {topic} is not among {self.topics}")
@@ -350,7 +340,18 @@ class Databuilder(Anchored, Scoped):
             if valid:
                 block_extent_page[kvhandle] = shard_pathset
         return block_extent_page
-    
+
+    @OVERRIDE
+    def _shard_extent_page_valid_(self, topic, tagscope, **shardscope):
+        pathset = self._shardspace_(topic, **tagscope).root
+        valid = self.revisionspace.filesystem.isdir(pathset)
+        if self.debug:
+            if valid:
+                print(f"_shard_extent_page_valid_: VALID: shard with topic {repr(topic)} with scope with tag {tagscope}")
+            else:
+                print(f"_shard_extent_page_valid_: INVALID shard with topic {repr(topic)} with scope with tag {tagscope}")
+        return valid
+
     def block_extent_page_request(self, topic, **scope):
         _ = Request(self.block_extent_page, topic, **scope)
         if self.throw is not None:
@@ -379,13 +380,13 @@ class Databuilder(Anchored, Scoped):
             block_shortfall_page[kvhandle] = shortfall_pathshard
         return block_shortfall_page
 
-    #REMOVE?
     def block_intent_book(self, **scope):
-        return self._page_book("intent", **scope)
+        return {topic: self.block_intent_page(topic, **scope) for topic in self.topics}
+        #return self._page_book("intent", **scope) #REMOVE
 
-    #REMOVE?
     def block_extent_book(self, **scope):
-        return self._page_book("extent", **scope)
+        return {topic: self.block_extent_page(topic, **scope) for topic in self.topics}
+        #return self._page_book("extent", **scope) #REMOVE
 
     @staticmethod
     def collate_pages(topic, *pages):
@@ -411,18 +412,22 @@ class Databuilder(Anchored, Scoped):
         return collated_book
 
     def block_intent(self, **scope):
-        blockscope = self._blockscope_(**scope)
-        tagscope = self._tagscope_(**blockscope)
-        block_intent_book = self.block_intent_book(**tagscope)
-        _block_intent_book = self._kvhbook_to_scopebook(block_intent_book)
-        return _block_intent_book
+        #DEBUG
+        #blockscope = self._blockscope_(**scope)
+        #tagscope = self._tagscope_(**blockscope)
+        #block_intent_book = self.block_intent_book(**tagscope)
+        block_intent_book = self.block_intent_book(**scope)
+        block_intent_scopebook = self._kvhbook_to_scopebook(block_intent_book)
+        return block_intent_scopebook
 
     def block_extent(self, **scope):
-        blockscope = self._blockscope_(**scope)
+        #DEBUG
+        #blockscope = self._blockscope_(**scope)
         #tagscope = self._tagscope_(**blockscope)
-        block_extent_book = self.block_extent_book(**blockscope)
-        extent = self._kvhbook_to_scopebook(block_extent_book)
-        return extent
+        #block_extent_book = self.block_extent_book(**tagscope)
+        block_extent_book = self.block_extent_book(**scope)
+        block_extent_scopebook = self._kvhbook_to_scopebook(block_extent_book)
+        return block_extent_scopebook
 
     def block_shortfall(self, **scope):
         blockscope = self._blockscope_(**scope)
@@ -459,8 +464,8 @@ class Databuilder(Anchored, Scoped):
                 shardmetric = self._extent_shard_metric_(topic, tagscope, **shardscope)
                 #FIX: refactor via *_to_scopebook()
                 metric_page.append((shardscope, shardmetric))
-            _extent_metric_book[topic] = Databuilder._scopepage_(metric_page)
-        extent_metric_book = Databuilder._scopebook_(_extent_metric_book)
+            _extent_metric_book[topic] = Databuilder.Scopepage(metric_page)
+        extent_metric_book = Databuilder.Scopebook(_extent_metric_book)
         return extent_metric_book
 
     def block_shortfall_book(self, **scope):
@@ -484,14 +489,16 @@ class Databuilder(Anchored, Scoped):
         #TODO: when `self.topics is not None` it must be a list of valid str
         #TODO: `self.topics == None` must mean that `_shardspace_` generates a unique space corresponding to an `hvhandle` with no topic head
         #TODO: `scope_to_hvhandle` with topic==None must generate an hvhandle with no topic head
-        tagshard = self._tagscope_(**shard)
+        #DEBUG
+        pdb.set_trace()
+        tagshard = self._tagscope_(**shard) #TODO: #REMOVE?: redundant, since the input shard is part of a tagscope
         hvhandle = self._scope_to_hvhandle_(topic, **tagshard)
         subspace = self.revisionspace.subspace(*hvhandle)
         if self.debug:
             print(f"SHARDSPACE: formed for topic {repr(topic)} and shard with tag {tagshard}: {subspace}")
         return subspace
     
-    class _scopebook_(dict):
+    class Scopebook(dict):
         def pretty(self):
             lines = []
             for topic, page in self.items():
@@ -502,7 +509,7 @@ class Databuilder(Anchored, Scoped):
             _ = '\n '.join(lines)
             return _
         
-    class _scopepage_(list):
+    class Scopepage(list):
         def pretty(self):
             lines = []
             for scope, val in self:
@@ -566,8 +573,8 @@ class Databuilder(Anchored, Scoped):
             for kvhandle, val in kvhpage.items():
                 scope = Databuilder._scope_(self._kvhandle_to_scope_(topic, kvhandle))
                 _scopebook[topic].append((Databuilder._scope_(scope), val))
-        _scopebook_ = Databuilder._scopebook_({topic: Databuilder._scopepage_(page) for topic, page in _scopebook.items()}) 
-        return _scopebook_
+        scopebook = Databuilder.Scopebook({topic: Databuilder.Scopepage(page) for topic, page in _scopebook.items()}) 
+        return scopebook
 
     def _lock_kvhandle(self, topic, kvhandle):
         if self.lock_pages:
@@ -580,6 +587,7 @@ class Databuilder(Anchored, Scoped):
             self.revisionspace.subspace(*hivechain).release()
 
     #REMOVE: unroll inplace where necessary
+    '''
     def _page_book(self, domain, **kwargs):
         # This book is computed by computing a page for each topic separately, 
         # via a dedicated function call with topic as an arg, using a domain-specific
@@ -587,6 +595,7 @@ class Databuilder(Anchored, Scoped):
         _page = getattr(self, f"block_{domain}_page")
         book = {topic: _page(topic, **kwargs) for topic in self.topics}
         return book
+    '''
 
     @OVERRIDE
     def build_block_request(self, **scope):
