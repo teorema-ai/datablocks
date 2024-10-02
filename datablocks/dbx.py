@@ -299,7 +299,6 @@ class DBX:
             return datablocks
     @dataclass
     class State:
-        
         spec: Union[Datablock, str]
         alias: Optional[str] = None
         pic: bool = False
@@ -507,7 +506,7 @@ class DBX:
                 if self.verbose:
                     print(f"DBX: scope: no specified scope and no build records for {self} with alias {repr(self.databuilder.alias)}")
                     print(f"DBX: scope: constructing scope from kwargs:\n{self.datablock_scope_kwargs_}")
-                    _scope = self.datablock_cls().SCOPE(**self.datablock_scope_kwargs_)
+                    _scope = asdict(self.datablock_cls().SCOPE(**self.datablock_scope_kwargs_))
             self._scope = _scope
         return _scope
     
@@ -602,22 +601,22 @@ class DBX:
     
     @property
     def intent(self):
-        _ = self.databuilder.block_intent(**asdict(self.scope))
+        _ = self.databuilder.block_intent(**self.scope)
         return _
 
     @property
     def extent(self):
-        _ = self.databuilder.block_extent(**asdict(self.scope))
+        _ = self.databuilder.block_extent(**self.scope)
         return _
     
     @property
     def shortfall(self):
-        _ = self.databuilder.block_shortfall(**asdict(self.scope))
+        _ = self.databuilder.block_shortfall(**self.scope)
         return _
     
     @property
     def metric(self):
-        _ = self.databuilder.block_extent_metric(**asdict(self.scope))
+        _ = self.databuilder.block_extent_metric(**self.scope)
         return _
 
     @property

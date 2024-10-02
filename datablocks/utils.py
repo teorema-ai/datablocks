@@ -502,20 +502,20 @@ def docstr(docstr):
 
 
 def setup_repo(repo, revision, *, verbose=False):
-        if repo is not None:
-            repo = git.Repo(repo)
+    if repo is not None:
+        repo = git.Repo(repo)
+        if verbose:
+            print(f"Using git repo {repo} with revision {revision}")
+        if repo.is_dirty():
+            raise ValueError(f"Dirty git repo: {repo}: commit your changes")
+        if revision is not None:
+            #TODO: lock repo and unlock in __delete__
+            #TODO: if locked, print warning
+            #TODO: locking DB should identify the lock owner and start time, 
+            #TODO: so print that warning
+            repo.git.checkout(revision)
             if verbose:
-                print(f"Using git repo {repo}")
-            if repo.is_dirty():
-                raise ValueError(f"Dirty git repo: {repo}: commit your changes")
-            if revision is not None:
-                #TODO: lock repo and unlock in __delete__
-                #TODO: if locked, print warning
-                #TODO: locking DB should identify the lock owner and start time, 
-                #TODO: so print that warning
-                repo.checkout(revision)
-                if verbose:
-                    print(f"Using git revision {revision}")
+                print(f"Using git revision {revision}")
 
 
 class RepoMixin:
