@@ -319,11 +319,11 @@ class Databuilder(Anchored, Scoped):
         tagblockscope = self._tagscope_(**blockscope)
         if topic not in self.topics:
             raise ValueError(f"Unknown topic {topic} is not among {self.topics}")
-        shard_list = self.scope_to_shards(**tagblockscope)
+        tagshard_list = self.scope_to_shards(**tagblockscope)
         kvhandle_pathshard_list = []
-        for shard in shard_list:
-            kvhandle = self._scope_to_kvhandle_(topic, **shard)
-            pathshard = self._shardspace_(topic, **shard).root
+        for tagshard in tagshard_list:
+            kvhandle = self._scope_to_kvhandle_(topic, **tagshard)
+            pathshard = self._shardspace_(topic, **tagshard).root
             kvhandle_pathshard_list.append((kvhandle, pathshard))
         block_intent_page = {kvhandle: pathshard for kvhandle, pathshard in kvhandle_pathshard_list}
         return block_intent_page
@@ -416,6 +416,8 @@ class Databuilder(Anchored, Scoped):
         #blockscope = self._blockscope_(**scope)
         #tagscope = self._tagscope_(**blockscope)
         #block_intent_book = self.block_intent_book(**tagscope)
+        #DEBUG
+        #pdb.set_trace()
         block_intent_book = self.block_intent_book(**scope)
         block_intent_scopebook = self._kvhbook_to_scopebook(block_intent_book)
         return block_intent_scopebook
@@ -489,8 +491,6 @@ class Databuilder(Anchored, Scoped):
         #TODO: when `self.topics is not None` it must be a list of valid str
         #TODO: `self.topics == None` must mean that `_shardspace_` generates a unique space corresponding to an `hvhandle` with no topic head
         #TODO: `scope_to_hvhandle` with topic==None must generate an hvhandle with no topic head
-        #DEBUG
-        pdb.set_trace()
         tagshard = self._tagscope_(**shard) #TODO: #REMOVE?: redundant, since the input shard is part of a tagscope
         hvhandle = self._scope_to_hvhandle_(topic, **tagshard)
         subspace = self.revisionspace.subspace(*hvhandle)

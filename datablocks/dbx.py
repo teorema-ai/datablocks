@@ -924,6 +924,7 @@ class DBX:
                 _ = self.anchorspace.subspace(f"revision={str(self.revision)}",)
             return _
 
+        #TODO: #REMOVE? 
         def _shardspace_(self, topic, **shard):
             # ignore shard, label by alias, revision, topic only
             if topic is None:
@@ -1047,7 +1048,7 @@ class DBX:
         }
         if dbx.use_alias_dataspace:
             databuilder_classdict['revisionspace'] = revisionspace
-            databuilder_classdict['_shardspace_'] = _shardspace_
+            #databuilder_classdict['_shardspace_'] = _shardspace_ #TODO: #REMOVE? #OPTIONAL?
         if hasattr(dbx.datablock_cls(), 'valid'):
             databuilder_classdict['_shard_extent_page_valid_'] = _shard_extent_page_valid_
         if hasattr(dbx.datablock_cls(), 'metric'):

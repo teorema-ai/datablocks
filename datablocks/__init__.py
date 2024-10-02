@@ -34,6 +34,7 @@ def sprint(x, indent=0):
                 s += "\n" + sprint(v, indent=indent+1)
             else:
                 s += f"{v}"
+            s += "\n"
     else:
         s = f"{prefix}{x}"
     return s
@@ -52,7 +53,7 @@ def print_usage(*, console=True):
 
 
 def debug(argstr=None):
-    exec(argstr, debug=True)
+    return exec(argstr, debug=True)
 
 
 def exec_print(argstr=None):
@@ -60,7 +61,7 @@ def exec_print(argstr=None):
 
 
 def debug_print(argstr=None):
-    print(debug(argstr))
+    pprint(debug(argstr))
 
 
 def exec(argstr=None, *, debug=False):
