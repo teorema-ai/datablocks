@@ -39,8 +39,7 @@ from .request import Task, Future, Request, Response, Closure
 from ..utils import REMOVE, DEPRECATED
 
 
-VERSION = 0
-logger = logging.getLogger(__name__)
+VERSION = 0  #TODO: #REMOVE?
 
 
 class ConstFuture:
@@ -180,76 +179,38 @@ class Logging:
                    self.logname == other.logname
 
         def __call__(self, *args, **kwargs):
-            """
-            #TODO: this comment may no longer be accurate.
-            Rebinds must be allowed upon entry because the pool graph may (re)evaluate args/kwargs at the last minute.
-            FIX: reconcile logger vs _logging_; reconcile logging and _logging_
-            """
-            #_logging_ = logging.getLogger(__name__)
-            #_logging_ = logging.getLogger()
-            _logging_ = logging
             # FIX: ensure authenticate_task arguments are as expected
             self.pool.authenticate_task(self.id,
                                     self.cookie,
                                     )
-            _logger = None
-            _logging_.debug(f">>>>>>>> {self.id}: BEGAN executing task\ncookie: {self.cookie}, id:{self.id}\nargs: {args}\nkwargs: {kwargs}")
-
-            #logger = logging.getLogger(log_file)
-            # cannot add handler to a named logger since functions
-            # deeper in the call tree will not know to use this logger to write to:
-            # they will use logging.getLogger() at best.
-            # Thus, we need to add handler to the root logger.
-            # N.B.: `logging` does not seem to allow to add handlers to it.
-            logger = logging.getLogger()
-
-            _log_level = logger.getEffectiveLevel()
-            logger.setLevel(self.pool.log_level)
+            if self.pool.verbose:
+                print(f"DEBUG: >>>>>>>> {self.id}: BEGAN executing task\ncookie: {self.cookie}, id:{self.id}\nargs: {args}\nkwargs: {kwargs}")
             logcontext = logging_context(self.logspace, self.logpath)
             logstream = logcontext.__enter__()
+            #DEBUG
+            #pdb.set_trace()
             if logstream is not None:
-                if self.pool.redirect_stdout:
-                    _logging_.debug(f"Redirecting stdout to {self.logpath} in {str(self.logspace)}")
+                if self.pool.log_to_file:
+                    if self.pool.verbose:
+                        print(f"Redirecting stdout to {self.logpath} in {str(self.logspace)}")
                     _stdout = sys.stdout
                     sys.stdout = logstream
-                    _logging_.debug(f"Redirected stdout to {self.logpath} in {str(self.logspace)}")
-                else:
-                    _logging_.debug(f"Adding logger handler recording to {self.logpath} in {str(self.logspace)}")
-                    _handlers = logger.handlers
-                    logger.handers = []
-                    handler = logging.StreamHandler(logstream)
-                    formatter = logging.Formatter(
-                        f"{self.pool.log_prefix if self.pool.log_prefix is not None else ''}" + (
-                            "" if self.pool.log_prefix is None else ":") +
-                        f"{self.pool.log_format}")
-                    handler.setFormatter(formatter)
-                    if hasattr(self.func, '__globals__') and 'logger' in self.func.__globals__:
-                        _logger = self.func.__globals__['logger']
-                        self.func.__globals__['logger'] = logger
-                    logger.addHandler(handler)
-            logger.debug(f"START: Executing task:\ncookie: {self.cookie}, id: {self.id}")
+                    if self.pool.verbose:
+                        print(f"Redirected stdout to {self.logpath} in {str(self.logspace)}")
+            if self.pool.debug:
+                print(f"DEBUG: START: Executing task:\ncookie: {self.cookie}, id: {self.id}")
             try:
-                #TODO: #REMOVE
-                #request = Request(self.func, *args, **kwargs)
-                #_ = request.compute()
                 _ = self.func(*args, **kwargs)
             finally:
-                logger.debug(f"END: Executing task:\ncookie: {self.cookie}, id: {self.id}")
+                if self.pool.debug:
+                    print(f"DEBIUG: END: Executing task:\ncookie: {self.cookie}, id: {self.id}")
                 if logstream is not None:
-                    if self.pool.redirect_stdout:
-                        _logging_.debug(f"Restoring stdout from {self.logpath} in {self.logspace}")
+                    if self.pool.log_to_file:
                         sys.stdout = _stdout
-                        _logging_.debug(f"Restored stdout from {self.logpath} in {self.logspace}")
-                    else:
-                        if hasattr(self.func, '__globals__'):
-                            self.func.__globals__['logger'] = _logger
-                        logger.handlers = []
-                        for h in _handlers:
-                            logger.addHandler(h)
-                        logcontext.__exit__(None, None, None)
-                        _logging_.debug(f"Removed logger handler recording to {self.logpath} in {self.logspace}")
-                    logger.setLevel(_log_level)
-                    _logging_.debug(f"<<<<<<<<< {self.id}: ENDED executing task\ncookie: {self.cookie}, id:{self.id}\nargs: {args}\nkwargs: {kwargs}")
+                        if self.pool.debug:
+                            print(f"DEBUG: Restored stdout from {self.logpath} in {self.logspace}")
+                    if self.pool.debug:
+                        print(f"DEBUG: <<<<<<<<< {self.id}: ENDED executing task\ncookie: {self.cookie}, id:{self.id}\nargs: {args}\nkwargs: {kwargs}")
             return _
         
 
@@ -265,32 +226,6 @@ class Logging:
         def restart(self):
             pass
 
-    class Response(Response):
-        def __init__(self,
-                     request,
-                     future,
-                     *,
-                     start_time,
-                     pool,
-                     done_callback=None,
-        ):
-            super().__init__(request, future, start_time=start_time, done_callback=done_callback)
-
-            self.pool = pool
-            self._future_result = None
-            self._result = None
-            self.task = request.task
-            future.response = self
-
-        def __repr__(self):
-            return signature.Tagger().repr_ctor(self.__class__,
-                                            self.request,
-                                            self.future,
-                                            start_time=self.start_time,
-                                            pool=self.pool,
-                                            done_callback=self._done_callback,
-            )
-        
     class Request(Request):
         def __init__(self, pool, cookie, func, *args, **kwargs):
             self.pool = pool
@@ -319,14 +254,18 @@ class Logging:
             return _
 
         def redefine(self, func, *args, **kwargs):
-            request = self.__class__(self.pool, self.cookie, func, *args, **kwargs)
+            request = self.__class__(self.pool, self.cookie, func, *args, **kwargs)\
+                    .with_settings(**self.settings)
             return request
         
         def rebind(self, *args, **kwargs):
-            request = self.__class__(self.pool, self.cookie, self.task, *args, **kwargs)
+            request = self.__class__(self.pool, self.cookie, self.task, *args, **kwargs)\
+                    .with_settings(**self.settings)
             return request
 
         def evaluate(self):
+            #DEBUG
+            #pdb.set_trace()
             r = self.pool.evaluate(self)
             return r
 
@@ -342,6 +281,32 @@ class Logging:
         def logpath(self):
             return self.task.logpath
 
+    class Response(Response):
+        def __init__(self,
+                     request,
+                     future,
+                     *,
+                     start_time,
+                     pool,
+                     done_callback=None,
+        ):
+            super().__init__(request, future, start_time=start_time, done_callback=done_callback)
+
+            self.pool = pool
+            self._future_result = None
+            self._result = None
+            self.task = request.task
+            future.response = self
+
+        def __repr__(self):
+            return signature.Tagger().repr_ctor(self.__class__,
+                                            self.request,
+                                            self.future,
+                                            start_time=self.start_time,
+                                            pool=self.pool,
+                                            done_callback=self._done_callback,
+            )     
+
     def __init__(self,
                  name=None,
                  *,
@@ -349,12 +314,11 @@ class Logging:
                  priority=0,
                  return_none=False,
                  authenticate_tasks=False,
-                 throw=True,
+                 throw=False,
                  log_to_file=True,
-                 log_level='INFO',
-                 log_prefix=None,
-                 log_format="%(asctime)s:%(levelname)s:%(funcName)s:%(message)s",
-                 redirect_stdout=False):
+                 verbose=False,
+                 debug=False,
+        ):
         state = dict(name=name,
                 dataspace=dataspace,
                 priority=priority,
@@ -362,10 +326,9 @@ class Logging:
                 authenticate_tasks=authenticate_tasks, 
                 throw=throw,
                 log_to_file=log_to_file,
-                log_level=log_level,
-                log_prefix=log_prefix,
-                log_format=log_format,
-                redirect_stdout=redirect_stdout)
+                verbose=verbose,
+                debug=debug,
+        )
         Logging.__setstate__(self, state)
 
     def __getstate__(self):
@@ -376,10 +339,9 @@ class Logging:
                     authenticate_tasks=self.authenticate_tasks, \
                     throw=self.throw, \
                     log_to_file=self.log_to_file,\
-                    log_level=self.log_level,\
-                    log_prefix=self.log_prefix,\
-                    log_format=self.log_format,\
-                    redirect_stdout=self.redirect_stdout)
+                    verbose=self.verbose,
+                    debug=self.debug,
+        )
         return state
 
     def __setstate__(self, state):
@@ -390,10 +352,9 @@ class Logging:
         self.authenticate_tasks, \
         self.throw, \
         self.log_to_file,\
-        self.log_level,\
-        self.log_prefix,\
-        self.log_format,\
-        self.redirect_stdout = tuple(state.values())
+        self.verbose,\
+        self.debug,\
+            = tuple(state.values())
 
         self.anchorchain = 'datablocks', 'eval', 'pool', 'Logging'
         if self.name:
@@ -406,6 +367,9 @@ class Logging:
 
         self._ids = None
 
+    def __call__(self, **kwargs):
+        return self.clone(**kwargs)
+
     def clone(self, **kwargs):
         state = self.__getstate__()
         state.update(**kwargs)
@@ -414,12 +378,12 @@ class Logging:
 
     @property
     def ids(self):
-        from ..config import CONFIG
+        from ..config import USER, POSTGRES
         from ..hub.db import Ids
         if self._ids is None:
             self._ids = Ids(self.anchorspace,
-              user=CONFIG.USER,
-              postgres=CONFIG.POSTGRES,
+              user=USER,
+              postgres=POSTGRES,
               postgres_schemaname="request",
               postgres_tablename="ids")
         return self._ids
@@ -450,10 +414,7 @@ class Logging:
                f"authenticate_tasks={repr(self.authenticate_tasks)}, " + \
                f"throw={repr(self.throw)}, " + \
                f"log_to_file={repr(self.log_to_file)}, " + \
-               f"log_level={repr(self.log_level)}, "+ \
-               f"log_prefix={repr(self.log_prefix)}, "+ \
-               f"log_format={repr(self.log_format)}, "+ \
-               f"redirect_stdout={repr(self.redirect_stdout)})"
+               ")"
         return _
 
     def restart(self):
@@ -461,6 +422,8 @@ class Logging:
 
     def apply(self, request):
         cookie = repr(request)
+        #DEBUG
+        #pdb.set_trace()
         return self.Request(self, cookie, request.task, *request.args, **request.kwargs).set(throw=self.throw)
 
     def key_to_id(self, key, *, version=VERSION, unique_hash=True):
@@ -483,13 +446,13 @@ class Logging:
     def authenticate_task(self, id, key):
         if not self.authenticate_tasks:
             return
-        from ..config import CONFIG
+        from ..config import USER, POSTGRES
         from ..hub.db import Ids
         # REMOVE
         # TODO: use self.ids?
         ids = Ids(self.anchorspace,
-                   user=CONFIG.USER,
-                   postgres=CONFIG.POSTGRES,
+                   user=USER,
+                   postgres=POSTGRES,
                    postgres_schemaname="request",
                    postgres_tablename="ids")
         dataspace_ = ids.sanitize_value(str(self.anchorspace), quote=False)
@@ -507,8 +470,8 @@ class Logging:
     # TODO: move to ctor or REMOVE: use ids instead?
     @property
     def db(self):
-        from ..config import CONFIG
-        return CONFIG.POSTGRES['db']
+        from ..config import POSTGRES_DB
+        return POSTGRES_DB
 
     @property
     def executor(self):
@@ -518,8 +481,9 @@ class Logging:
 
     def evaluate(self, request):
         assert isinstance(request, self.__class__.Request)
-
-        delayed = self._delay_request(request.with_throw(self.throw))
+        #DEBUG
+        #pdb.set_trace()
+        delayed = self._delay_request(request)
         start_time = datetime.datetime.now()
         future = self._submit_delayed(delayed)
         logger.debug(f"Submitted delayed request based on task "
@@ -561,10 +525,6 @@ class Logging:
         return delayed
 
     def _delay_request_kwarg(self, request, kwarg, key):
-        '''
-            logger.debug(f"Delaying kwarg[{key}] for  request {request}\n\t"
-                         f"kwarg[{key}]: {kwarg}")
-             '''
         delayed = self._delay_request_argument(request, kwarg)
         return delayed
 
@@ -597,20 +557,17 @@ class Dask(Logging):
                  authenticate_tasks=False,
                  throw=False,
                  log_to_file=True,
-                 log_level='INFO',
-                 log_prefix=None,
-                 log_format="%(asctime)s:%(levelname)s:%(funcName)s:%(message)s",
-                 redirect_stdout=False):
+                 verbose=False,
+                 debug=False,
+        ):
         _kwargs = dict(dataspace=dataspace,
                        priority=priority,
                        return_none=return_none,
                        authenticate_tasks=authenticate_tasks,
                        throw=throw,
                        log_to_file=log_to_file,
-                       log_level=log_level,
-                       log_prefix=log_prefix,
-                       log_format=log_format,
-                       redirect_stdout=redirect_stdout)
+                       verbose=verbose,
+                       debug=debug)
         super().__init__(name, **_kwargs)
         if scheduler_url is not None:
             self.scheduler_url = scheduler_url
@@ -696,22 +653,17 @@ class Ray(Logging):
                  authenticate_tasks=False,
                  throw=False,
                  log_to_file=True,
-                 log_level='INFO',
-                 log_prefix=None,
-                 log_format="%(asctime)s:%(levelname)s:%(funcName)s:%(message)s",
-                 redirect_stdout=False,
+                 verbose=False,
+                 debug=False,
                 ):
-
         _kwargs = dict(dataspace=dataspace,
                        return_none=False,
                        priority=0,
                        authenticate_tasks=authenticate_tasks,
                        throw=throw,
                        log_to_file=log_to_file,
-                       log_level=log_level,
-                       log_prefix=log_prefix,
-                       log_format=log_format,
-                       redirect_stdout=redirect_stdout)
+                       verbose=False,
+                       debug=False,)
         super().__init__(name, **_kwargs)
         self.ray_kwargs = ray_kwargs
         self._ray_client = None
@@ -724,11 +676,7 @@ class Ray(Logging):
                f"ray_working_dir_config={self.ray_working_dir_config}, " + \
                f"authenticate_tasks={self.authenticate_tasks}, " + \
                f"throw={self.throw}, " + \
-               f"log_to_file={self.log_to_file}, " + \
-               f"log_level={self.log_level}, "+ \
-               f"log_prefix={self.log_prefix}, "+ \
-               f"log_format={self.log_format}, "+ \
-               f"redirect_stdout={self.redirect_stdout})"
+               f"log_to_file={self.log_to_file})"
         return repr
 
     def __delete__(self):
@@ -749,10 +697,6 @@ class Ray(Logging):
         super().__setstate__(_state)
         self._ray_client = None
 
-    def apply(self, request):
-        arequest = self.Request(request, self)
-        return arequest
-
     def repr(self, request):
         pool_key = signature.Tagger(tag_defaults=False) \
             .repr_ctor(self.__class__,
@@ -765,10 +709,10 @@ class Ray(Logging):
 
     @property
     def client(self):
-        from ..config import CONFIG
+        from ..config import USER
         from .raybuilder import get_ray_client
         if self._ray_client is None:
-            namespace = f"{CONFIG.USER}.{self.name}"
+            namespace = f"{USER}.{self.name}"
             self._ray_client = get_ray_client(namespace=namespace,
                                           ray_kwargs=self.ray_kwargs,
                                           ray_working_dir_config=self.ray_working_dir_config)
@@ -803,18 +747,19 @@ class Ray(Logging):
                     .future()
         start_time = datetime.datetime.now()
         logpath = task.logpath
-        logger.info(f"Submitted task "
-                     f"with id {task.id} "
-                     f"from {self.db} "
-                     f"to evaluate request {request} at {start_time}"
-                     f" with prority {self.priority}"
-                     f" logging to {logpath}")
-        response = self.Response(pool=self,
-                                 request=request,
-                                 future=future,
+        if self.verbose:
+            print(f"Ray: submitted task "
+                        f"with id {task.id} "
+                        f"from {self.db} "
+                        f"to evaluate request {request} at {start_time}"
+                        f" with prority {self.priority}"
+                        f" logging to {logpath}")
+        response = self.Response(request,
+                                 future,
+                                 pool=self,
                                  start_time=start_time,
                                  done_callback=self._execution_done_callback,
-                                 task=task)
+        )
         return response
 
     @staticmethod
@@ -842,19 +787,15 @@ class Multiprocess(Logging):
                  return_none=False,
                  authenticate_tasks=False,
                  log_to_file=True,
-                 log_level='INFO',
-                 log_prefix=None,
-                 log_format="%(asctime)s:%(levelname)s:%(funcName)s:%(message)s",
-                 redirect_stdout=False):
+                 verbose=False,
+                 debug=False,):
         _kwargs = dict(dataspace=dataspace,
                          priority=priority,
                          return_none=return_none,
                          authenticate_tasks=authenticate_tasks,
                          log_to_file=log_to_file,
-                         log_level=log_level,
-                         log_prefix=log_prefix,
-                         log_format=log_format,
-                         redirect_stdout=redirect_stdout)
+                         verbose=verbose,
+                         debug=debug,)
         super().__init__(name, **_kwargs)
         self.max_workers = max_workers
 
@@ -955,10 +896,8 @@ class HTTP(Logging):
                  authenticate_tasks=False,
                  throw=False,
                  log_to_file=True,
-                 log_level='INFO',
-                 log_prefix=None,
-                 log_format="%(asctime)s:%(levelname)s:%(funcName)s:%(message)s",
-                 redirect_stdout=False):
+                 verbose=False,
+                 debug=False,):
         _state = name, \
                 dataspace, \
                 priority, \
@@ -966,10 +905,8 @@ class HTTP(Logging):
                 authenticate_tasks, \
                 throw, \
                 log_to_file, \
-                log_level, \
-                log_prefix, \
-                log_format, \
-                redirect_stdout
+                verbose, \
+                debug,\
         state = _state, url, auth
         self.__setstate__(state)
 
@@ -998,11 +935,7 @@ class HTTP(Logging):
                f"return_none = {self.return_none}, " + \
                f"authenticate_tasks = {self.authenticate_tasks}, " + \
                f"throw = {self.throw}, " + \
-               f"log_to_file = {self.log_to_file}, " + \
-               f"log_level={self.log_level}, " + \
-               f"log_prefix={self.log_prefix}, " + \
-               f"log_format={self.log_format}, " + \
-               f"redirect_stdout={self.redirect_stdout})"
+               f"log_to_file = {self.log_to_file})"
         return repr
 
     def repr(self, request):
@@ -1083,8 +1016,8 @@ def iresponse_logs(itasks):
 
 
 DATABLOCKS_STDOUT_LOGGING_POOL = Logging(name='DATABLOCKS_STDOUT_LOGGING_POOL', dataspace=DATABLOCKS_DATALAKE)
-DATABLOCKS_FILE_LOGGING_POOL = Logging(name='DATABLOCKS_FILE_LOGGING_POOL', dataspace=DATABLOCKS_DATALAKE, redirect_stdout=True)
+DATABLOCKS_FILE_LOGGING_POOL = Logging(name='DATABLOCKS_FILE_LOGGING_POOL', dataspace=DATABLOCKS_DATALAKE, log_to_file=True)
 
 DATABLOCKS_STDOUT_RAY_POOL = Ray(name='DATABLOCKS_STDOUT_RAY_POOL', dataspace=DATABLOCKS_DATALAKE)
-DATABLOCKS_FILE_RAY_POOL = Ray(name='DATABLOCKS_FILE_RAY_POOL', dataspace=DATABLOCKS_DATALAKE, redirect_stdout=True)
+DATABLOCKS_FILE_RAY_POOL = Ray(name='DATABLOCKS_FILE_RAY_POOL', dataspace=DATABLOCKS_DATALAKE, log_to_file=True)
 

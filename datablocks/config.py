@@ -15,6 +15,9 @@ from . import utils
 logger = logging.getLogger(__name__)
 
 HOME = os.environ['HOME']
+USER = os.environ['USER']
+POSTGRES = os.environ.get('POSTGRES', None)
+POSTGRES_DB = os.environ.get('POSTGRES_DB', None)
 
 if 'DATABLOCKS_LOG_LEVEL' in os.environ:
     DATABLOCKS_LOG_LEVEL = os.environ['DATABLOCKS_LOG_LEVEL']

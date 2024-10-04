@@ -518,6 +518,37 @@ def setup_repo(repo, revision, *, verbose=False):
                 print(f"Using git revision {revision}")
 
 
+@contextmanager
+def gitrepostate(path, revision, *, verbose=False):
+    repo = path
+    if repo is not None:
+        repo = git.Repo(repo)
+        if verbose:
+            print(f"Using git repo {path} with revision {revision}")
+        if repo.is_dirty():
+            raise ValueError(f"Dirty git repo: {path}: commit your changes")
+        if revision is not None:
+            #TODO: lock repo and unlock in __delete__
+            #TODO: if locked, print warning
+            #TODO: locking DB should identify the lock owner and start time, 
+            #TODO: so print that warning
+            branch = repo.active_branch.name
+            top = repo.rev_parse(branch).hexsha
+            rev = repo.rev_parse(revision).hexsha
+            if rev != top:
+                repo.git.checkout(rev)
+                if verbose:
+                    print(f"Switched git repo {path} from branch '{branch}' to revision {revision}")
+    try:
+        yield
+    finally:
+        if repo is not None and revision is not None and top != rev:
+            repo.git.checkout(branch)
+            if verbose:
+                    print(f"Restored git repo {path} to branch '{branch}'")
+
+
+
 class RepoMixin:
     def setup_repo(self):
         verbose = False if not getattr(self, 'revision') else self.revision

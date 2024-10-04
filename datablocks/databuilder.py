@@ -135,6 +135,11 @@ class Scoped:
         return block_
 
     def _tagscope_(self, **scope):
+        """
+            Converts scope values to their tags to avoid evaluating them.
+            For example, when the value is a request to read the result of another
+            Databuilder, returning a pd.DataFrame.
+        """
         tagscope = Tagger().tag_dict(scope)
         return tagscope
 
@@ -265,7 +270,7 @@ class Databuilder(Anchored, Scoped):
         #self.revisionspace = self.anchorspace.subspace(f"revision={str(self.revision)}",)
         self.lock_pages = lock_pages
         self.throw = throw
-        self.reload = rebuild
+        self.rebuild = rebuild
         self.pool = pool
         self.build_block_request_lifecycle_callback = build_block_request_lifecycle_callback
         self.throw = throw
@@ -352,6 +357,7 @@ class Databuilder(Anchored, Scoped):
                 print(f"_shard_extent_page_valid_: INVALID shard with topic {repr(topic)} with scope with tag {tagscope}")
         return valid
 
+    #TODO: #REMOVE? Apply self.pool?
     def block_extent_page_request(self, topic, **scope):
         _ = Request(self.block_extent_page, topic, **scope)
         if self.throw is not None:
@@ -600,7 +606,7 @@ class Databuilder(Anchored, Scoped):
     @OVERRIDE
     def build_block_request(self, **scope):
         blockscope = self._blockscope_(**scope)
-        if self.reload:
+        if self.rebuild:
             block_shortfall_book = self.block_intent_book(**blockscope)
         else:
             block_shortfall_book = self.block_shortfall_book(**blockscope)
@@ -619,12 +625,17 @@ class Databuilder(Anchored, Scoped):
                 print(f"Databuilder: build_block_request: requesting build of shortfall batchscopes with tags: {shortfall_batchscope_list}")
         _shortfall_batch_requests = \
             [self._build_batch_request_(self._tagscope_(**shortfall_batchscope_list[i]), **shortfall_batchscope_list[i])
-                            .apply(self.pool) for i in range(len(shortfall_batchscope_list))]
+                            for i in range(len(shortfall_batchscope_list))]
         shortfall_batch_requests_ = [_.apply(self.pool) for _ in _shortfall_batch_requests]
+        '''
+        #TODO: #REMOVE?
         if self.throw is not None:
             shortfall_batch_requests = [_.set(throw=self.throw) for _ in shortfall_batch_requests_]
         else:
             shortfall_batch_requests = shortfall_batch_requests_
+        '''
+        shortfall_batch_requests = shortfall_batch_requests_
+
         shortfall_batch_requests_tags = "[" + \
                                           ", ".join(tag(_) for _ in shortfall_batch_requests) + \
                                           "]"
@@ -632,11 +643,14 @@ class Databuilder(Anchored, Scoped):
             print(f"build_block_request: shortfall_batch_requests: " + shortfall_batch_requests_tags)
 
         tagscope = self._tagscope_(**blockscope)
-        extent_request = Request(self.block_extent, **tagscope)
+        extent_request = Request(self.block_extent, **tagscope).apply(self.pool)
         requests = shortfall_batch_requests + [extent_request]
-        build_block_request = Request(ALL, *requests)
+        build_block_request = Request(ALL, *requests).apply(self.pool) #POOL
+        '''
+        #TODO: #REMOVE: #WARNING: 
         if self.throw is not None:
             build_block_request = build_block_request.set(throw=throw)
+        '''
         #TODO: #FIX
         #build_block_request = LAST(*shortfall_batch_requests) if len(shortfall_batch_requests) > 0 else NONE()
         if len(shortfall_batchscope_list) > 0 and self.build_block_request_lifecycle_callback is not None:

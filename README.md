@@ -194,3 +194,87 @@ default
   . Shards are necessary to resume partial builds or combine overlapping blocks.
   . Distinction between block/batch/shard appears only when SCOPE variables are of type BATCH, which means, they encapsulate multiple shards in one serial build.
 * Futures throw contained exceptions upon `result()`, Responses do not [#TODO: should they?]
+
+* Request -evaluate-> (Task) -> {Future -> Response} [-> Report -> Transcript]
+    # TODO: why do we need future and response to be separate?
+    # Certain implementations of Response (e.g., Ray, may want to hold Ray.Future internally)
+    . Request used for static graph definition
+    . Task used for dynamic pool implementation
+	. `Request.evaluate(self):` 
+	```
+	    args_responses, kwargs_responses = self.evaluate_args_kwargs(self.args, self.kwargs)
+        future = Future(self.task, *args_responses, **kwargs_responses)\
+                    .set('throw', self.get('throw',   False)) #Future knows to throw
+        response = Response(request=self, future=future)
+        return response
+    ```
+	. `Request.result()`:
+	```
+        result = self.future.result() -> self.future.compute() {
+            task(*(future.args_responses->results), **(future.kwargs_responses->results))
+        }:
+        if self.future.exception() is not None and self.request.get('throw', False):            
+            raise self.future.exception().with_traceback(self.future.traceback())
+        else:
+            return result
+	```
+    . `DBX._build_block_request_lifecycle_callback_`:
+    ```
+        report = response.report()
+        task_id = response.id
+        report_transcript = report.transcript() 
+        ...
+        _record.update(dict(
+                            task_id=str(task_id),
+                            runtime_secs=f"{runtime_secs}",
+                            status=report_transcript['status'],
+                            success=report_transcript['success'],
+                            logspace=repr(logspace),
+                            logname=logname,
+                            report_transcript=transcriptstr,
+                    ))
+        ...
+        record_frame.to_parquet(record_filepath, storage_options=recordspace.storage_options)
+    ```
+* Pool: Request.func -> Task -> pool.Request
+    . request.apply(pool) -> pool.Request(cookie,
+                                          func=pool.Task(pool, request.func),
+                                          *request.args,
+                                          **request.kwargs,
+                                         ).set(throw=pool.throw)
+        . pool.Request is a thin wrapper around Request
+            . holds a pool cookie
+            . avoids double-wrapping func if isinstance(func, pool.Task)
+            . adapts __repr__, __tag__, __rebind__, __redefine__
+    . pool.Request.evaluate(request) -> self.pool.evaluate(request):
+        ```
+            delayed = pool._delay_request(request)
+            future = self._submit_delayed(delayed)
+            response = pool.Response(pool, 
+                                     request, 
+                                     future, 
+                                     done_callback=self._execution_done_callback)
+        ```
+    . pool.Logging:
+        ._delay_request(request) -> essentially a noop:
+        ```
+            _args, _kwargs = self._delay_request_args_kwargs(request) # almost a noop
+            delayed = request.rebind(*_args, **_kwargs)
+        ```
+        ._submit_delayed(delayed):
+        ```
+            future = self.executor.submit(delayed)
+        ```
+    . pool.Dask:
+        ._delay_request(request):
+        ```
+            # rewrite the request graph in Dask space
+            # each node, however, may wrap an inner pool Task, which can manage logging, validation, etc. 
+            _delayed_args, _delayed_kwargs = self._delay_request_args_kwargs(request)
+            delayed = dask.delayed(request.task)(*_delayed_args, dask_key_name=request.dask_key, **_delayed_kwargs)
+ 
+        ```
+        ._submit_delayed(self, delayed):
+        ```
+            future = self.client.compute(delayed)
+        ```

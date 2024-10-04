@@ -28,11 +28,21 @@ from .signature import (
 from .utils import OVERRIDE, serializable, microseconds_since_epoch, datetime_to_microsecond_str
 from .eval import request, pool
 from .eval.request import Request, ALL, LAST, NONE, Graph
-from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL as STDOUT_POOL, DATABLOCKS_FILE_LOGGING_POOL as FILE_POOL
-from .dataspace import DATABLOCKS_DATALAKE as DATALAKE
+from .eval.pool import (
+    DATABLOCKS_STDOUT_LOGGING_POOL as STDOUT_POOL, 
+    DATABLOCKS_STDOUT_LOGGING_POOL as STDOUT_LOGGING_POOL,
+    DATABLOCKS_FILE_LOGGING_POOL as FILE_POOL,
+    DATABLOCKS_FILE_LOGGING_POOL as FILE_LOGGING_POOL,
+    DATABLOCKS_STDOUT_RAY_POOL as STDOUT_RAY_POOL, 
+    DATABLOCKS_FILE_RAY_POOL as FILE_RAY_POOL,
+)
+from .dataspace import (
+    DATABLOCKS_DATALAKE as DATALAKE,
+    DATABLOCKS_HOMELAKE as HOMELAKE,
+)
 from .databuilder import Databuilder, DEFAULT_TOPIC
 
-from .utils import setup_repo
+from .utils import setup_repo, gitrepostate
 
 
 class DBXEvalError(Exception):
@@ -445,7 +455,11 @@ class DBX:
 
     def __repr__(self):
         args = (self.spec, self.alias) if self.alias else (self.spec,)
-        kwargs = {'pic': self.pic} if self.pic else {}
+        kwargs = {}
+        if self.repo is not None:
+            kwargs['repo'] = self.repo
+        if self.revision is not None:
+            kwargs['revision'] = self.revision
         _ =  Tagger(tag_defaults=False).str_ctor(self.__class__, *args, **kwargs)
         return _
 
@@ -468,9 +482,8 @@ class DBX:
     def datablock_cls(self):
         #pdb.set_trace() #DEBUG
         if self._datablock_cls is None:
-            if self.repo is not None:
-                setup_repo(self.repo, self.revision, verbose=self.verbose)
-            mod = importlib.import_module(self._datablock_module_name)
+            with gitrepostate(self.repo, self.revision, verbose=self.verbose):
+                mod = importlib.import_module(self._datablock_module_name)
             self._datablock_cls = getattr(mod, self._datablock_clsname)
         return self._datablock_cls
 
@@ -562,7 +575,8 @@ class DBX:
     def path(self, topic=DEFAULT_TOPIC):
         if self.scope is None:
             raise ValueError(f"{self} has not been built yet")
-        page = self.databuilder.block_extent_page(topic, **self.tagscope)
+        tagscope = self.databuilder._tagscope_(**self.scope)
+        page = self.databuilder.block_extent_page(topic, **tagscope)
         if len(page) > 1:
             path = list(page.values())
         elif len(page) == 1:
@@ -621,7 +635,7 @@ class DBX:
 
     @property
     def valid(self):
-        _ = self.extent()
+        _ = self.extent
         return _
 
     BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'revision', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
@@ -779,18 +793,18 @@ class DBX:
             scope = None
         return scope
     
-    def UNSAFE_clear_records(self):
+    def UNSAFE_clear_build_records(self):
         self._recordspace_().remove()
     
     def UNSAFE_clear_request(self):
         blockscope = self.databuilder._blockscope_(**self.scope)
-        #tagblockscope = self.databuilder._tagscope_(**blockscope)
-        request = Request(self._UNSAFE_clear_block_, **blockscope)
+        tagblockscope = self.databuilder._tagscope_(**blockscope)
+        request = Request(self._UNSAFE_clear_block_, **tagblockscope)
         return request
 
     def UNSAFE_clear(self):
         request = self.UNSAFE_clear_request()
-        self.UNSAFE_clear_records()
+        self.UNSAFE_clear_build_records()
         _ = request.compute()
         return _
 
@@ -849,9 +863,9 @@ class DBX:
             )
         
             if self.verbose:
-                    print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: writing record for request:\n{request}")
-                    print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: topics: {self.topics}")
-                    print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: blockscope: {blockscope}")
+                    print(f"DBX LIFECYCLE: {lifecycle_stage.name}: writing record for request:\n{request}")
+                    print(f"DBX LIFECYCLE: {lifecycle_stage.name}: topics: {self.topics}")
+                    print(f"DBX LIFECYCLE: {lifecycle_stage.name}: blockscope: {blockscope}")
             
             logname = None
             task_id = None
@@ -874,7 +888,7 @@ class DBX:
                     logname, ext = logname_ext.split('.')
                 transcriptstr = repr(report_transcript)
                 if self.debug:
-                    print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: transcript: {transcriptstr}, logpath: {logpath}, logname: {logname}")
+                    print(f"DBX LIFECYCLE: {lifecycle_stage.name}: transcript: {transcriptstr}, logpath: {logpath}, logname: {logname}")
                 _record.update(dict(
                                     task_id=str(task_id),
                                     runtime_secs=f"{runtime_secs}",
@@ -889,7 +903,7 @@ class DBX:
             record_filepath = \
                 recordspace.join(recordspace.root, f"alias-{alias}-stage-{lifecycle_stage.name}-task_id-{task_id}-datetime-{datestr}.parquet")
             if self.verbose:
-                print(f"DATABOOK LIFECYCLE: {lifecycle_stage.name}: Writing build record at lifecycle_stage {lifecycle_stage.name} to {record_filepath}")
+                print(f"DBX LIFECYCLE: {lifecycle_stage.name}: Writing build record at lifecycle_stage {lifecycle_stage.name} to {record_filepath}")
             record_frame.to_parquet(record_filepath, storage_options=recordspace.storage_options)
         return _write_record_lifecycle_callback
     
@@ -967,14 +981,14 @@ class DBX:
             return batchroots
 
         def _build_batch_(self, tagscope, **batchscope):
-            datablock_batchscope = dbx.datablock_cls.SCOPE(**batchscope)
-            datablock_shardroots = dbx.datablock_batchroots(tagscope, ensure=True)
+            #DEBUG
+            #pdb.set_trace()
+            datablock_batchscope = dbx.datablock_cls().SCOPE(**batchscope)
+            datablock_shardroots = self.datablock_batchroots(tagscope, ensure=True)
             dbk = self.datablock(datablock_shardroots, scope=datablock_batchscope, filesystem=self.dataspace.filesystem)
             if self.verbose:
                 print(f"DBX: building batch for datablock {type(dbk)}: {dbk} constructed with kwargs {dbx.datablock_kwargs_}")
             dbk.build()
-            _ = self.block_extent_pathbook(**tagscope)
-            return _
 
         def _read_block_(self, tagscope, topic, **blockscope):
             # tagscope can be a list, opaque to the Request evaluation mechanism, but batchscope must be **-expanded to allow Request mechanism to evaluate the kwargs
