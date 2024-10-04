@@ -35,14 +35,14 @@ from .. import signature, utils
 from ..dataspace import DATABLOCKS_DATALAKE
 from ..signature import tag
 from . import request
-from .request import Task, Future, Request, Response, Closure
+from .request import Task, Request, Response, Closure
 from ..utils import REMOVE, DEPRECATED
 
 
 VERSION = 0  #TODO: #REMOVE?
 
 
-class ConstFuture:
+class ConstResponse:
     def __init__(self, result, *, exception=None, traceback=None):
         self._result = result
         self._exception = exception
@@ -219,9 +219,7 @@ class Logging:
             self.throw = throw
 
         def submit(self, request):
-            response = Request.evaluate(request) #using super-class's basic evaluation at the innermost level
-            future = response.future
-            return future
+            return Request.evaluate(request)
 
         def restart(self):
             pass
@@ -284,24 +282,17 @@ class Logging:
     class Response(Response):
         def __init__(self,
                      request,
-                     future,
                      *,
                      start_time,
                      pool,
                      done_callback=None,
         ):
-            super().__init__(request, future, start_time=start_time, done_callback=done_callback)
-
+            super().__init__(request, start_time=start_time, done_callback=done_callback)
             self.pool = pool
-            self._future_result = None
-            self._result = None
-            self.task = request.task
-            future.response = self
 
         def __repr__(self):
             return signature.Tagger().repr_ctor(self.__class__,
                                             self.request,
-                                            self.future,
                                             start_time=self.start_time,
                                             pool=self.pool,
                                             done_callback=self._done_callback,
@@ -486,14 +477,14 @@ class Logging:
         delayed = self._delay_request(request)
         start_time = datetime.datetime.now()
         future = self._submit_delayed(delayed)
-        logger.debug(f"Submitted delayed request based on task "
-                     f"with id {request.task.id} "
-                     f"to evaluate request {request} at {start_time}"
-                     f" with prority {self.priority}"
-                     f" logging to {request.task.logpath}")
+        if self.verbose:
+            print(f"Submitted delayed request based on task "
+                        f"with id {request.task.id} "
+                        f"to evaluate request {request} at {start_time}"
+                        f" with prority {self.priority}"
+                        f" logging to {request.task.logpath}")
         response = self.Response(pool=self,
                                  request=request,
-                                 future=future,
                                  start_time=start_time,
                                  done_callback=self._execution_done_callback)
         return response
@@ -517,10 +508,6 @@ class Logging:
         return _args, _kwargs
 
     def _delay_request_arg(self, request, arg, index):
-        '''
-            logger.debug(f"Delaying arg[{index}] for  request {request}\n\t"
-                         f"arg[{index}]: {arg}")
-            '''
         delayed = self._delay_request_argument(request, arg)
         return delayed
 
@@ -854,7 +841,8 @@ class HTTP(Logging):
                     target_audience = self.pool.url
                     id_token = google.oauth2.id_token.fetch_id_token(auth_req, target_audience)
                     headers.update({"Authorization": f"Bearer {id_token}"})
-                logger.debug(f"Added authorization to headers {headers} for pool url {self.pool.url}")
+                if self.verbose:
+                    print(f"Added authorization to headers {headers} for pool url {self.pool.url}")
             return headers
 
         def submit(self, request):
@@ -865,7 +853,8 @@ class HTTP(Logging):
             if self.pool.url is not None:
                 headers = self.add_auth_header(self.pool.auth, {})
                 http_response = requests.post(self.pool.url+'/eval', headers=headers, data=request_pickle)
-                logger.debug(f"Response status_code: {http_response.status_code}")
+                if self.debug:
+                    print(f"DEBUG: Response status_code: {http_response.status_code}")
                 response_pickle = http_response.content
             else:
                 #FIX: serve
@@ -874,14 +863,14 @@ class HTTP(Logging):
             if 'result' in response:
                 # Assume that result is a Report, just like in evaluating a Task
                 result = pickle.loads(response['result'])
-                # HACK: tag is broken
-                #logger.debug(f"Response result: {result}")
             if 'exception' in response:
                 exception = pickle.loads(response['exception'])
-                logger.debug(f"Response exception: {exception}")
+                if self.debug:
+                    print(f"DEBUG: Response exception: {exception}")
             if 'traceback' in response:
                 traceback = pickle.loads(response['traceback'])
-                logger.debug(f"Response traceback: {traceback}")
+                if self.debug:
+                    print(f"DEBUG: Response traceback: {traceback}")
             future = HTTP.Future(result, exception=exception, traceback=traceback)
             return future
 

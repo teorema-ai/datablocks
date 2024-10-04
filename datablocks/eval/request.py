@@ -66,12 +66,18 @@ class Task:
         str = signature.Tagger().str_ctor(Task, self.func)
         return str
     
-
-class Future:
-    def __init__(self, func, *args_responses, **kwargs_responses):
-        self.func = func
-        self.args_responses = args_responses
-        self.kwargs_responses = kwargs_responses
+class Response:
+    def __init__(self, 
+                 request,
+                 *,
+                 start_time = None,
+                 done_callback=None
+    ):
+        self.request = request
+        self.start_time = start_time if start_time is not None else datetime.datetime.now()
+        self._done = False
+        self.done_time = None
+        self._done_callback = done_callback # needed for __repr__()
         self._running = True
         self._done = False
         self._exception = None
@@ -80,9 +86,25 @@ class Future:
         self.settings = {}
         self._done_callbacks = []
 
+        self.args_responses, self.kwargs_responses = \
+            Request.evaluate_args_kwargs(self.request.args, self.request.kwargs)
+        
+        if self.request.lifecycle_callback is not None:
+                    self.request.lifecycle_callback(Task.Lifecycle.BEGIN, self.request, self)
+        self.add_done_callback(self.done_callback)
+        if done_callback is not None:
+            self.add_done_callback(done_callback)
+    
+    def done_callback(self, _):
+        done_time = datetime.datetime.now()
+        self._done = True
+        self.done_time = done_time
+        if self.request.lifecycle_callback is not None:
+            self.request.lifecycle_callback(Task.Lifecycle.END, self.request, self)
+    
     def add_done_callback(self, callback):
         self._done_callbacks.append(callback)
-        if self.done():
+        if self.done:
             callback(self)
 
     #TODO: Factor out into a Settings "mixin"
@@ -104,10 +126,49 @@ class Future:
         return _
 
     def __str__(self):
-        return signature.Tagger().str_ctor(self.__class__, self.func, *self.args_responses, **self.kwargs_responses)
+        return signature.Tagger().str_ctor(self.__class__, 
+                                           self.request, 
+        )
     
     def __repr__(self):
-        return signature.Tagger().repr_ctor(self.__class__, self.func, *self.args_responses, **self.kwargs_responses)
+        return signature.Tagger().repr_ctor(self.__class__, 
+                                            self.request, 
+                                            start_time=self.start_time,
+                                            done_callback=self._done_callback,
+    )
+
+    def __tag__(self):
+        return str(self)
+
+    @property
+    def func(self):
+        return self.request.task
+
+    @property
+    def key(self):
+        return self.request.task.key
+
+    @property
+    def id(self):
+        return self.request.task.id
+
+    @property
+    def logspace(self):
+        return self.request.task.logspace
+
+    @property
+    def logname(self):
+        return self.request.task.logname
+
+    def wait(self):
+        try:
+            self.result()
+        finally:
+            return self
+
+    def report(self):
+        report = Report(self)
+        return report
 
     def compute(self):
         if not self._done:
@@ -143,16 +204,13 @@ class Future:
                 self._running = False
                 for done_callback in self._done_callbacks:
                     done_callback(self)
-
-    def done(self):
-        return self._done
-
-    def running(self):
-        return self._running
- 
+    
     def result(self):
         self.compute()
-        return self._result
+        if self.exception() is not None and self.request.get('throw', False):
+            raise self.exception().with_traceback(self.traceback())
+        else:
+            return self._result 
 
     def exception(self):
         self.compute()
@@ -161,6 +219,63 @@ class Future:
     def traceback(self):
         self.compute()
         return self._traceback
+
+    @property
+    def done(self):
+        return self._done
+
+    @property
+    def running(self):
+        return self._running
+
+    @property
+    def failed(self):
+        return self.done and self.exception() is not None
+
+    @property
+    def succeeded(self):
+        return self.done and self.exception() is None
+
+    @property
+    def pending(self):
+        return not self.failed and not self.done and not self.running
+
+    @property
+    def status(self):
+        if self.running:
+            return 'Running'
+        elif self.pending:
+            return 'Pending'
+        elif self.failed:
+            return 'Failure'
+        else:
+            return 'Success'
+        
+    @property
+    def logpath(self):
+        if self.logname is None:
+            return None
+        logpath = self.logspace.join(self.logspace.path, self.logname)
+        return logpath
+
+    def logfile(self):
+            try:
+                _path = self.logpath
+                _f = self.request.logspace.filesystem.open(_path, 'r')
+            except:
+                return None
+            return _f
+
+    def log(self, size=None):
+        logfile = self.logfile()
+        if logfile is None:
+            r = ''
+        else:
+            if size is None:
+                r = logfile.read()
+            else:
+                r = logfile.read(size)
+        return r
 
     @staticmethod
     def _arg_result(arg):
@@ -501,10 +616,7 @@ class Request:
         return result
 
     def evaluate(self):
-        args_responses, kwargs_responses = self.evaluate_args_kwargs(self.args, self.kwargs)
-        future = Future(self.task, *args_responses, **kwargs_responses).set('throw', self.get('throw', False))
-        response = Response(request=self, future=future)
-        return response
+        return Response(self)
 
 
 class Proxy(Request):
@@ -556,154 +668,7 @@ class Proxy(Request):
         return _
 
 
-class Response:
-    def __init__(self,
-                 request,
-                 future,
-                 *,
-                 start_time = None,
-                 done_callback=None):
-        self.request = request
-        self.future = future
-        self.start_time = start_time if start_time is not None else datetime.datetime.now()
-        self._done = False
-        self.done_time = None
-        self._done_callback = done_callback # needed for __repr__()
-        if self.request.lifecycle_callback is not None:
-                    self.request.lifecycle_callback(Task.Lifecycle.BEGIN, self.request, self)
-        self.future.add_done_callback(self.done_callback)
-        if done_callback is not None:
-            self.future.add_done_callback(done_callback)
-    
-    def done_callback(self, _):
-        done_time = datetime.datetime.now()
-        self._done = True
-        self.done_time = done_time
 
-        if self.request.lifecycle_callback is not None:
-            self.request.lifecycle_callback(Task.Lifecycle.END, self.request, self)
-    
-    @property
-    def key(self):
-        return self.request.task.key
-
-    @property
-    def id(self):
-        return self.request.task.id
-
-    @property
-    def logspace(self):
-        return self.request.task.logspace
-
-    @property
-    def logname(self):
-        return self.request.task.logname
-
-    def __str__(self):
-        return signature.Tagger().str_ctor(self.__class__,
-                                        self.request,
-                                        self.future)
-
-    def __repr__(self):
-        return signature.Tagger().repr_ctor(self.__class__,
-                                         self.request,
-                                         self.future,
-                                         start_time=self.start_time,
-                                         done_callback=self._done_callback)
-                                
-    def __tag__(self):
-        return signature.Tagger().tag_ctor(self.__class__,
-                                        self.request,
-                                        self.future)
-    def wait(self):
-        try:
-            self.result()
-        finally:
-            return self
-
-    def report(self):
-        report = Report(self)
-        return report
-
-    def result(self):
-        #DEBUG
-        #pdb.set_trace()
-        result = self.future.result()
-        if self.future.exception() is not None and self.request.get('throw', False):
-            raise self.future.exception().with_traceback(self.future.traceback())
-        else:
-            return result 
-
-    def exception(self):
-        return self.future.exception()
-
-    def traceback(self):
-        return self.future.traceback()
-    
-    @property
-    def args_responses(self):
-        return self.future.args_responses
-
-    @property
-    def kwargs_responses(self):
-        return self.future.kwargs_responses
-
-    @property
-    def done(self):
-        return self.future.done()
-
-    @property
-    def running(self):
-        return self.future.running()
-
-    @property
-    def failed(self):
-        return self.done and self.exception() is not None
-
-    @property
-    def succeeded(self):
-        return self.done and self.exception() is None
-
-    @property
-    def pending(self):
-        return not self.failed and not self.done and not self.running
-
-    @property
-    def status(self):
-        if self.running:
-            return 'Running'
-        elif self.pending:
-            return 'Pending'
-        elif self.failed:
-            return 'Failure'
-        else:
-            return 'Success'
-        
-    @property
-    def logpath(self):
-        if self.logname is None:
-            return None
-        logpath = self.logspace.join(self.logspace.path, self.logname)
-        return logpath
-
-    def logfile(self):
-            try:
-                _path = self.logpath
-                _f = self.request.logspace.filesystem.open(_path, 'r')
-            except:
-                return None
-            return _f
-
-    def log(self, size=None):
-        logfile = self.logfile()
-        if logfile is None:
-            r = ''
-        else:
-            if size is None:
-                r = logfile.read()
-            else:
-                r = logfile.read(size)
-        return r
             
 
 
@@ -1213,7 +1178,6 @@ class BLOCK:
         def results(self):
             results = [report.result() for report in self.reports]
             return results
-
 
 
 class Graph:

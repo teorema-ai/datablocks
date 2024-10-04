@@ -195,28 +195,23 @@ default
   . Distinction between block/batch/shard appears only when SCOPE variables are of type BATCH, which means, they encapsulate multiple shards in one serial build.
 * Futures throw contained exceptions upon `result()`, Responses do not [#TODO: should they?]
 
-* Request -evaluate-> (Task) -> {Future -> Response} [-> Report -> Transcript]
-    # TODO: why do we need future and response to be separate?
-    # Certain implementations of Response (e.g., Ray, may want to hold Ray.Future internally)
+* Request -> (Task) evaluate -> Response [-> Report -> Transcript]
     . Request used for static graph definition
     . Task used for dynamic pool implementation
-	. `Request.evaluate(self):` 
+	. `Request.evaluate(self) -> Response(request) { 
+	    self._args_responses, self._kwargs_responses = \
+            Request.evaluate_args_kwargs(request.args, request.kwargs)
+      }
+    `
+	. `Response.result()`:
 	```
-	    args_responses, kwargs_responses = self.evaluate_args_kwargs(self.args, self.kwargs)
-        future = Future(self.task, *args_responses, **kwargs_responses)\
-                    .set('throw', self.get('throw',   False)) #Future knows to throw
-        response = Response(request=self, future=future)
-        return response
-    ```
-	. `Request.result()`:
-	```
-        result = self.future.result() -> self.future.compute() {
-            task(*(future.args_responses->results), **(future.kwargs_responses->results))
+        self.compute() {
+            task(*(self._args_responses->results), **(self._kwargs_responses->results))
         }:
-        if self.future.exception() is not None and self.request.get('throw', False):            
-            raise self.future.exception().with_traceback(self.future.traceback())
+        if self.exception() is not None and self.request.get('throw', False):            
+            raise self.exception().with_traceback(self.traceback())
         else:
-            return result
+            return _result
 	```
     . `DBX._build_block_request_lifecycle_callback_`:
     ```
