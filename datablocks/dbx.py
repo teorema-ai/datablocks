@@ -184,21 +184,28 @@ class DBX:
     class ProxyRequest(request.Proxy):
         @staticmethod
         def parse_url(url: str, **datablock_kwargs):
-            #url = {classtr}@{alias}:{topic}
+            #url = {classtr}@{revision}[#alias]:{topic}
             tail = url
             try:
                 datablock_clstr, tail  = tail.split("@")
             except:
                 raise ValueError(f"Malformed url: {url}")
             try:
-                alias, topic  = tail.split(":")
+                revision_alias, topic   = tail.split(":")
+                if revision_alias.find('#') == -1:
+                    revision = revision_alias
+                    alias = None
+                else:
+                    revision, alias = revision_alias.split('#')
+                if revision == 'None':
+                    revision = None
             except:
                 raise ValueError(f"Malformed url: {url}")
             if len(alias) == 0:
                 alias = None
             if len(topic) == 0:
                 topic = DEFAULT_TOPIC
-            dbx = DBX(datablock_clstr, alias, **datablock_kwargs)
+            dbx = DBX(datablock_clstr, alias, revision=revision, **datablock_kwargs)
             return dbx, topic
 
         def __init__(self, kind: str, spec: Union[str, tuple], pic=False):
@@ -233,11 +240,8 @@ class DBX:
         def __ne__(self, other):
             # .request might fail due to previous build record mismatch, 
             # so treat that as a failure of equality
-            try:
-                _ =  not isinstance(other, self.__class__) or \
-                    repr(self.request) != repr(other.request) #TODO: implemented a more principled Request __ne__
-            except:
-                _ = True
+            _ =  not isinstance(other, self.__class__) or \
+                repr(self.request) != repr(other.request) #TODO: implement a more principled Request __ne__
             return _
         
         def __eq__(self, other):
@@ -253,8 +257,9 @@ class DBX:
             return _
 
         def __tag__(self):
-            tag__ = f"{DBX_PREFIX}.{self.dbx._datablock_clstr}"
-            tag_ = tag__+f"@{self.dbx.databuilder.alias}#{self.dbx.databuilder.revision}"
+            tag___ = f"{DBX_PREFIX}.{self.dbx._datablock_clstr}"
+            tag__ = tag___+f"@{self.dbx.databuilder.revision}"
+            tag_ = tag__ + f"#{self.dbx.databuilder.alias if self.dbx.databuilder.alias else ''}"
             tag = tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else tag_+""
             return tag
         
@@ -312,11 +317,12 @@ class DBX:
         spec: Union[Datablock, str]
         alias: Optional[str] = None
         pic: bool = False
-        use_alias_dataspace:bool = True
+        use_alias_dataspace:bool = False
         repo: Optional[str] = None
         revision: Optional[str] = None
         verbose: Optional[str] = False
         debug: bool = False
+        scope_: Optional = None
         databuilder_kwargs_: Optional[Dict] = None
         datablock_kwargs_: Optional[Dict] = None
         datablock_scope_kwargs_: Optional[Dict] = None
@@ -359,6 +365,7 @@ class DBX:
                          revision=self.revision,
                          verbose=self.verbose,
                          debug=self.debug,
+                         scope_=self.scope_,
                          databuilder_kwargs_=self.databuilder_kwargs_,
                          datablock_kwargs_=self.datablock_kwargs_,
                          datablock_scope_kwargs_=self.datablock_scope_kwargs_,
@@ -366,20 +373,19 @@ class DBX:
 
     def __setstate__(self, 
                      state: State, 
-                     datablock_kwargs_: Optional[Dict] = None,
-                     databuilder_kwargs_: Optional[Dict] = None,
-                     datablock_scope_kwargs_: Optional[Dict] = None,
     ):
         for key, val in asdict(state).items():
             setattr(self, key, val)
 
-        self.datablock_kwargs_ = {} if datablock_kwargs_ is None else datablock_kwargs_
+        if self.datablock_kwargs_ is None:
+            self.datablock_kwargs_ = {}
         def update_datablock_kwargs(**kwargs):
             self.datablock_kwargs_.update(**kwargs)
             return self
         self.Datablock = update_datablock_kwargs
 
-        self.datablock_scope_kwargs_ = {} if datablock_scope_kwargs_ is None else datablock_scope_kwargs_
+        if self.datablock_scope_kwargs_ is None:
+            self.datablock_scope_kwargs_ = {}
         for key, val in self.datablock_scope_kwargs_.items():
             if isinstance(val, DBX.ProxyRequest):
                 self.datablock_scope_kwargs_[key] = val.with_pic(state.pic)
@@ -388,7 +394,8 @@ class DBX:
             return self
         self.SCOPE = update_scope
 
-        self.databuilder_kwargs_ = {} if databuilder_kwargs_ is None else databuilder_kwargs_
+        if self.databuilder_kwargs_ is None:
+            self.databuilder_kwargs_ = {}
         @functools.wraps(Databuilder)
         def update_databuilder_kwargs(**kwargs):
             self.databuilder_kwargs_.update(**kwargs)
@@ -399,7 +406,6 @@ class DBX:
         self._datablock_clstr = None
         self._datablock_clsname = None
         self._datablock_cls = None
-        self._scope = None
 
         if self.spec is not None:
             if isinstance(self.spec, str):
@@ -442,11 +448,7 @@ class DBX:
             kwargs['use_alias_dataspace'] = use_alias_dataspace
         state = replace(state, **kwargs)
 
-        clone = DBX().__setstate__(state,
-                                   datablock_kwargs_=self.datablock_kwargs_,
-                                   databuilder_kwargs_=self.databuilder_kwargs_,
-                                   datablock_scope_kwargs_=self.datablock_scope_kwargs_
-        )
+        clone = DBX().__setstate__(state)
         return clone
 
     def with_pic(self, pic=True):
@@ -467,7 +469,7 @@ class DBX:
         #TODO: add pic?
         _tag = f"{DBX_PREFIX}.{self.spec}"
         if self.alias is not None:
-            _tag += f"@{self.alias}"
+            _tag += f"#{self.alias}"
         tag = f"'{_tag}'"
         return tag
 
@@ -500,11 +502,10 @@ class DBX:
 
     @property
     def scope(self):
-        #pdb.set_trace()
-        if self._scope is not None:
-            _scope = self._scope
+        if self.scope_ is not None:
+            _scope = self.scope_
             if self.verbose:
-                print(f"DBX: scope for datablock with alias {repr(self.databuilder.alias)}: using specified scope: {self._scope}")
+                print(f"DBX: scope for datablock with alias {repr(self.databuilder.alias)}: using specified scope: {self.scope_}")
         else:
             record = self.show_named_record(alias=self.databuilder.alias, revision=self.revision, stage='END') 
             if record is not None:
@@ -520,7 +521,7 @@ class DBX:
                     print(f"DBX: scope: no specified scope and no build records for {self} with alias {repr(self.databuilder.alias)}")
                     print(f"DBX: scope: constructing scope from kwargs:\n{self.datablock_scope_kwargs_}")
                     _scope = asdict(self.datablock_cls().SCOPE(**self.datablock_scope_kwargs_))
-            self._scope = _scope
+            self.scope_ = _scope
         return _scope
     
     @property
@@ -550,6 +551,8 @@ class DBX:
     def build_request(self):
         import datablocks #TODO: why the local import?
         def scopes_equal(s1, s2):
+            #DEBUG
+            #pdb.set_trace()
             if set(s1.keys()) != (s2.keys()):
                 return False
             for key in s1.keys():
@@ -742,18 +745,18 @@ class DBX:
             record = None
         return record
     
-    def show_build_graph(self, *, record=None, node=tuple(), show=('logpath', 'logpath_status', 'exception'), _show=tuple(), **kwargs):
+    def show_build_graph(self, *, record=None, node=tuple(), show_=('logpath', 'logpath_status', 'exception'), show=tuple(), **kwargs):
         _record = self.show_build_record(record=record, full=True)
         if _record is None:
             return None
         _transcript = _record['report_transcript']
         if _transcript is None:
             return None
+        if isinstance(show_, str):
+            show_=(show_,)
         if isinstance(show, str):
             show=(show,)
-        if isinstance(_show, str):
-            _show=(_show,)
-        show = show + _show
+        show = show_ + show
         _graph = Graph(_transcript, show=show, **kwargs)
         if node is not None:
             graph = _graph.node(*node)
@@ -931,14 +934,13 @@ class DBX:
 
         @property
         def revisionspace(self):
-            if self.alias is not None:
-                _ = self.anchorspace.subspace(f"@{self.alias}", f"revision={str(self.revision)}",)
+            if self.alias is not None and dbx.use_alias_dataspace:
+                _ = self.anchorspace.subspace(f"@{str(self.revision)}",f"#{self.alias}", )
             else:
-                _ = self.anchorspace.subspace(f"revision={str(self.revision)}",)
+                _ = self.anchorspace.subspace(f"@{str(self.revision)}",)
             return _
 
-        #TODO: #REMOVE? 
-        def _shardspace_(self, topic, **shard):
+        def _alias_shardspace_(self, topic, **shard):
             # ignore shard, label by alias, revision, topic only
             if topic is None:
                 _ = self.revisionspace
@@ -985,7 +987,9 @@ class DBX:
             #pdb.set_trace()
             datablock_batchscope = dbx.datablock_cls().SCOPE(**batchscope)
             datablock_shardroots = self.datablock_batchroots(tagscope, ensure=True)
-            dbk = self.datablock(datablock_shardroots, scope=datablock_batchscope, filesystem=self.dataspace.filesystem)
+            dbk = self.datablock(datablock_shardroots, 
+                                 scope=datablock_batchscope, 
+                                 filesystem=self.dataspace.filesystem)
             if self.verbose:
                 print(f"DBX: building batch for datablock {type(dbk)}: {dbk} constructed with kwargs {dbx.datablock_kwargs_}")
             dbk.build()
@@ -1059,9 +1063,10 @@ class DBX:
                     '_build_batch_': _build_batch_,
                     '_read_block_':  _read_block_,
         }
-        if dbx.use_alias_dataspace:
-            databuilder_classdict['revisionspace'] = revisionspace
-            #databuilder_classdict['_shardspace_'] = _shardspace_ #TODO: #REMOVE? #OPTIONAL?
+        databuilder_classdict['revisionspace'] = revisionspace
+        #TODO: enable
+        #if dbx.use_alias_dataspace:
+        #    databuilder_classdict['_shardspace_'] = _alias_shardspace_
         if hasattr(dbx.datablock_cls(), 'valid'):
             databuilder_classdict['_shard_extent_page_valid_'] = _shard_extent_page_valid_
         if hasattr(dbx.datablock_cls(), 'metric'):

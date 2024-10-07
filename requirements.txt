@@ -6,6 +6,6 @@ google-auth>=2.17.3
 gunzip==0.1.10
 jupyterlab_limit_output==1.0.0
 python-consul==1.1.0
-ray>=2.4.0
+ray[default]
 regex==2022.10.31
 

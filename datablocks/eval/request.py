@@ -22,8 +22,9 @@ logger = logging.getLogger(__name__)
 
 
 class ArgResponseException(Exception):
-    def __init__(self, i):
+    def __init__(self, i, arg=None):
         self.i = i
+        self.arg = arg
     
     def __repr__(self):
         tagger = signature.Tagger()
@@ -32,8 +33,9 @@ class ArgResponseException(Exception):
 
 
 class KwArgResponseException(ArgResponseException):
-    def __init__(self, key):
+    def __init__(self, key, arg=None):
         self.key = key
+        self.arg = arg
 
     def __repr__(self):
         tagger = signature.Tagger()
@@ -67,6 +69,7 @@ class Task:
         return str
     
 class Response:
+    #TODO: API to conform to concurrent.futures.Future: done -> done(), running -> running(), etc.
     def __init__(self, 
                  request,
                  *,
@@ -170,15 +173,15 @@ class Response:
         report = Report(self)
         return report
 
-    def compute(self):
+    def _compute(self):
         if not self._done:
             try:
-                for arg in self.args_responses:
+                for i, arg in enumerate(self.args_responses):
                     if isinstance(arg, Response) and arg.exception() is not None:
                         if self.get('throw', False):
                             raise arg.exception()
                         else:
-                            raise ArgResponseException(arg)
+                            raise ArgResponseException(i, arg)
                 for key, arg in self.kwargs_responses.items():
                     if isinstance(arg, Response) and arg.exception() is not None:
                         if self.get('throw', False):
@@ -206,18 +209,18 @@ class Response:
                     done_callback(self)
     
     def result(self):
-        self.compute()
+        self._compute()
         if self.exception() is not None and self.request.get('throw', False):
             raise self.exception().with_traceback(self.traceback())
         else:
             return self._result 
 
     def exception(self):
-        self.compute()
+        self._compute()
         return self._exception
 
     def traceback(self):
-        self.compute()
+        self._compute()
         return self._traceback
 
     @property
@@ -253,7 +256,7 @@ class Response:
         
     @property
     def logpath(self):
-        if self.logname is None:
+        if self.logname is None or self.logspace is None:
             return None
         logpath = self.logspace.join(self.logspace.path, self.logname)
         return logpath

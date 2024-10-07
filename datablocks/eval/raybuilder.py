@@ -16,7 +16,8 @@ def get_ray_client(*,
                namespace,
                ray_kwargs=None,
                ray_working_dir_config={},
-               shutil_symlinks=False):
+               shutil_symlinks=False, 
+               verbose=False):
     ray_kwargs = None if ray_kwargs is None else ray_kwargs.copy()
     if ray_kwargs is None:
         ray_client = ray.init(ignore_reinit_error=True)
@@ -46,6 +47,7 @@ def get_ray_client(*,
                     ray_kwargs['runtime_env'] = {}
                 ray_kwargs['runtime_env']['working_dir'] = local_working_dir
 
+                # TODO: does this make sense?  tempdir will get deleted right after this call returns, won't it?
                 # Call ray.init()  while tempdir exists
                 ray_client = ray.init(namespace=namespace,
                                           allow_multiple=True, # this may not work for all versions of ray
@@ -54,5 +56,7 @@ def get_ray_client(*,
             ray_client = ray.init(namespace=namespace,
                                   allow_multiple=True, # this may not work for all versions of ray
                                   **ray_kwargs)
+    if verbose:
+        print(f"Ray: dashboard_url: {ray_client.dashboard_url}")
     return ray_client
 

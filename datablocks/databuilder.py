@@ -643,9 +643,9 @@ class Databuilder(Anchored, Scoped):
             print(f"build_block_request: shortfall_batch_requests: " + shortfall_batch_requests_tags)
 
         tagscope = self._tagscope_(**blockscope)
-        extent_request = Request(self.block_extent, **tagscope).apply(self.pool)
+        extent_request = Request(self.block_extent, **tagscope)
         requests = shortfall_batch_requests + [extent_request]
-        build_block_request = Request(ALL, *requests).apply(self.pool) #POOL
+        build_block_request = Request(ALL, *requests)
         '''
         #TODO: #REMOVE: #WARNING: 
         if self.throw is not None:

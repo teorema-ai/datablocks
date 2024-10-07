@@ -195,14 +195,19 @@ default
   . Distinction between block/batch/shard appears only when SCOPE variables are of type BATCH, which means, they encapsulate multiple shards in one serial build.
 * Futures throw contained exceptions upon `result()`, Responses do not [#TODO: should they?]
 
-* Request -> (Task) evaluate -> Response [-> Report -> Transcript]
+* Request -> evaluate -> Response [-> Report -> Transcript]
     . Request used for static graph definition
-    . Task used for dynamic pool implementation
+    . Task used for dynamic pool functionality implementation
 	. `Request.evaluate(self) -> Response(request) { 
 	    self._args_responses, self._kwargs_responses = \
             Request.evaluate_args_kwargs(request.args, request.kwargs)
       }
     `
+    . `pool.evaluate(request)`  will send the whole subtree under `request` to pool and evaluate it there
+        . some subtrees may live on different pools, so their evaluation will trigger transfers of requests to those pools
+        . recall that `eval` infrastructure is designed to build coarse-grained (permanent) storage shards
+            . so result communication should go through storage, not through pool Futures
+
 	. `Response.result()`:
 	```
         self.compute() {

@@ -12,6 +12,7 @@ import pickle
 import shutil
 import sys
 import tempfile
+import time
 import traceback
 import uuid
 
@@ -86,20 +87,18 @@ class ConstResponse:
 
 @contextmanager
 def logging_context(logspace, logpath):
-    if logspace is None:
+    if logspace is None or logpath is None:
         yield None
     elif logspace.is_local():
         logfile = open(logpath, 'w', 1)
         yield logfile
     else:
         with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                tmpfilepath = os.path.join(tmpdir, 'log')
-                tmpfile = open(tmpfilepath, 'w')
-                yield tmpfile
-            finally:
-                tmpfile.flush()
-                logspace.filesystem.put(tmpfilepath, logpath)
+            tmpfilepath = os.path.join(tmpdir, 'log')
+            tmpfile = open(tmpfilepath, 'w')
+            yield tmpfile
+            tmpfile.flush()
+            logspace.filesystem.put(tmpfilepath, logpath)
 
 
 class Logging:
@@ -108,10 +107,7 @@ class Logging:
         def __init__(self, pool, func, cookie):
             self._init_((pool, func, cookie, None))
 
-        # TODO: remove ray_set_trace (or move to Ray.Task?)
-        def _init_(self, state, *, ray_set_trace=False):
-            if ray_set_trace:
-                ray.util.pdb.set_trace()
+        def _init_(self, state):
             pool, func, cookie, logname = state
             self.pool = pool
             self.func = func
@@ -150,7 +146,7 @@ class Logging:
             return _
 
         def __setstate__(self, state):
-            self._init_(state, ray_set_trace=False)
+            self._init_(state)
 
         def __getstate__(self):
             return self.pool, self.func, self.cookie, self.logname
@@ -164,7 +160,7 @@ class Logging:
 
         @property
         def logpath(self):
-            if self.logname is None:
+            if self.logname is None or self.logspace is None:
                 return None
             logpath = self.logspace.join(self.logspace.path, self.logname)
             return logpath
@@ -183,7 +179,7 @@ class Logging:
             self.pool.authenticate_task(self.id,
                                     self.cookie,
                                     )
-            if self.pool.verbose:
+            if self.pool.debug:
                 print(f"DEBUG: >>>>>>>> {self.id}: BEGAN executing task\ncookie: {self.cookie}, id:{self.id}\nargs: {args}\nkwargs: {kwargs}")
             logcontext = logging_context(self.logspace, self.logpath)
             logstream = logcontext.__enter__()
@@ -195,8 +191,6 @@ class Logging:
                         print(f"Redirecting stdout to {self.logpath} in {str(self.logspace)}")
                     _stdout = sys.stdout
                     sys.stdout = logstream
-                    if self.pool.verbose:
-                        print(f"Redirected stdout to {self.logpath} in {str(self.logspace)}")
             if self.pool.debug:
                 print(f"DEBUG: START: Executing task:\ncookie: {self.cookie}, id: {self.id}")
             try:
@@ -302,18 +296,14 @@ class Logging:
                  name=None,
                  *,
                  dataspace,
-                 priority=0,
-                 return_none=False,
                  authenticate_tasks=False,
                  throw=False,
-                 log_to_file=True,
+                 log_to_file=False,
                  verbose=False,
                  debug=False,
         ):
         state = dict(name=name,
                 dataspace=dataspace,
-                priority=priority,
-                return_none=return_none,
                 authenticate_tasks=authenticate_tasks, 
                 throw=throw,
                 log_to_file=log_to_file,
@@ -325,8 +315,6 @@ class Logging:
     def __getstate__(self):
         state = dict(name=self.name,\
                     dataspace=self.dataspace,\
-                    priority=self.priority,\
-                    return_none=self.return_none,\
                     authenticate_tasks=self.authenticate_tasks, \
                     throw=self.throw, \
                     log_to_file=self.log_to_file,\
@@ -338,8 +326,6 @@ class Logging:
     def __setstate__(self, state):
         self.name, \
         self.dataspace,\
-        self.priority,\
-        self.return_none,\
         self.authenticate_tasks, \
         self.throw, \
         self.log_to_file,\
@@ -400,8 +386,6 @@ class Logging:
         _ = f"{signature.Tagger().ctor_name(self.__class__)}(" +\
                f"{repr(self.name)}, " + \
                f"dataspace={repr(self.dataspace)}, " + \
-               f"priority={repr(self.priority)}, " + \
-               f"return_none={repr(self.return_none)}, " + \
                f"authenticate_tasks={repr(self.authenticate_tasks)}, " + \
                f"throw={repr(self.throw)}, " + \
                f"log_to_file={repr(self.log_to_file)}, " + \
@@ -481,7 +465,6 @@ class Logging:
             print(f"Submitted delayed request based on task "
                         f"with id {request.task.id} "
                         f"to evaluate request {request} at {start_time}"
-                        f" with prority {self.priority}"
                         f" logging to {request.task.logpath}")
         response = self.Response(pool=self,
                                  request=request,
@@ -539,8 +522,6 @@ class Dask(Logging):
                  dataspace,
                  scheduler_url=None,
                  n_workers=12,
-                 priority=0,
-                 return_none=False,
                  authenticate_tasks=False,
                  throw=False,
                  log_to_file=True,
@@ -548,8 +529,6 @@ class Dask(Logging):
                  debug=False,
         ):
         _kwargs = dict(dataspace=dataspace,
-                       priority=priority,
-                       return_none=return_none,
                        authenticate_tasks=authenticate_tasks,
                        throw=throw,
                        log_to_file=log_to_file,
@@ -622,14 +601,59 @@ class Dask(Logging):
 
 
 class Ray(Logging):
+    RAY_SET_TRACE = False # DEBUG
     class Task(Logging.Task):
-        pass
-
+        def __call__(self, *args, **kwargs):
+            if Ray.RAY_SET_TRACE:
+                ray.util.pdb.set_trace()
+            super().__call__(*args, **kwargs)
+            
     class Request(Logging.Request):
         pass
 
     class Response(Logging.Response):
-        pass
+        def __init__(self, 
+                 request,
+                 future=None,
+                 *,
+                 pool=None,
+                 start_time = None,
+                 done_callback=None
+        ):
+            self.future = future
+            super().__init__(request, pool=pool, start_time=start_time, done_callback=done_callback)
+
+        def __str__(self):
+            return signature.Tagger().str_ctor(self.__class__, 
+                                           self.request, 
+            )
+    
+        def __repr__(self):
+            return signature.Tagger().repr_ctor(self.__class__, 
+                                            self.request, 
+                                            start_time=self.start_time,
+                                            done_callback=self._done_callback,
+            )
+        
+        def _compute(self):
+            self._result = self.future.result()
+            self._exception = self.future.exception()
+            self._traceback = None
+            '''
+            try:
+                self._result = ray.get(self.ref)
+            except Exception as e:
+                self._exception = e
+                self._traceback = e.traceback
+            '''
+
+        @property
+        def done(self):
+            return self.future.done()
+
+        @property
+        def running(self):
+            return self.future.running()
 
     def __init__(self,
                  name='Ray',
@@ -639,32 +663,35 @@ class Ray(Logging):
                  ray_working_dir_config={},
                  authenticate_tasks=False,
                  throw=False,
-                 log_to_file=True,
+                 log_to_file=False,
                  verbose=False,
                  debug=False,
                 ):
         _kwargs = dict(dataspace=dataspace,
-                       return_none=False,
-                       priority=0,
                        authenticate_tasks=authenticate_tasks,
                        throw=throw,
                        log_to_file=log_to_file,
-                       verbose=False,
-                       debug=False,)
+                       verbose=verbose,
+                       debug=debug,)
         super().__init__(name, **_kwargs)
         self.ray_kwargs = ray_kwargs
         self._ray_client = None
         self.ray_working_dir_config = ray_working_dir_config
 
+    def __str__(self):
+        s = f"{signature.Tagger().ctor_name(self.__class__)}({repr(self.name)+', ' if self.name else ''}" + \
+              f"dataspace={self.dataspace})"
+        return s
+
     def __repr__(self):
-        repr = f"{signature.Tagger.ctor_name(self.__class__)}({self.name}, " + \
+        _ = f"{signature.Tagger.ctor_name(self.__class__)}({repr(self.name)}, " + \
                f"dataspace={self.dataspace}, " + \
                f"ray_kwargs={self.ray_kwargs}, " + \
                f"ray_working_dir_config={self.ray_working_dir_config}, " + \
                f"authenticate_tasks={self.authenticate_tasks}, " + \
                f"throw={self.throw}, " + \
                f"log_to_file={self.log_to_file})"
-        return repr
+        return _
 
     def __delete__(self):
         if self._ray_client is not None:
@@ -672,22 +699,22 @@ class Ray(Logging):
         self._ray_client = None
 
     def __getstate__(self):
-        state = super().__getstate__(), \
-                self.ray_kwargs, \
-                self.ray_working_dir_config
+        state = super().__getstate__()
+        state.update(**dict(ray_kwargs=self.ray_kwargs,
+                            ray_working_dir_config=self.ray_working_dir_config))
         return state
 
     def __setstate__(self, state):
-        _state, \
-        self.ray_kwargs, \
-        self.ray_working_dir_config = state
+        _state = {key: val for key, val in state.items() if key not in ['ray_kwargs', 'ray_working_dir_config']}
+        self.ray_kwargs = state['ray_kwargs']
+        self.ray_working_dir_config = state['ray_working_dir_config']
         super().__setstate__(_state)
         self._ray_client = None
 
     def repr(self, request):
         pool_key = signature.Tagger(tag_defaults=False) \
             .repr_ctor(self.__class__,
-                       self.name,
+                       repr(self.name),
                        dataspace=self.dataspace,
                        ray_kwargs=self.ray_kwargs,
                        ray_working_dir_config=self.ray_working_dir_config)
@@ -696,13 +723,15 @@ class Ray(Logging):
 
     @property
     def client(self):
-        from ..config import USER
-        from .raybuilder import get_ray_client
         if self._ray_client is None:
+            from ..config import USER
+            from .raybuilder import get_ray_client
+            
             namespace = f"{USER}.{self.name}"
             self._ray_client = get_ray_client(namespace=namespace,
                                           ray_kwargs=self.ray_kwargs,
-                                          ray_working_dir_config=self.ray_working_dir_config)
+                                          ray_working_dir_config=self.ray_working_dir_config,
+                                          verbose=self.verbose,)
         return self._ray_client
 
     @property
@@ -723,24 +752,32 @@ class Ray(Logging):
         #task = request.task.clone() # why clone?  That changes task.logname
         task = request.task
         client = self.client
+        if self.RAY_SET_TRACE:
+                pdb.set_trace()
         if client is None:
-            future = ray.remote(Ray._delayed) \
-                .remote(task, *request.args, **request.kwargs) \
-                .future()
+            ref = ray.remote(Ray.submit).remote(task, *request.args, **request.kwargs)
+            future = ref.future()
         else:
             with self.client:
-                future = ray.remote(Ray._delayed)\
-                    .remote(task, *request.args, **request.kwargs)\
-                    .future()
+                ref = ray.remote(Ray.submit).remote(task, *request.args, **request.kwargs)
+                #HACK
+                time.sleep(2)
+                # If future() is called immediately, the future will be returned 
+                # in a 'pending' state, will remain in it, and future.result() etc.
+                # will hang.
+                # TODO: Possible resolution retain ref, instead of future, and extract
+                # result, exception, traceback from ref, if it is possible.
+                # Note that this needs to be done carefully to ensure compatibility
+                # with the parent class.
+                future = ref.future()
         start_time = datetime.datetime.now()
-        logpath = task.logpath
+        #DEBUG
+        #pdb.set_trace()
         if self.verbose:
             print(f"Ray: submitted task "
                         f"with id {task.id} "
-                        f"from {self.db} "
                         f"to evaluate request {request} at {start_time}"
-                        f" with prority {self.priority}"
-                        f" logging to {logpath}")
+                        f" logging to {task.logpath}")
         response = self.Response(request,
                                  future,
                                  pool=self,
@@ -750,7 +787,7 @@ class Ray(Logging):
         return response
 
     @staticmethod
-    def _delayed(task, *args, **kwargs):
+    def submit(task, *args, **kwargs):
         _ = task(*args, **kwargs)
         return _
 
@@ -770,15 +807,11 @@ class Multiprocess(Logging):
                  *,
                  dataspace,
                  max_workers=12,
-                 priority=0,
-                 return_none=False,
                  authenticate_tasks=False,
                  log_to_file=True,
                  verbose=False,
                  debug=False,):
         _kwargs = dict(dataspace=dataspace,
-                         priority=priority,
-                         return_none=return_none,
                          authenticate_tasks=authenticate_tasks,
                          log_to_file=log_to_file,
                          verbose=verbose,
@@ -880,8 +913,6 @@ class HTTP(Logging):
                  dataspace,
                  url=None,
                  auth=None,
-                 priority=0,
-                 return_none=False,
                  authenticate_tasks=False,
                  throw=False,
                  log_to_file=True,
@@ -889,8 +920,6 @@ class HTTP(Logging):
                  debug=False,):
         _state = name, \
                 dataspace, \
-                priority, \
-                return_none, \
                 authenticate_tasks, \
                 throw, \
                 log_to_file, \
@@ -916,20 +945,18 @@ class HTTP(Logging):
                self.auth == other.auth
 
     def __repr__(self):
-        repr = f"{signature.Tagger.ctor_name(self.__class__)}({self.name}, " + \
+        _ = f"{signature.Tagger.ctor_name(self.__class__)}({repr(self.name)}, " + \
                f"dataspace = {self.dataspace}, " + \
                f"url = {self.url}, " + \
                f"auth = {self.auth}, " + \
-               f"priority = {self.priority}, " + \
-               f"return_none = {self.return_none}, " + \
                f"authenticate_tasks = {self.authenticate_tasks}, " + \
                f"throw = {self.throw}, " + \
                f"log_to_file = {self.log_to_file})"
-        return repr
+        return _
 
     def repr(self, request):
         pool_key = signature.Tagger(tag_defaults=False) \
-            .repr_ctor(self.__class__, self.name, dataspace=self.dataspace, url=self.url)
+            .repr_ctor(self.__class__, repr(self.name), dataspace=self.dataspace, url=self.url)
         key = f"{pool_key}[[{request.tag}]]"
         return key
 
