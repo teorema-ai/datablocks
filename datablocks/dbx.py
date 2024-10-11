@@ -80,7 +80,7 @@ DBX_PREFIX = 'DBX'
 
 class Datablock:
     REVISION = '0.0.1'
-    FILENAME = "data.ext" # define or define TOPICS: dict
+    PATHNAME = "data.ext" # define this or define TOPICS: dict
 
     @dataclass
     class SCOPE:
@@ -151,13 +151,13 @@ class Datablock:
         else:
             if filesystem.protocol == 'file':
                 if roots is None:
-                    path = os.join(os.getcwd(), self.FILENAME)
+                    path = os.join(os.getcwd(), self.PATHNAME)
                 else:
                     path_ = roots
                     os.makedirs(path_, exist_ok=True)
-                    path = os.path.join(path_, self.FILENAME)
+                    path = os.path.join(path_, self.PATHNAME)
             else:
-                path = roots + "/" + self.FILENAME
+                path = roots + "/" + self.PATHNAME
         return path
 
     def print_verbose(self, s):

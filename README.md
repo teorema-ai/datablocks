@@ -8,21 +8,27 @@ It is an experiment dataset management toolkit.
     class Datablock:
         TOPICS: dict # {topic -> root} 
         |
-        FILENAME: str #TODO: -> PATHNAME
+        PATHNAME: str
         
         @dataclass
         def SCOPE:
             ...
 
         def __init__(self,
-            roots: dict{topic:str -> root:str|list[str]} | str | list[str],
-            filesystem: fsspec.AbstractFileSystem,
-            scope: Optional[SCOPE],
-            *,
-            debug=False,
-            verbose=False,
+                     roots: dict{topic:str -> root:str|list[str]} | str | list[str],
+                     filesystem: fsspec.AbstractFileSystem,
+                     scope: Optional[SCOPE],
+                     *,
+                     debug=False,
+                     verbose=False,
         )
-            ...
+            self.roots = roots
+            self.filesystem = filesystem
+            self.scope = scope
+            if self.scope is None:
+                self.scope = self.SCOPE()
+            self.debug = False
+            self.verbose = False
 
         def build(self):
             ...
@@ -31,10 +37,11 @@ It is an experiment dataset management toolkit.
             ...
 
         [
-        def valid(topic: Optional[str]):
-            ...
-        def metric(topic: Optional[str]) -> Float:
-            ...
+            def valid(topic: Optional[str]):
+                ...
+                
+            def metric(topic: Optional[str]) -> Float:
+                ...
         ]
 
 ```
