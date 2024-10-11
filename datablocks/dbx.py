@@ -517,10 +517,10 @@ class DBX:
                     print(f"DBX: scope: no specified scope for {self} with datablock with alias {repr(self.databuilder.alias)}")
                     print(f"DBX: scope: using build record scope: {_scope}")
             else:
+                _scope = asdict(self.datablock_cls().SCOPE(**self.datablock_scope_kwargs_))
                 if self.verbose:
                     print(f"DBX: scope: no specified scope and no build records for {self} with alias {repr(self.databuilder.alias)}")
                     print(f"DBX: scope: constructing scope from kwargs:\n{self.datablock_scope_kwargs_}")
-                    _scope = asdict(self.datablock_cls().SCOPE(**self.datablock_scope_kwargs_))
             self.scope_ = _scope
         return _scope
     
