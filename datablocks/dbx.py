@@ -481,6 +481,18 @@ class DBX:
         _ =  int(hashlib.sha1(hashstr.encode()).hexdigest(), 16)
         return _
 
+    def __getattr__(self, attr):
+        try:
+            #DEBUG
+            #pdb.set_trace()
+            datablock_clsname = super().__getattribute__('_datablock_clsname')
+            if attr == datablock_clsname:
+                return self.Datablock
+            else:
+                super().__getattribute__(attr)
+        except:
+            return super().__getattribute__(attr)
+
     def datablock_cls(self):
         #pdb.set_trace() #DEBUG
         if self._datablock_cls is None:
