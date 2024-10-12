@@ -22,24 +22,25 @@ logger = logging.getLogger(__name__)
 
 
 class ArgResponseException(Exception):
-    def __init__(self, i, arg=None):
+    def __init__(self, i):
         self.i = i
-        self.arg = arg
     
     def __repr__(self):
         tagger = signature.Tagger()
-        _ = tagger.repr_ctor(ArgResponseException, self.i)
+        _ = tagger.repr_ctor(ArgResponseException, [self.i], {})
         return _
+
+    def __str__(self):
+        return repr(self)
 
 
 class KwArgResponseException(ArgResponseException):
-    def __init__(self, key, arg=None):
+    def __init__(self, key):
         self.key = key
-        self.arg = arg
 
     def __repr__(self):
         tagger = signature.Tagger()
-        _ = tagger.repr_ctor(KwArgResponseException, self.key)
+        _ = tagger.repr_ctor(KwArgResponseException, [self.key], {})
         return _
     
 class Task:
@@ -61,11 +62,11 @@ class Task:
         return _
 
     def __repr__(self):
-        repr = signature.Tagger().repr_ctor(Task, self.func)
+        repr = signature.Tagger().repr_ctor(Task, [self.func,], {})
         return repr
 
     def __str__(self):
-        str = signature.Tagger().str_ctor(Task, self.func)
+        str = signature.Tagger().str_ctor(Task, [self.func, ], {})
         return str
     
 class Response:
@@ -130,14 +131,17 @@ class Response:
 
     def __str__(self):
         return signature.Tagger().str_ctor(self.__class__, 
-                                           self.request, 
+                                           [self.request], 
+                                           {}, 
         )
     
     def __repr__(self):
         return signature.Tagger().repr_ctor(self.__class__, 
-                                            self.request, 
-                                            start_time=self.start_time,
-                                            done_callback=self._done_callback,
+                                            [self.request], 
+                                            dict(
+                                                start_time=self.start_time,
+                                                done_callback=self._done_callback,
+                                            )
     )
 
     def __tag__(self):
@@ -181,13 +185,13 @@ class Response:
                         if self.get('throw', False):
                             raise arg.exception()
                         else:
-                            raise ArgResponseException(i, arg)
+                            raise ArgResponseException(i)
                 for key, arg in self.kwargs_responses.items():
                     if isinstance(arg, Response) and arg.exception() is not None:
                         if self.get('throw', False):
                             raise arg.exception()
                         else:
-                            raise KwArgResponseException(key, arg)
+                            raise KwArgResponseException(key)
                 args = [self._arg_result(arg_response) for arg_response in self.args_responses]
                 kwargs = {key: self._arg_result(kwarg_response) for key, kwarg_response in self.kwargs_responses.items()}
                 
@@ -197,7 +201,7 @@ class Response:
             except Exception as e:
                 #DEBUG
                 #pdb.set_trace()
-                if self.get('throw', False):
+                if self.request.get('throw', False):
                     raise(e)
                 _, exc_value, exc_traceback = utils.exc_info()
                 self._exception = exc_value
@@ -384,9 +388,8 @@ class RPC(RepoMixin):
             ctor_args_strs = [tagger.str_object(arg) for arg in self.ctor_args]
             ctor_kwargs_strs = {key: tagger.str_object(arg) for key, arg in self.ctor_kwargs.items()}
             _str = tagger.str_ctor(RPC,
-                                   self.ctor_url,
-                                   args=ctor_args_strs,
-                                   kwargs=ctor_kwargs_strs)
+                                   [self.ctor_url, *ctor_args_strs],
+                                   ctor_kwargs_strs)
         if hasattr(self, '_method_'):
             str = f"{_str}.with_method({repr(self._method_)})"
         else:
@@ -395,9 +398,8 @@ class RPC(RepoMixin):
 
     def __repr__(self):
         _repr = signature.Tagger().repr_ctor(RPC,
-                                         self.ctor_url,
-                                         args=self.ctor_args,
-                                         kwargs=self.ctor_kwargs)
+                                         [self.ctor_url, *self.ctor_args],
+                                         self.ctor_kwargs)
         if hasattr(self, '_method_'):
             repr_ = f"{_repr}.with_method({repr(self._method_)})"
         else:
@@ -540,15 +542,15 @@ class Request:
         return request
 
     def __str__(self):
-        str = signature.Tagger().str_ctor(Request, self.task.func, *self.args, **self.kwargs)
+        str = signature.Tagger().str_ctor(Request, [self.task.func, *self.args], self.kwargs)
         return str
 
     def __repr__(self):
-        repr = signature.Tagger().repr_ctor(Request, self.task.func, *self.args, **self.kwargs)
+        repr = signature.Tagger().repr_ctor(Request, [self.task.func, *self.args], self.kwargs)
         return repr
 
     def __tag__(self):
-        _ = signature.Tagger().tag_ctor(Request, self.task.func, *self.args, **self.kwargs)
+        _ = signature.Tagger().tag_ctor(Request, [self.task.func, *self.args], self.kwargs)
         return _
 
     def iargs_kargs_kwargs(self):
@@ -741,6 +743,8 @@ class Report:
         report = self
         args_transcripts = [report._arg_transcript(r) for r in report.args_reports]
         kwargs_transcripts = {k: report._arg_transcript(v) for k, v in report.kwargs_reports.items()}
+        #DEBUG
+        #pdb.set_trace()
         transcript = dict(id=f"id:{report.id}",
                        completed=(report.status in [Report.STATUS.SUCCEEDED, Report.STATUS.FAILED]),
                        success=(report.status in [Report.STATUS.SUCCEEDED]),
@@ -874,10 +878,10 @@ class Literal(Response):
         super().__init__(request, request)
 
     def __tag__(self):
-        return signature.Tagger().tag_ctor(Literal, self.request)
+        return signature.Tagger().tag_ctor(Literal, [self.request], {})
 
     def __repr__(self):
-        return sigature.Tagger().repr_ctor(Literal, self.request)
+        return sigature.Tagger().repr_ctor(Literal, [self.request], {})
 
     @property
     def done(self):
@@ -890,13 +894,13 @@ class Closure(Response):
         self._result = None
 
     def __tag__(self):
-        return signature.Tagger().tag_ctor(Closure, self.request)
+        return signature.Tagger().tag_ctor(Closure, [self.request], {})
 
     def __repr__(self):
-        return signature.Tagger().repr_ctor(Closure, self.request)
+        return signature.Tagger().repr_ctor(Closure, [self.request], {})
 
     def __str__(self):
-        return signature.Tagger().repr_ctor(Closure, self.request)
+        return signature.Tagger().repr_ctor(Closure, [self.request], {})
 
     def result(self):
         if self._result is None:
@@ -911,11 +915,11 @@ class FIRST(Request):
         self.args = args
 
     def __repr__(self):
-        repr = signature.Tagger().repr_ctor(self.__class__, *self.args)
+        repr = signature.Tagger().repr_ctor(self.__class__, self.args, {})
         return repr
 
     def __str__(self):
-        tag = signature.Tagger().str_ctor(self.__class__, *self.args)
+        tag = signature.Tagger().str_ctor(self.__class__, self.args, {})
         return tag
 
     def __tag__(self):
@@ -997,15 +1001,15 @@ class BLOCK:
 
         @property
         def __str__(self):
-            str = signature.Tagger().str_ctor(self.__class__, self.iterable)
+            str = signature.Tagger().str_ctor(self.__class__, [self.iterable], {})
             return str
 
         def __repr__(self):
-            repr = signature.Tagger().repr_ctor(self.__class__, self.iterable)
+            repr = signature.Tagger().repr_ctor(self.__class__, [self.iterable], {})
             return repr
 
         def _tag_(self):
-            _ = signature.Tagger().tag_ctor(self.__class__, self.iterable)
+            _ = signature.Tagger().tag_ctor(self.__class__, [self.iterable], {})
             return _
 
         def __len__(self):
@@ -1033,16 +1037,14 @@ class BLOCK:
 
         def _tag_(self):
             tag = signature.Tagger().tag_ctor(self.__class__,
-                                            self.func,
-                                            *self.args,
-                                            **self.kwargs)
+                                            [self.func, *self.args],
+                                            self.kwargs)
             return tag
 
         def __str__(self):
             tag = signature.Tagger().str_ctor(self.__class__,
-                                        self.func,
-                                        *self.args,
-                                        **self.kwargs)
+                                        [self.func, *self.args],
+                                        self.kwargs)
             return tag
 
         def __repr__(self):
@@ -1149,13 +1151,13 @@ class BLOCK:
             self.responses = responses
 
         def __tag__(self):
-            return signature.Tagger().tag_ctor(self.__class__, self.requester, self.responses)
+            return signature.Tagger().tag_ctor(self.__class__, [self.requester, self.responses])
 
         def __repr__(self):
-            return signature.Tagger().repr_ctor(self.__class__, self.requester, self.responses)
+            return signature.Tagger().repr_ctor(self.__class__, [self.requester, self.responses])
 
         def __str__(self):
-            return signature.Tagger().str_ctor(self.__class__, self.requester, self.responses)
+            return signature.Tagger().str_ctor(self.__class__, [self.requester, self.responses])
 
         def reporter(self):
             reporter = BLOCK.Report(self.responses)
@@ -1170,13 +1172,13 @@ class BLOCK:
             self.reports = [response.report() for response in responses]
 
         def __tag__(self):
-            return signature.Tagger().tag_ctor(self.__class__, self.reports)
+            return signature.Tagger().tag_ctor(self.__class__, [self.reports], {})
 
         def __repr__(self):
-            return signature.Tagger().repr_ctor(self.__class__, self.reports)
+            return signature.Tagger().repr_ctor(self.__class__, [self.reports], {})
 
         def __str__(self):
-            return signature.Tagger().str_ctor(self.__class__, self.reports)
+            return signature.Tagger().str_ctor(self.__class__, [self.reports], {})
 
         def results(self):
             results = [report.result() for report in self.reports]

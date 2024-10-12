@@ -1,5 +1,4 @@
-import pdb #DEBUG
-
+from collections import Iterable
 import copy
 import dataclasses
 from dataclasses import dataclass, asdict, replace, field
@@ -8,6 +7,7 @@ import hashlib
 import importlib
 import logging
 import os
+import pdb #DEBUG
 import pickle
 from typing import TypeVar, Generic, Tuple, Union, Dict, Optional, List
 
@@ -462,7 +462,7 @@ class DBX:
             kwargs['repo'] = self.repo
         if self.revision is not None:
             kwargs['revision'] = self.revision
-        _ =  Tagger(tag_defaults=False).str_ctor(self.__class__, *args, **kwargs)
+        _ =  Tagger(tag_defaults=False).str_ctor(self.__class__, args, kwargs)
         return _
 
     def __tag__(self):
@@ -746,6 +746,8 @@ class DBX:
         return record
     
     def show_build_graph(self, *, record=None, node=tuple(), show_=('logpath', 'logpath_status', 'exception'), show=tuple(), **kwargs):
+        if not isinstance(node, Iterable):
+            node = (node,)
         _record = self.show_build_record(record=record, full=True)
         if _record is None:
             return None
@@ -1168,10 +1170,10 @@ class DBX:
             if filesystem.protocol != "file":
                 protocol = dbx.databuilder.dataspace.protocol
                 storage_options = dbx.databuilder.dataspace.storage_options
-                _filesystem = signature.Tagger().tag_func("fsspec.filesystem", protocol, **storage_options) 
+                _filesystem = signature.Tagger().tag_func("fsspec.filesystem", [protocol], storage_options) 
             else:
                 _filesystem = ""        
-            _, __kwargs = Tagger().tag_args_kwargs(**dbx.datablock_kwargs_)
+            _, __kwargs = Tagger().tag_args_kwargs([], dbx.datablock_kwargs_)
             _kwargs = ""
             for key, val in __kwargs.items():
                 _kwargs += f"{key}={val},\n"

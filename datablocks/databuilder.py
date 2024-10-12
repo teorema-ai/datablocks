@@ -26,6 +26,7 @@ from .utils import ALIAS, DEPRECATED, OVERRIDE, microseconds_since_epoch, dateti
 from .eval import request, pool
 from .eval.request import Request, ALL, LAST, NONE, Graph
 from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL as STDOUT_POOL, DATABLOCKS_FILE_LOGGING_POOL as FILE_POOL
+from .eval.pool import DATABLOCKS_STDOUT_LOGGING_POOL as STDOUT_LOGGING_POOL, DATABLOCKS_FILE_LOGGING_POOL as FILE_LOGGING_POOL
 from .dataspace import DATABLOCKS_DATALAKE as DATALAKE
 
 
@@ -271,7 +272,7 @@ class Databuilder(Anchored, Scoped):
         self.lock_pages = lock_pages
         self.throw = throw
         self.rebuild = rebuild
-        self.pool = pool
+        self.pool = pool.clone(throw=throw) if pool is not None else pool
         self.build_block_request_lifecycle_callback = build_block_request_lifecycle_callback
         self.throw = throw
         self.verbose = verbose
@@ -304,10 +305,10 @@ class Databuilder(Anchored, Scoped):
             args = [getattr(self, attr) for attr in argattrs]
             kwargattrs = schema[1]
             kwargs = {attr: getattr(self, attr) for attr in kwargattrs}
-            repr = Tagger().tag_ctor(self.__class__, *args, **kwargs)
+            repr = Tagger().tag_ctor(self.__class__, args, kwargs)
             return repr
         else:
-            repr = tag.Tagger().tag_ctor(self.__class__)
+            repr = tag.Tagger().tag_ctor(self.__class__, [], {})
 
     @property
     def revisionspace(self):
@@ -418,12 +419,6 @@ class Databuilder(Anchored, Scoped):
         return collated_book
 
     def block_intent(self, **scope):
-        #DEBUG
-        #blockscope = self._blockscope_(**scope)
-        #tagscope = self._tagscope_(**blockscope)
-        #block_intent_book = self.block_intent_book(**tagscope)
-        #DEBUG
-        #pdb.set_trace()
         block_intent_book = self.block_intent_book(**scope)
         block_intent_scopebook = self._kvhbook_to_scopebook(block_intent_book)
         return block_intent_scopebook
@@ -626,7 +621,9 @@ class Databuilder(Anchored, Scoped):
         _shortfall_batch_requests = \
             [self._build_batch_request_(self._tagscope_(**shortfall_batchscope_list[i]), **shortfall_batchscope_list[i])
                             for i in range(len(shortfall_batchscope_list))]
-        shortfall_batch_requests_ = [_.apply(self.pool) for _ in _shortfall_batch_requests]
+        #DEBUG
+        #pdb.set_trace()
+        shortfall_batch_requests_ = [_.set(throw=self.throw).apply(self.pool) for _ in _shortfall_batch_requests]
         '''
         #TODO: #REMOVE?
         if self.throw is not None:
@@ -644,8 +641,8 @@ class Databuilder(Anchored, Scoped):
 
         tagscope = self._tagscope_(**blockscope)
         extent_request = Request(self.block_extent, **tagscope)
-        requests = shortfall_batch_requests + [extent_request]
-        build_block_request = Request(ALL, *requests)
+        requests = shortfall_batch_requests + [extent_request.set(throw=self.throw)]
+        build_block_request = Request(ALL, *requests).set(throw=self.throw)
         '''
         #TODO: #REMOVE: #WARNING: 
         if self.throw is not None:

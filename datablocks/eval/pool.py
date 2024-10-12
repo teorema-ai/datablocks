@@ -51,12 +51,15 @@ class ConstResponse:
 
     def __str__(self):
         return signature.Tagger().str_ctor(self.__class__,
-                                      self._result)
+                                      [self._result], {})
     def __repr__(self):
         return signature.Tagger().repr_ctor(self.__class__,
-                                         self._result,
-                                         exception=self._exception,
-                                         traceback=self._traceback)
+                                         [self._result],
+                                         dict(
+                                            exception=self._exception,
+                                            traceback=self._traceback,
+                                         )
+        )
 
     def result(self):
         if self._exception is not None:
@@ -142,7 +145,7 @@ class Logging:
                 self.logname = f"task-{self.id:028d}-{badge}.log"
 
         def __repr__(self):
-            _ = signature.Tagger().repr_ctor(Logging.Task, self.pool, self.func, self.cookie)
+            _ = signature.Tagger().repr_ctor(Logging.Task, [self.pool, self.func, self.cookie])
             return _
 
         def __setstate__(self, state):
@@ -230,7 +233,7 @@ class Logging:
             super().__init__(task, *args, **kwargs)
 
         def __repr__(self):
-            _ = signature.Tagger().repr_ctor(self.__class__, self.pool, self.cookie, self.func, *self.args, **self.kwargs)
+            _ = signature.Tagger().repr_ctor(self.__class__, [self.pool, self.cookie, self.func, *self.args], self.kwargs)
             return _
 
         def __str__(self):
@@ -286,11 +289,13 @@ class Logging:
 
         def __repr__(self):
             return signature.Tagger().repr_ctor(self.__class__,
-                                            self.request,
-                                            start_time=self.start_time,
-                                            pool=self.pool,
-                                            done_callback=self._done_callback,
-            )     
+                                            [self.request,],
+                                            dict(
+                                                start_time=self.start_time,
+                                                pool=self.pool,
+                                                done_callback=self._done_callback,
+                                            )
+            )   
 
     def __init__(self,
                  name=None,
@@ -625,14 +630,17 @@ class Ray(Logging):
 
         def __str__(self):
             return signature.Tagger().str_ctor(self.__class__, 
-                                           self.request, 
+                                               [self.request],
+                                               {}, 
             )
     
         def __repr__(self):
             return signature.Tagger().repr_ctor(self.__class__, 
-                                            self.request, 
-                                            start_time=self.start_time,
-                                            done_callback=self._done_callback,
+                                            [self.request], 
+                                            dict(
+                                                start_time=self.start_time,
+                                                done_callback=self._done_callback,
+                                            )
             )
         
         def _compute(self):
@@ -714,10 +722,13 @@ class Ray(Logging):
     def repr(self, request):
         pool_key = signature.Tagger(tag_defaults=False) \
             .repr_ctor(self.__class__,
-                       repr(self.name),
-                       dataspace=self.dataspace,
-                       ray_kwargs=self.ray_kwargs,
-                       ray_working_dir_config=self.ray_working_dir_config)
+                       [repr(self.name)],
+                       dict(
+                            dataspace=self.dataspace,
+                            ray_kwargs=self.ray_kwargs,
+                            ray_working_dir_config=self.ray_working_dir_config
+                        )
+            )
         key = f"{pool_key}[[{request.tag}]]"
         return key
 
@@ -956,7 +967,7 @@ class HTTP(Logging):
 
     def repr(self, request):
         pool_key = signature.Tagger(tag_defaults=False) \
-            .repr_ctor(self.__class__, repr(self.name), dataspace=self.dataspace, url=self.url)
+            .repr_ctor(self.__class__, [repr(self.name)], dict(dataspace=self.dataspace, url=self.url))
         key = f"{pool_key}[[{request.tag}]]"
         return key
 

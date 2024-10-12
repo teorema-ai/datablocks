@@ -74,7 +74,7 @@ def func_kdefaults(func):
     return dargs
 
 
-def func_iargs_kargs_kwargs(func, is_method, add_defaults, *args, **kwargs):
+def func_iargs_kargs_kwargs(func, is_method, add_defaults, args, kwargs):
     """Separates args and kwargs into  according to aparams and kwparams, including  variable parameters, and optionally adds defaults.
     The result is a triple of dictionaries:
         _iargs: contains all positionals from args, kwargs and var_positionals indexed by argument position; ordered in ascending order of positions
@@ -195,9 +195,9 @@ class Tagger:
         return name
 
     @staticmethod
-    def _static_label_func_args_kwargs(func, method, ltype, tag_args, tag_kwargs, tag_defaults, strict_args_kwargs, *args, **kwargs):
+    def _static_label_func_args_kwargs(func, method, ltype, tag_args, tag_kwargs, tag_defaults, strict_args_kwargs, args, kwargs):
         if not isinstance(func, str):
-            iargs_, kargs_, kvargs_ = func_iargs_kargs_kwargs(func, method, tag_defaults, *args, **kwargs)
+            iargs_, kargs_, kvargs_ = func_iargs_kargs_kwargs(func, method, tag_defaults, args, kwargs)
             args_ = list(iargs_.values())
             kwargs_ = kvargs_
             if hasattr(func, 'signature'):
@@ -248,14 +248,14 @@ class Tagger:
                                     f"for keyword parameters {kwparams}")
             targs, tkwargs = (), {}
             if tag_args and tag_kwargs:
-                targs, tkwargs = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, *_args, **_kwargs)
+                targs, tkwargs = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, _args, _kwargs)
             else:
                 if tag_args:
-                    targs, _ = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, *_args)
+                    targs, _ = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, _args)
                 if tag_kwargs:
-                    _, tkwargs = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, **_kwargs)
+                    _, tkwargs = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, _kwargs)
         else:
-            targs, tkwargs = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, *args, **kwargs)
+            targs, tkwargs = Tagger._static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, args, kwargs)
         atag = ''
         if len(targs) > 0:
             atag = ", ".join(targs)
@@ -266,7 +266,7 @@ class Tagger:
         return _tag
 
     @staticmethod
-    def _static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, *args, **kwargs):
+    def _static_label_args_kwargs(ltype, tag_args, tag_kwargs, tag_defaults, args, kwargs):
         _args = [Tagger.static_label_object(ltype, tag_args, tag_kwargs, tag_defaults, v) for v in args]
         _kwargs = {k: Tagger.static_label_object(ltype, tag_args, tag_kwargs, tag_defaults, v) for k, v in kwargs.items()}
         return _args, _kwargs
@@ -301,109 +301,109 @@ class Tagger:
         tag = Tagger.static_label_object(str, self.tag_args, self.tag_kwargs, self.tag_defaults, arg)
         return tag
 
-    def label_args_kwargs(self, ltype, strict_args_kwargs, *args, **kwargs):
-        tag = Tagger._static_label_args_kwargs(ltype, self.tag_args, self.tag_kwargs, self.tag_defaults, strict_args_kwargs, *args, **kwargs)
+    def label_args_kwargs(self, ltype, strict_args_kwargs, args, kwargs):
+        tag = Tagger._static_label_args_kwargs(ltype, self.tag_args, self.tag_kwargs, self.tag_defaults, strict_args_kwargs, args, kwargs)
         return tag
 
-    def tag_args_kwargs(self, *args, **kwargs):
-        _tag = Tagger._static_label_args_kwargs(tag, self.tag_args, self.tag_kwargs, self.tag_defaults, *args, **kwargs)
+    def tag_args_kwargs(self, args, kwargs):
+        _tag = Tagger._static_label_args_kwargs(tag, self.tag_args, self.tag_kwargs, self.tag_defaults, args, kwargs)
         return _tag
 
-    def repr_args_kwargs(self, *args, **kwargs):
-        tag = Tagger._static_label_args_kwargs(repr, self.tag_args, self.tag_kwargs, self.tag_defaults, *args, **kwargs)
+    def repr_args_kwargs(self, args, kwargs):
+        tag = Tagger._static_label_args_kwargs(repr, self.tag_args, self.tag_kwargs, self.tag_defaults, args, kwargs)
         return tag
 
-    def str_args_kwargs(self, *args, **kwargs):
-        tag = Tagger._static_label_args_kwargs(str, self.tag_args, self.tag_kwargs, self.tag_defaults,  *args, **kwargs)
+    def str_args_kwargs(self, args, kwargs):
+        tag = Tagger._static_label_args_kwargs(str, self.tag_args, self.tag_kwargs, self.tag_defaults,  args, kwargs)
         return tag
     
     @staticmethod
-    def static_label_func_args_kwargs(func, ltype, tag_args, tag_kwargs, tag_defaults, *args, **kwargs):
-        return Tagger._static_label_func_args_kwargs(func, False, ltype, tag_args, tag_kwargs, tag_defaults, *args, **kwargs)
+    def static_label_func_args_kwargs(func, ltype, tag_args, tag_kwargs, tag_defaults, args, kwargs):
+        return Tagger._static_label_func_args_kwargs(func, False, ltype, tag_args, tag_kwargs, tag_defaults, args, kwargs)
 
-    def label_func_args_kwargs(self, func, ltype, strict_args_kwargs, *args, **kwargs):
-        tag = Tagger._static_label_func_args_kwargs(func, False, ltype, self.tag_args, self.tag_kwargs, self.tag_defaults, strict_args_kwargs, *args, **kwargs)
+    def label_func_args_kwargs(self, func, ltype, strict_args_kwargs, args, kwargs):
+        tag = Tagger._static_label_func_args_kwargs(func, False, ltype, self.tag_args, self.tag_kwargs, self.tag_defaults, strict_args_kwargs, args, kwargs)
         return tag
 
-    def tag_func_args_kwargs(self, func, *args, **kwargs):
-        _tag = Tagger._static_label_func_args_kwargs(func, False, tag, self.tag_args, self.tag_kwargs, self.tag_defaults, *args, **kwargs)
+    def tag_func_args_kwargs(self, func, args, kwargs):
+        _tag = Tagger._static_label_func_args_kwargs(func, False, tag, self.tag_args, self.tag_kwargs, self.tag_defaults, args, kwargs)
         return _tag
 
-    def repr_func_args_kwargs(self, func, *args, **kwargs):
-        tag = Tagger._static_label_func_args_kwargs(func, False, repr, self.tag_args, self.tag_kwargs, self.tag_defaults, *args, **kwargs)
+    def repr_func_args_kwargs(self, func, args, kwargs):
+        tag = Tagger._static_label_func_args_kwargs(func, False, repr, self.tag_args, self.tag_kwargs, self.tag_defaults, args, kwargs)
         return tag
 
-    def str_func_args_kwargs(self, func, *args, **kwargs):
-        tag = Tagger._static_label_func_args_kwargs(func, False, str, self.tag_args, self.tag_kwargs, self.tag_defaults,  *args, **kwargs)
+    def str_func_args_kwargs(self, func, args, kwargs):
+        tag = Tagger._static_label_func_args_kwargs(func, False, str, self.tag_args, self.tag_kwargs, self.tag_defaults,  args, kwargs)
         return tag
 
     @staticmethod
-    def static_label_ctor(cls, ltype, tag_args, tag_kwargs, tag_defaults, strict_args_kwargs, *args, **kwargs):
-        tag = f"{Tagger.ctor_name(cls)}({Tagger._static_label_func_args_kwargs(cls.__init__, True, ltype, tag_args, tag_kwargs, tag_defaults, strict_args_kwargs, *args, **kwargs)})"
+    def static_label_ctor(cls, ltype, tag_args, tag_kwargs, tag_defaults, strict_args_kwargs, args, kwargs):
+        tag = f"{Tagger.ctor_name(cls)}({Tagger._static_label_func_args_kwargs(cls.__init__, True, ltype, tag_args, tag_kwargs, tag_defaults, strict_args_kwargs, args, kwargs)})"
         return tag
 
-    def label_ctor(self, cls, ltype, strict_args_kwargs, *args, **kwargs):
-        tag = Tagger.static_label_ctor(cls, ltype, self.tag_args, self.tag_kwargs, self.tag_defaults, strict_args_kwargs, *args, **kwargs)
+    def label_ctor(self, cls, ltype, strict_args_kwargs, args, kwargs):
+        tag = Tagger.static_label_ctor(cls, ltype, self.tag_args, self.tag_kwargs, self.tag_defaults, strict_args_kwargs, args, kwargs)
         return tag
 
-    def repr_ctor(self, cls, *args, **kwargs):
+    def repr_ctor(self, cls, args, kwargs):
         strict_args_kwargs = True
-        tag = Tagger.static_label_ctor(cls, repr, self.tag_args, self.tag_kwargs, self.tag_defaults, strict_args_kwargs, *args, **kwargs)
+        tag = Tagger.static_label_ctor(cls, repr, self.tag_args, self.tag_kwargs, self.tag_defaults, strict_args_kwargs, args, kwargs)
         return tag
 
-    def tag_ctor(self, cls, *args, **kwargs):
+    def tag_ctor(self, cls, args, kwargs):
         strict_args_kwargs = False
-        _tag = Tagger.static_label_ctor(cls, tag, self.tag_args, self.tag_kwargs, self.tag_defaults, strict_args_kwargs, *args, **kwargs)
+        _tag = Tagger.static_label_ctor(cls, tag, self.tag_args, self.tag_kwargs, self.tag_defaults, strict_args_kwargs, args, kwargs)
         return _tag
 
-    def str_ctor(self, cls, *args, **kwargs):
+    def str_ctor(self, cls, args, kwargs):
         strict_args_kwargs = False
-        tag = Tagger.static_label_ctor(cls, str, self.tag_args, self.tag_kwargs, self.tag_defaults, strict_args_kwargs, *args, **kwargs)
+        tag = Tagger.static_label_ctor(cls, str, self.tag_args, self.tag_kwargs, self.tag_defaults, strict_args_kwargs, args, kwargs)
         return tag
 
     @staticmethod
-    def static_label_new(cls, ltype, tag_args, tag_kwargs, tag_defaults, use_arg_tag_attr, *args, **kwargs):
-        tag = f"{Tagger.ctor_name(cls)}({Tagger._static_label_func_args_kwargs(cls.__new__, True, ltype, tag_args, tag_kwargs, tag_defaults,  *args, **kwargs)})"
+    def static_label_new(cls, ltype, tag_args, tag_kwargs, tag_defaults, use_arg_tag_attr, args, kwargs):
+        tag = f"{Tagger.ctor_name(cls)}({Tagger._static_label_func_args_kwargs(cls.__new__, True, ltype, tag_args, tag_kwargs, tag_defaults,  args, kwargs)})"
         return tag
 
-    def label_new(self, cls, ltype, *args, **kwargs):
-        tag = Tagger.static_label_new(cls, ltype, self.tag_args, self.tag_kwargs, self.tag_defaults, *args, **kwargs)
+    def label_new(self, cls, ltype, args, kwargs):
+        tag = Tagger.static_label_new(cls, ltype, self.tag_args, self.tag_kwargs, self.tag_defaults, args, kwargs)
         return tag
 
-    def tag_new(self, cls, *args, **kwargs):
-        _tag = Tagger.static_label_new(cls, tag, self.tag_args, self.tag_kwargs, self.tag_defaults, *args, **kwargs)
+    def tag_new(self, cls, args, kwargs):
+        _tag = Tagger.static_label_new(cls, tag, self.tag_args, self.tag_kwargs, self.tag_defaults, args, kwargs)
         return _tag
 
-    def repr_new(self, cls, *args, **kwargs):
-        tag = Tagger.static_label_new(cls, repr, self.tag_args, self.tag_kwargs, self.tag_defaults, *args, **kwargs)
+    def repr_new(self, cls, args, kwargs):
+        tag = Tagger.static_label_new(cls, repr, self.tag_args, self.tag_kwargs, self.tag_defaults, args, kwargs)
         return tag
 
-    def str_new(self, cls, *args, **kwargs):
-        tag = Tagger.static_label_new(cls, str, self.tag_args, self.tag_kwargs, self.tag_defaults, *args, **kwargs)
+    def str_new(self, cls, args, kwargs):
+        tag = Tagger.static_label_new(cls, str, self.tag_args, self.tag_kwargs, self.tag_defaults, args, kwargs)
         return tag
 
-    def label_func(self, func,  ltype, strict_args_kwargs, *args, **kwargs):
+    def label_func(self, func,  ltype, strict_args_kwargs, args, kwargs):
         if not isinstance(func, str):
             ftag = Tagger.static_label_object(ltype, self.tag_args, self.tag_kwargs, self.tag_defaults, func)
         else:
             ftag = func
-        atag = self.label_func_args_kwargs(func, ltype, strict_args_kwargs, *args, **kwargs)
+        atag = self.label_func_args_kwargs(func, ltype, strict_args_kwargs, args, kwargs)
         tag = f"{ftag}({atag})"
         return tag
 
-    def tag_func(self, func,  *args, **kwargs):
+    def tag_func(self, func,  args, kwargs):
         strict_args_kwargs = False
-        _tag = self.label_func(func, tag, strict_args_kwargs, *args, **kwargs)
+        _tag = self.label_func(func, tag, strict_args_kwargs, args, kwargs)
         return _tag
 
-    def repr_func(self, func,  *args, **kwargs):
+    def repr_func(self, func,  args, kwargs):
         strict_args_kwargs = True
-        _repr = self.label_func(func, repr, strict_args_kwargs, *args, **kwargs)
+        _repr = self.label_func(func, repr, strict_args_kwargs, args, kwargs)
         return _repr
 
-    def str_func(self, func,  *args, **kwargs):
+    def str_func(self, func,  args, kwargs):
         strict_args_kwargs = False
-        _repr = self.label_func(func, str, strict_args_kwargs, *args, **kwargs)
+        _repr = self.label_func(func, str, strict_args_kwargs, args, kwargs)
         return _repr
 
     def tag_element(self, e):
