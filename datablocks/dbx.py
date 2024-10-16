@@ -252,8 +252,9 @@ class DBX:
             return _ 
         
         def __repr__(self):
+            argstr = f"('{self.topic}')" if self.topic is not None else "()"
             _ = repr(self.dbx) + \
-                f".{self.kind}({self.topic if self.topic is not None else ''})"
+                f".{self.kind}{argstr}"
             return _
 
         def __tag__(self):
