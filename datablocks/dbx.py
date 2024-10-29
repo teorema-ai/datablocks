@@ -559,7 +559,6 @@ class DBX:
         if self.verbose:
             print(f"response_id: {response.id}")
         response.result()
-        return response
 
     def build_request(self):
         import datablocks #TODO: why the local import?
