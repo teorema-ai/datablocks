@@ -89,11 +89,13 @@ class ConstResponse:
 
 
 @contextmanager
-def logging_context(logspace, logpath):
+def logging_context(logspace, logpath, debug=False):
     if logspace is None or logpath is None:
         yield None
     elif logspace.is_local():
         logfile = open(logpath, 'w', 1)
+        if debug:
+            print(f"DEBUG: logging_context: opened file {logpath}")
         yield logfile
     else:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -183,8 +185,9 @@ class Logging:
                                     self.cookie,
                                     )
             if self.pool.debug:
-                print(f"DEBUG: >>>>>>>> {self.id}: BEGAN executing task\ncookie: {self.cookie}, id:{self.id}\nargs: {args}\nkwargs: {kwargs}")
-            logcontext = logging_context(self.logspace, self.logpath)
+                print(f"DEBUG: Logging.Task: {self.id}: BEGAN executing task\ncookie: {self.cookie}, id:{self.id}\nargs: {args}\nkwargs: {kwargs}")
+                print(f"DEBUG: Logging.Task: {self.id}: USING logspace: {self.logspace}, logpath: {self.logpath}")
+            logcontext = logging_context(self.logspace, self.logpath, self.pool.debug)
             logstream = logcontext.__enter__()
             #DEBUG
             #pdb.set_trace()

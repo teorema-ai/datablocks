@@ -668,7 +668,13 @@ class DBX:
             
             filepaths = [recordspace.join(recordspace.root, filename) for filename in recordspace.list()]
             
-            frames = {filepath: pd.read_parquet(filepath, storage_options=recordspace.filesystem.storage_options) for filepath in filepaths}
+            frames = {}
+            for filepath in filepaths:
+                try:
+                    frame = pd.read_parquet(filepath, storage_options=recordspace.filesystem.storage_options)
+                except:
+                    print(f"Skipping corrupted build record path {filepath}")
+                frames[filepath] = frame
             frame = pd.concat(list(frames.values())) if len(frames) > 0 else pd.DataFrame()
             
         except FileNotFoundError as e:
@@ -715,10 +721,10 @@ class DBX:
         columns = frame.columns
         return columns
 
-    def show_build_record(self, *, record=None, full=False):
+    def show_build_record(self, record=None, *, full=False, stage='ALL'):
         import datablocks
         try:
-            records = self.show_build_records(full=full, stage='END')
+            records = self.show_build_records(full=full, stage=stage)
         except:
             return None
         if len(records) == 0:
@@ -757,7 +763,7 @@ class DBX:
             record = None
         return record
     
-    def show_build_graph(self, *, record=None, node=tuple(), show_=('logpath', 'logpath_status', 'exception'), show=tuple(), **kwargs):
+    def show_build_graph(self, record=None, *, node=tuple(), show_=('logpath', 'logpath_status', 'exception'), show=tuple(), **kwargs):
         if not isinstance(node, Iterable):
             node = (node,)
         _record = self.show_build_record(record=record, full=True)
@@ -778,11 +784,11 @@ class DBX:
             graph = _graph
         return graph
 
-    def show_build_batch_graph(self, *, record=None, batch=0, **graph_kwargs):
+    def show_build_batch_graph(self, record=None, *, batch=0, **graph_kwargs):
         g = self.show_build_graph(record=record, node=(batch,), **graph_kwargs) # argument number `batch` to the outermost Request AND
         return g
     
-    def show_build_batch_count(self, *, record=None):
+    def show_build_batch_count(self, record=None):
         g = self.show_build_graph(record=record) 
         if g is None:
             nbatches = None
@@ -790,7 +796,7 @@ class DBX:
             nbatches = len(g.args)-1 # number of arguments less one to the outermost Request AND(batch_request[, batch_request, ...], extent_request)
         return nbatches
     
-    def show_build_transcript(self, *, record=None, **ignored):
+    def show_build_transcript(self, record=None, **ignored):
         _record = self.show_build_record(record=record, full=True)
         if _record is None:
             summary = None
@@ -798,7 +804,7 @@ class DBX:
             summary = _record['report_transcript']
         return summary
 
-    def show_build_scope(self, *, record=None, **ignored):
+    def show_build_scope(self, record=None, **ignored):
         _record = self.show_build_record(record=record, full=True)
         if _record is not None:
             scopestr = _record['scope']
