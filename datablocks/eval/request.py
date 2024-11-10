@@ -182,13 +182,13 @@ class Response:
             try:
                 for i, arg in enumerate(self.args_responses):
                     if isinstance(arg, Response) and arg.exception() is not None:
-                        if self.get('throw', False):
+                        if self.request.get('throw', False):
                             raise arg.exception()
                         else:
                             raise ArgResponseException(i)
                 for key, arg in self.kwargs_responses.items():
                     if isinstance(arg, Response) and arg.exception() is not None:
-                        if self.get('throw', False):
+                        if self.request.get('throw', False):
                             raise arg.exception()
                         else:
                             raise KwArgResponseException(key)

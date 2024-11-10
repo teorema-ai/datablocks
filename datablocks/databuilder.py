@@ -324,7 +324,7 @@ class Databuilder(Anchored, Scoped):
         blockscope = self._blockscope_(**scope)
         tagblockscope = self._tagscope_(**blockscope)
         if topic not in self.topics:
-            raise ValueError(f"Unknown topic {topic} is not among {self.topics}")
+            raise ValueError(f"Unknown topic {repr(topic)} is not among {[repr(s) for s in self.topics]}")
         tagshard_list = self.scope_to_shards(**tagblockscope)
         kvhandle_pathshard_list = []
         for tagshard in tagshard_list:
@@ -336,7 +336,7 @@ class Databuilder(Anchored, Scoped):
 
     def block_extent_page(self, topic, **scope):
         if topic not in self.topics:
-            raise ValueError(f"Unknown topic {topic} is not among {self.topics}")
+            raise ValueError(f"Unknown topic {repr(topic)} is not among {[repr(s) for s in self.topics]}")
         block_intent_page = self.block_intent_page(topic, **scope)
         block_extent_page = {}
         for kvhandle, shard_pathset in block_intent_page.items():
