@@ -38,6 +38,15 @@ logger = logging.getLogger(__name__)
 
 HOME = os.environ['HOME']
 
+
+class DatabuilderException(Exception):
+    ...
+
+
+class UnknownTopic(DatabuilderException):
+    ...
+
+
 T = TypeVar('T')
 class RANGE(Generic[T], tuple):
     def __init__(self, *args):
@@ -323,8 +332,8 @@ class Databuilder(Anchored, Scoped):
     def block_intent_page(self, topic, **scope):
         blockscope = self._blockscope_(**scope)
         tagblockscope = self._tagscope_(**blockscope)
-        if topic not in self.topics:
-            raise ValueError(f"Unknown topic {repr(topic)} is not among {[repr(s) for s in self.topics]}")
+        if topic != DEFAULT_TOPIC and topic not in self.topics:
+            raise UnknownTopic(f"Unknown topic {repr(topic)} is not among {[repr(s) for s in self.topics]}")
         tagshard_list = self.scope_to_shards(**tagblockscope)
         kvhandle_pathshard_list = []
         for tagshard in tagshard_list:
@@ -335,8 +344,8 @@ class Databuilder(Anchored, Scoped):
         return block_intent_page
 
     def block_extent_page(self, topic, **scope):
-        if topic not in self.topics:
-            raise ValueError(f"Unknown topic {repr(topic)} is not among {[repr(s) for s in self.topics]}")
+        if topic != DEFAULT_TOPIC and topic not in self.topics:
+            raise UnknownTopic(f"Unknown topic {repr(topic)} is not among {[repr(s) for s in self.topics]}")
         block_intent_page = self.block_intent_page(topic, **scope)
         block_extent_page = {}
         for kvhandle, shard_pathset in block_intent_page.items():
@@ -675,7 +684,7 @@ class Databuilder(Anchored, Scoped):
     def read_block_request(self, topic, **blockscope):
         _blockscope = self._blockscope_(**blockscope)
         _tagscope = self._tagscope_(**_blockscope)
-        request = Request(self._read_block_, _tagscope, topic, **blockscope)
+        request = Request(self._read_block_, _tagscope, topic, **blockscope).set(throw=self.throw)
         return request
     
    

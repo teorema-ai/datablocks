@@ -40,9 +40,15 @@ from .dataspace import (
     DATABLOCKS_DATALAKE as DATALAKE,
     DATABLOCKS_HOMELAKE as HOMELAKE,
 )
-from .databuilder import Databuilder, DEFAULT_TOPIC
+from .databuilder import Databuilder, UnknownTopic, DEFAULT_TOPIC
 
-from .utils import setup_repo, gitrepostate
+from .utils import gitrepostate
+
+
+class DEFAULT_ARG:
+    pass
+
+DEFAULT = DEFAULT_ARG
 
 
 class DBXEvalError(Exception):
@@ -424,33 +430,37 @@ class DBX:
                 self._datablock_clstr = f"{self._datablock_module_name}.{self._datablock_cls.__name__}"
         return self
     
-    def clone(self, 
+    def DBX(self, 
               *,
-              verbose=None,
-              debug=None,  
-              pic=None,
-              repo=None,
-              revision=None,
-              use_alias_dataspace=None,
+              verbose=DEFAULT,
+              debug=DEFAULT,  
+              pic=DEFAULT,
+              repo=DEFAULT,
+              revision=DEFAULT,
+              use_alias_dataspace=DEFAULT,
     ):
         state = self.__getstate__()
-        if debug is not None:
-            state.debug = debug
         kwargs = {}
-        if verbose is not None:
+        if debug != DEFAULT:
+            state.debug = debug
+        if verbose != DEFAULT:
             kwargs['verbose'] = verbose
-        if pic is not None:
+        if pic != DEFAULT:
             kwargs['pic'] = pic
-        if repo is not None:
+        if repo != DEFAULT:
             kwargs['repo'] = repo
-        if revision is not None:
+        if revision != DEFAULT:
             kwargs['revision'] = revision
-        if use_alias_dataspace is not None:
+        if use_alias_dataspace != DEFAULT:
             kwargs['use_alias_dataspace'] = use_alias_dataspace
         state = replace(state, **kwargs)
 
         clone = DBX().__setstate__(state)
         return clone
+
+    def clone(self, *args, **kwargs):
+        return self.DBX(*args, **kwargs)
+
 
     def with_pic(self, pic=True):
         _ = self.clone(pic=pic)
@@ -554,8 +564,12 @@ class DBX:
         return topics
 
     def build(self):
-        request = self.build_request()
-        response = request.evaluate()
+        try:
+            request = self.build_request()
+            response = request.evaluate()
+        except UnknownTopic as e:
+            raise ValueError(f"Unknown topic error: wrong/stale scope?") from e
+
         if self.verbose:
             print(f"response_id: {response.id}")
         response.result()
