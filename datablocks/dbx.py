@@ -1178,7 +1178,7 @@ class DBX:
             tagscope = dbx.databuilder._tagscope_(**blockscope)
 
             if len(dbx.scope):
-                _blockscope  = f"{dbx.datablock_clstr}.SCOPE(\n"
+                _blockscope  = f"{dbx._datablock_clstr}.SCOPE(\n"
                 for key, arg in dbx.scope.items():
                     if isinstance(arg, DBX.PathRequest):
                         if arg.topic is None:
@@ -1215,7 +1215,7 @@ class DBX:
                             (f"\tfilesystem={_filesystem},\n" if len(_filesystem) > 0 else "") + \
                             (f"\tscope={_blockscope},\n" if len(_blockscope) > 0 else "")      + \
                             (f"\t{_kwargs}")                                                + \
-                     ")\n"
+                     "\n)\n"
             build += "\n"
 
             script = ''.join(imports.values()) + "\n\n"
