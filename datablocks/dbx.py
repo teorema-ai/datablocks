@@ -174,7 +174,7 @@ class Datablock:
         if self.debug:
             print(f"DEBUG: >>> {self.__class__.__qualname__}: {s}")
 
-   
+
 @serializable
 class DBX:
     """
@@ -186,6 +186,10 @@ class DBX:
     """
 
     RECORD_SCHEMA_REVISION = '0.3.0'
+
+    class Path(str):
+        def __str__(self):
+            return repr(self)
 
     class ProxyRequest(request.Proxy):
         @staticmethod
@@ -667,6 +671,11 @@ class DBX:
         _ = self.extent
         return _
 
+    @property
+    def roots(self):
+        tagscope = self.databuilder.Tagscope(**self.scope)
+        return self.databuilder.datablock_blockroots(tagscope)
+
     BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'revision', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
 
     def show_build_records(self, *, stage='ALL', full=False, columns=None, all=False, tail=5):
@@ -943,7 +952,7 @@ class DBX:
                 print(f"DBX LIFECYCLE: {lifecycle_stage.name}: Writing build record at lifecycle_stage {lifecycle_stage.name} to {record_filepath}")
             record_frame.to_parquet(record_filepath, storage_options=recordspace.storage_options)
         return _write_record_lifecycle_callback
-    
+
     def databuilder_cls(dbx):
         """
             Using 'dbx' instead of 'self' here to avoid confusion of the meaning of 'self' in different scopes: as a DBX instance and a Databuilder subclass instance.
@@ -1006,6 +1015,7 @@ class DBX:
             #TODO: implement blocking: return a dict from topic to str|List[str] according to whether this is a shard or a block
             if len(self.block_to_shard_keys) > 0:
                 raise NotImplementedError(f"Batching not supported at the moment: topic: tagscope: {tagscope}")
+            #TODO: resolve the confustion/difference between blockroots and shardroots
             blockroots = self.datablock_shardroots(tagscope, ensure=ensure)
             return blockroots
 
@@ -1019,6 +1029,8 @@ class DBX:
         def _build_batch_(self, tagscope, **batchscope):
             #DEBUG
             #pdb.set_trace()
+            #TODO: clarify the confusion between shardroots and batchroots
+            #TODO: maybe better call them blockroots?
             datablock_batchscope = dbx.datablock_cls().SCOPE(**batchscope)
             datablock_shardroots = self.datablock_batchroots(tagscope, ensure=True)
             dbk = self.datablock(datablock_shardroots, 

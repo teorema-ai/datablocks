@@ -144,7 +144,8 @@ class Scoped:
             block_[key_] = val_
         return block_
 
-    def _tagscope_(self, **scope):
+    @staticmethod
+    def Tagscope(**scope):
         """
             Converts scope values to their tags to avoid evaluating them.
             For example, when the value is a request to read the result of another
@@ -152,6 +153,12 @@ class Scoped:
         """
         tagscope = Tagger().tag_dict(scope)
         return tagscope
+    
+    def _tagscope_(self, **scope):
+        """
+            Backward compatibility
+        """
+        return self.Tagscope(**scope)
 
     def scope_to_shards(self, **scope):
         def _scope_to_kwargs(scope, plural_key_counters):
