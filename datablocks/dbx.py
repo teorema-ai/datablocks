@@ -187,9 +187,15 @@ class DBX:
 
     RECORD_SCHEMA_REVISION = '0.3.0'
 
+
     class Path(str):
+        def __tag__(self):
+            return self.replace('/', ':')
         def __str__(self):
-            return repr(self)
+            return self.__tag__()
+        def __repr__(self):
+            return f"datablocks.dbx.DBX.Path({super().__repr__()})"
+            
 
     class ProxyRequest(request.Proxy):
         @staticmethod
@@ -528,6 +534,10 @@ class DBX:
         return databuilder
 
     @property
+    def scope_kwargs(self):
+        return self.datablock_scope_kwargs_
+
+    @property
     def scope(self):
         if self.scope_ is not None:
             _scope = self.scope_
@@ -544,10 +554,10 @@ class DBX:
                     print(f"DBX: scope: no specified scope for {self} with datablock with alias {repr(self.databuilder.alias)}")
                     print(f"DBX: scope: using build record scope: {_scope}")
             else:
-                _scope = asdict(self.datablock_cls().SCOPE(**self.datablock_scope_kwargs_))
+                _scope = asdict(self.datablock_cls().SCOPE(**self.scope_kwargs))
                 if self.verbose:
                     print(f"DBX: scope: no specified scope and no build records for {self} with alias {repr(self.databuilder.alias)}")
-                    print(f"DBX: scope: constructing scope from kwargs:\n{self.datablock_scope_kwargs_}")
+                    print(f"DBX: scope: constructing scope from scope_kwargs:\n{self.scope_kwargs}")
             self.scope_ = _scope
         return _scope
     
@@ -978,9 +988,9 @@ class DBX:
         @property
         def revisionspace(self):
             if self.alias is not None and dbx.use_alias_dataspace:
-                _ = self.anchorspace.subspace(f"@{str(self.revision)}",f"#{self.alias}", )
+                _ = self.anchorspace.subspace(f"@{signature.tag(DBX.Path(self.revision))}",f"#{self.alias}", )
             else:
-                _ = self.anchorspace.subspace(f"@{str(self.revision)}",)
+                _ = self.anchorspace.subspace(f"@{signature.tag(DBX.Path(self.revision))}",)
             return _
 
         def _alias_shardspace_(self, topic, **shard):
