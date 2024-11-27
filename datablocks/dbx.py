@@ -338,7 +338,6 @@ class DBX:
         revision: Optional[str] = None
         verbose: Optional[str] = False
         debug: bool = False
-        scope_: Optional = None
         databuilder_kwargs_: Optional[Dict] = None
         datablock_kwargs_: Optional[Dict] = None
         datablock_scope_kwargs_: Optional[Dict] = None
@@ -381,7 +380,6 @@ class DBX:
                          revision=self.revision,
                          verbose=self.verbose,
                          debug=self.debug,
-                         scope_=self.scope_,
                          databuilder_kwargs_=self.databuilder_kwargs_,
                          datablock_kwargs_=self.datablock_kwargs_,
                          datablock_scope_kwargs_=self.datablock_scope_kwargs_,
@@ -418,6 +416,7 @@ class DBX:
             return self
         self.Databuilder = update_databuilder_kwargs
 
+        self._scope = None
         self._datablock_module_name = None
         self._datablock_clstr = None
         self._datablock_clsname = None
@@ -536,29 +535,52 @@ class DBX:
     def scope_kwargs(self):
         return self.datablock_scope_kwargs_
 
-    @property
-    def scope(self):
-        if self.scope_ is not None:
-            _scope = self.scope_
-            if self.verbose:
-                print(f"DBX: scope for datablock with alias {repr(self.databuilder.alias)}: using specified scope: {self.scope_}")
-        else:
-            record = self.show_named_record(alias=self.databuilder.alias, revision=self.revision, stage='END') 
+    def record_scope(self):
+        scope = None
+        if self.databuilder.alias is not None:
+            record = self.show_named_record(alias=self.databuilder.alias, revision=self.revision, stage='BUILD_END') 
             if record is not None:
                 try:
-                    _scope = dbx_eval(record['scope'])
+                    scope = dbx_eval(record['scope'])
+                    if self.verbose:
+                        print(f"{self}: scope: obtained from records: {scope}")
                 except DBXEvalError as ee:
                     raise ValueError(f"Failed to parse build scope {record['scope']}") from ee
+        return scope
+
+    @property
+    def scope(self):
+        if self._scope is None:
+            import datablocks #TODO: why the local import?
+            # TODO: consistency check: sha256 alias must be unique for a given revision or match scope
+            def scopes_equal(s1, s2):
+                #DEBUG
+                #pdb.set_trace()
+                if set(s1.keys()) != (s2.keys()):
+                    return False
+                for key in s1.keys():
+                    if s1[key] != s2[key]:
+                        return False
+                return True
+            scope = None
+            record_scope = self.record_scope()
+            if len(self.scope_kwargs) > 0:
+                scope = asdict(self.datablock_cls().SCOPE(**self.scope_kwargs))
                 if self.verbose:
-                    print(f"DBX: scope: no specified scope for {self} with datablock with alias {repr(self.databuilder.alias)}")
-                    print(f"DBX: scope: using build record scope: {_scope}")
+                    print(f"{self}: scope: constructed scope_kwargs:\n{self.scope_kwargs}")          
+            elif record_scope is not None:
+                scope = record_scope
+                if self.verbose:
+                    print(f"{self}: scope: using record scope: {scope}")
             else:
-                _scope = asdict(self.datablock_cls().SCOPE(**self.scope_kwargs))
+                scope = asdict(self.datablock_cls().SCOPE())
                 if self.verbose:
-                    print(f"DBX: scope: no specified scope and no build records for {self} with alias {repr(self.databuilder.alias)}")
-                    print(f"DBX: scope: constructing scope from scope_kwargs:\n{self.scope_kwargs}")
-            self.scope_ = _scope
-        return _scope
+                    print(f"{self}: scope: default scope: {scope}")
+            scope = self.databuilder._blockscope_(**scope)
+            if scope is not None and record_scope is not None and not scopes_equal(scope, record_scope):
+                raise ValueError(f"Attempt to overwrite record scope {record_scope} with {scope} for {self.datablock_cls()} alias {self.alias}")
+            self._scope = scope
+        return self._scope
     
     @property
     def tagscope(self):
@@ -583,12 +605,10 @@ class DBX:
             _ = response.result() # extract result to force computation
         except UnknownTopic as e:
             raise ValueError(f"Unknown topic error: wrong/stale scope?") from e
-        if self.verbose:
-            print(f"response_id: {response.id}")
         if self.verbose and not response.succeeded:
             print(f"Build failed.  Try running with .Datablock(throw=True) or examine the build using these methods:\n"
-                  f"\t.show_build_records()\n"
-                  f"\t.show_build_record()\n"
+                  f"\t.show_records()\n"
+                  f"\t.show_record()\n"
                   f"\t.show_build_graph()\n"
                   f"\t.show_build_batch_graph()\n"
                   f"\t.show_build_batch_graph().log()\n"
@@ -600,7 +620,7 @@ class DBX:
         return f"SUCCESS: {response.succeeded}"
 
     def build_request(self):
-        import datablocks #TODO: why the local import?
+        """
         def scopes_equal(s1, s2):
             #DEBUG
             #pdb.set_trace()
@@ -610,8 +630,6 @@ class DBX:
                 if s1[key] != s2[key]:
                     return False
             return True
-        # TODO: consistency check: sha256 alias must be unique for a given revision or match scope
-        blockscope = self.databuilder._blockscope_(**self.scope)
         record = self.show_named_record(alias=self.databuilder.alias, revision=self.revision, stage='END') 
         if record is not None:
             try:
@@ -623,7 +641,8 @@ class DBX:
                 _scope = None
             if _scope is not None and not scopes_equal(blockscope, _scope):
                 raise ValueError(f"Attempt to overwrite prior scope {_scope} with {blockscope} for {self.datablock_cls()} alias {self.alias}")
-        request = self.databuilder.build_block_request(**blockscope)
+        """
+        request = self.databuilder.build_block_request(**self.scope)
         return request
     
     def path(self, topic=DEFAULT_TOPIC):
@@ -699,9 +718,9 @@ class DBX:
 
     BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'revision', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
 
-    def show_build_records(self, *, stage='ALL', full=False, columns=None, all=False, tail=5):
+    def show_records(self, *, stage='ALL', full=False, columns=None, all=False, tail=5):
         """
-        All build records for a given Databuilder class, irrespective of revision (see `show_build_record()` for retrieval of more specific information).
+        All build records for a given Databuilder class, irrespective of revision (see `show_record()` for retrieval of more specific information).
         'all=True' forces 'tail=None'
         """
         short = not full
@@ -709,7 +728,6 @@ class DBX:
 
         frame = None
         try:
-            
             filepaths = [recordspace.join(recordspace.root, filename) for filename in recordspace.list()]
             
             frames = {}
@@ -760,15 +778,15 @@ class DBX:
             __frame_ = __frame
         return __frame_
 
-    def show_build_record_columns(self, *, full=True, **ignored):
-        frame = self.show_build_records(full=full)
+    def show_record_columns(self, *, full=True, **ignored):
+        frame = self.show_records(full=full)
         columns = frame.columns
         return columns
 
-    def show_build_record(self, record=None, *, full=False, stage='ALL'):
+    def show_record(self, record=None, *, full=False, stage='ALL'):
         import datablocks
         try:
-            records = self.show_build_records(full=full, stage=stage)
+            records = self.show_records(full=full, stage=stage)
         except:
             return None
         if len(records) == 0:
@@ -783,7 +801,7 @@ class DBX:
 
     def show_named_record(self, *, alias=None, revision=None, full=False, stage=None):
         import datablocks # needed for `eval`
-        records = self.show_build_records(full=full, stage=stage)
+        records = self.show_records(full=full, stage=stage)
         if self.debug:
             print(f"show_name_record: databuilder {self}: revision: {repr(revision)}, alias: {repr(alias)}: retrieved records: len: {len(records)}:\n{records}")
         if len(records) == 0:
@@ -810,7 +828,7 @@ class DBX:
     def show_build_graph(self, record=None, *, node=tuple(), show_=('logpath', 'logpath_status', 'exception'), show=tuple(), **kwargs):
         if not isinstance(node, Iterable):
             node = (node,)
-        _record = self.show_build_record(record=record, full=True)
+        _record = self.show_record(record=record, full=True, stage='END')
         if _record is None:
             return None
         _transcript = _record['report_transcript']
@@ -841,7 +859,7 @@ class DBX:
         return nbatches
     
     def show_build_transcript(self, record=None, **ignored):
-        _record = self.show_build_record(record=record, full=True)
+        _record = self.show_record(record=record, full=True)
         if _record is None:
             summary = None
         else:
@@ -849,7 +867,7 @@ class DBX:
         return summary
 
     def show_build_scope(self, record=None, **ignored):
-        _record = self.show_build_record(record=record, full=True)
+        _record = self.show_record(record=record, full=True)
         if _record is not None:
             scopestr = _record['scope']
             try:
@@ -860,7 +878,7 @@ class DBX:
             scope = None
         return scope
     
-    def UNSAFE_clear_build_records(self):
+    def UNSAFE_clear_records(self):
         self._recordspace_().remove()
     
     def UNSAFE_clear_request(self):
@@ -871,7 +889,7 @@ class DBX:
 
     def UNSAFE_clear(self):
         request = self.UNSAFE_clear_request()
-        self.UNSAFE_clear_build_records()
+        self.UNSAFE_clear_records()
         _ = request.compute()
         return _
 
@@ -891,6 +909,49 @@ class DBX:
     def _recordspace_(self):
         subspace = self.databuilder.anchorspace.subspace('.records', f'schema={self.RECORD_SCHEMA_REVISION}')
         return subspace
+
+    def register(self):
+        #tagscope = self._tagscope_(**blockscope)
+        classname = ctor_name(self.__class__)
+        revisionstr = repr(self.revision)
+        blockscope = self.scope
+        namestr = f"{classname}:{revisionstr}(**{blockscope})"
+        hashstr = hashlib.sha256(namestr.encode()).hexdigest()[:10]
+        alias = self.alias
+        if alias is None:
+            alias = hashstr
+        recordspace = self._recordspace_().ensure()
+
+        task = None
+        timestamp = int(microseconds_since_epoch())
+        datestr = datetime_to_microsecond_str()
+        blockscopestr = repr(blockscope)
+        record = dict(schema=DBX.RECORD_SCHEMA_REVISION,
+                           alias=self.alias,
+                           stage="REGISTRATION",
+                           classname=classname,
+                           revision=revisionstr,
+                           scope=blockscopestr,
+                           date=datestr,
+                           timestamp=timestamp,
+                           runtime_secs=str(None),
+                           cookie=str(None),
+                           id=str(None),
+                           logspace=str(None),
+                           logname=str(None),
+                           status=str(None),
+                           success=str(None),
+                           report_transcript=str(None),
+        )
+        
+        if self.verbose:
+            print(f"DBX REGISTRATION: writing registration record for DBX {self}")
+            
+        record_frame = pd.DataFrame.from_records([record])
+        record_frame.index.name = 'index'
+        record_filepath = \
+            recordspace.join(recordspace.root, f"alias-{alias}-stage-REGISTRATION-task_id-None-datetime-{datestr}.parquet")
+        record_frame.to_parquet(record_filepath, storage_options=recordspace.storage_options)
 
     def _build_block_request_lifecycle_callback_(self, **blockscope):
         #tagscope = self._tagscope_(**blockscope)
@@ -913,7 +974,7 @@ class DBX:
             blockscopestr = repr(blockscope)
             _record = dict(schema=DBX.RECORD_SCHEMA_REVISION,
                            alias=alias,
-                           stage=lifecycle_stage.name,
+                           stage=f"BUILD_{lifecycle_stage.name}",
                            classname=classname,
                             revision=revisionstr,
                             scope=blockscopestr,
@@ -998,11 +1059,7 @@ class DBX:
 
         @property
         def revisionspace(self):
-            if self.alias is not None and dbx.use_alias_dataspace:
-                _ = self.anchorspace.subspace(f"@{signature.tag(DBX.Path(self.revision))}",f"#{self.alias}", )
-            else:
-                _ = self.anchorspace.subspace(f"@{signature.tag(DBX.Path(self.revision))}",)
-            return _
+            return self.anchorspace.subspace(f"@{signature.tag(DBX.Path(self.revision))}",)
 
         def _alias_shardspace_(self, topic, **shard):
             # ignore shard, label by alias, revision, topic only
