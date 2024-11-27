@@ -908,61 +908,14 @@ class Closure(Response):
             self._result = response.result()
         return self._result
 
-"""
-#REMOVE 
-class FIRST(Request):
-    def __init__(self, *args):
-        self.args = args
-
-    def __repr__(self):
-        repr = signature.Tagger().repr_ctor(self.__class__, self.args, {})
-        return repr
-
-    def __str__(self):
-        tag = signature.Tagger().str_ctor(self.__class__, self.args, {})
-        return tag
-
-    def __tag__(self):
-        tag = repr(self)
-        return tag
-
-    def apply(self, pool):
-        _args = [arg.apply(pool) for arg in self.args]
-        request = self.__class__(*_args)
-        return request
-
-    def evaluate(self):
-        for arg in self.args:
-            if isinstance(arg, Request):
-                response = arg.evaluate()
-            else:
-                # FIX: ensure correctness of this Response() instantiation
-                response = Response(None, arg)
-            if response.exception() is None:
-                return response
-        response = Response(self, None, exc=ValueError(f"No success among request args {self.args}"))
-        return response
-
-
-class LAST(FIRST):
-    def evaluate(self):
-        for arg in self.args:
-            if not isinstance(arg, Request):
-                raise ValueError(f"Non-request arg: {args}")
-            response = arg.evaluate()
-        return response
-"""
-
 
 def ALL(*args):
-    return args
+    pass
 
 
 def AND(first, func, *args, **kwargs):
     # ignores `first`, but it gets evaluated before being fed in
-
-    _ = func(*args, **kwargs)
-    return _
+    func(*args, **kwargs)
 
 
 def SECOND(first: Request, second: Request) -> Request:
@@ -978,7 +931,7 @@ def LAST(head: Request, *tail: list[Request]) -> Request:
         head_ = SECOND(head, tail[0])
         _ = LAST(head_, *tail[1:])
         return _
-    
+
 
 def NONE() -> Request:
     def none():

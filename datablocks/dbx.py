@@ -187,7 +187,6 @@ class DBX:
 
     RECORD_SCHEMA_REVISION = '0.3.0'
 
-
     class Path(str):
         def __tag__(self):
             return self.replace('/', ':')
@@ -580,13 +579,25 @@ class DBX:
     def build(self):
         try:
             request = self.build_request()
-            response = request.evaluate()
+            response = request.evaluate() # need .evaluate() for its response rather than just .compute to examine status later
+            _ = response.result() # extract result to force computation
         except UnknownTopic as e:
             raise ValueError(f"Unknown topic error: wrong/stale scope?") from e
-
         if self.verbose:
             print(f"response_id: {response.id}")
-        response.result()
+        if self.verbose and not response.succeeded:
+            print(f"Build failed.  Try running with .Datablock(throw=True) or examine the build using these methods:\n"
+                  f"\t.show_build_records()\n"
+                  f"\t.show_build_record()\n"
+                  f"\t.show_build_graph()\n"
+                  f"\t.show_build_batch_graph()\n"
+                  f"\t.show_build_batch_graph().log()\n"
+                  f"\t.show_build_batch_graph().traceback\n"
+                  
+                  f"If the last build record has status 'STATUS.RUNNING', then the build failed and exception was not captured, indicating a DBX bug.\n"
+                  f"In this case .Datablock(throw=True) or .Datablock(pool=FILE_LOGGING_POOL) followed by .show_build_batch_graph().log() may be the only useful debugging methods."
+            )
+        return f"SUCCESS: {response.succeeded}"
 
     def build_request(self):
         import datablocks #TODO: why the local import?
