@@ -28,6 +28,10 @@ def serializable(_):
     return _
 
 
+def optional(_):
+    return _
+
+
 def DEPRECATED(_):
     return _
 

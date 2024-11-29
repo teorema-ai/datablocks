@@ -231,6 +231,7 @@ class Dataspace:
             path = self.root
         if self.exists(path):
             self.filesystem.rm(path, recursive=True)
+        return self
 
     def is_local(self):
         _ = isinstance(self.filesystem, fsspec.implementations.local.LocalFileSystem)

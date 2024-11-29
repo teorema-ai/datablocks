@@ -196,19 +196,22 @@ default
 
 
 # DESIGN
-* We build blocks and read blocks, which under the hood may be broken up into batches
+* We build blocks and read blocks, which under the hood are examined one shard at a time,
+  . and the missing shards are assembled into subblocks (batches), built one batch at a time,
   . and written one shard at a time.
   . Shards are necessary to resume partial builds or combine overlapping blocks.
   . Distinction between block/batch/shard appears only when SCOPE variables are of type BATCH, which means, they encapsulate multiple shards in one serial build.
 * Futures throw contained exceptions upon `result()`, Responses do not [#TODO: should they?]
 
-* Request -> evaluate -> Response [-> Report -> Transcript]
+* Request -> evaluate -> Response [[-> Report -> Transcript] ... [-> Report -> Transcript]]
     . Request used for static graph definition
     . Task used for dynamic pool functionality implementation
 	. `Request.evaluate(self) -> Response(request) { 
 	    self._args_responses, self._kwargs_responses = \
             Request.evaluate_args_kwargs(request.args, request.kwargs)
       }
+    . Report is an instantaneous stateless snapshot of Response.  Different reports taken 
+      at different stages of the Request/Response lifecycle will be different and remain constant.
     `
     . `pool.evaluate(request)`  will send the whole subtree under `request` to pool and evaluate it there
         . some subtrees may live on different pools, so their evaluation will trigger transfers of requests to those pools

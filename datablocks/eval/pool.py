@@ -405,8 +405,6 @@ class Logging:
 
     def apply(self, request):
         cookie = repr(request)
-        #DEBUG
-        #pdb.set_trace()
         return self.Request(self, cookie, request.task, *request.args, **request.kwargs).set(throw=self.throw)
 
     def key_to_id(self, key, *, version=VERSION, unique_hash=True):
@@ -614,7 +612,7 @@ class Ray(Logging):
         def __call__(self, *args, **kwargs):
             if Ray.RAY_SET_TRACE:
                 ray.util.pdb.set_trace()
-            super().__call__(*args, **kwargs)
+            return super().__call__(*args, **kwargs)
             
     class Request(Logging.Request):
         pass

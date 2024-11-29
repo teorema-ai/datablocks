@@ -1,6 +1,7 @@
 from dataclasses import dataclass
-
+import pdb
 import time
+
 
 from fsspec import AbstractFileSystem as FileSystem
 
@@ -15,33 +16,30 @@ from datablocks.dbx import Datablock
 
 
 
-class PandasAbstractDatablock(Datablock):
-    FILENAME = 'data.parquet'
-    
-    def read(self):
-        dataset_path = self.path()
+class PandasReadableDatablock(Datablock):
+    PATHNAME = 'data.parquet'
+  
+    def read(self, shardscope, shardroot, topic=None):
+        dataset_path = self.path(shardscope, shardroot)
         table = pq.read_table(dataset_path, filesystem=self.filesystem)
         frame = table.to_pandas()
         return frame
 
     
-class PandasArray(PandasAbstractDatablock):
-    FILENAME = "data.parquet"
+class PandasArray(PandasReadableDatablock):
+    PATHNAME = "data.parquet"
     @dataclass 
     class SCOPE:
         size: int = 100
 
-    def __init__(self, *args, build_delay_secs=2, echo_delay_secs=0, **kwargs):
+    def __init__(self, *args, build_delay_secs=2, echo_delay_secs=1, **kwargs):
         self.build_delay_secs = build_delay_secs
         self.echo_delay_secs = echo_delay_secs
         super().__init__(*args, **kwargs)
-
-    def valid(self, topic=None):
-        return False
     
-    def build(self):
-        self.print_verbose(f"Building a dataframe of size {self.scope.size} with a delay of {self.build_delay_secs} secs")
-        frame = pd.DataFrame({'range': range(self.scope.size)})
+    def build(self, scope, root):
+        self.print_verbose(f"Building a dataframe of size {scope.size} with a delay of {self.build_delay_secs} secs using root {root}")
+        frame = pd.DataFrame({'range': range(scope.size)})
         t0 = time.time()
         while True:
             time.sleep(self.echo_delay_secs)
@@ -49,15 +47,24 @@ class PandasArray(PandasAbstractDatablock):
             self.print_verbose(f"{dt} secs")
             if dt > self.build_delay_secs:
                 break
-        self.print_verbose(f"Built a dataframe of size {self.scope.size}")
-        datapath = self.path()
+        self.print_verbose(f"Built a dataframe of size {scope.size}")
+        datapath = self.path(scope, root)
         self.print_verbose(f"Writing dataframe to datapath {datapath}")
         table = pa.Table.from_pandas(frame)
         pq.write_table(table, datapath, filesystem=self.filesystem)
         self.print_verbose(f"Wrote dataframe to {datapath}")
+        return frame
+    
+    @staticmethod
+    def summary(frame):
+        if frame is None:
+            return None
+        s = f"frame of len {len(frame)}"
+        rs = repr(s)
+        return rs
 
 
-class PandasMultiplier(PandasAbstractDatablock):
+class PandasMultiplier(PandasReadableDatablock):
     @dataclass 
     class SCOPE:
         input_frame: pd.DataFrame
@@ -80,17 +87,21 @@ class PandasMultiplier(PandasAbstractDatablock):
         pq.write_table(table, datapath, filesystem=self.filesystem)
         self.print_verbose(f"Wrote dataframe to {datapath}")
 
+
 class BuildException(RuntimeError):
     def __repr__(self):
         return signature.Tagger().repr_ctor(self.__class__)
+
 
 class BuildExceptionDatablock(Datablock):
     def build(self):
         raise BuildException()
 
+
 class ReadException(RuntimeError):
     def __repr__(self):
         return signature.Tagger().repr_ctor(self.__class__)
+
 
 class ReadExceptionDatablock(Datablock):
     def build(self):
@@ -100,24 +111,3 @@ class ReadExceptionDatablock(Datablock):
         raise ReadException()
 
 
-def test_scope():
-    datablocks.dbx.DBX('datablocks.test.datatypes.ReadExceptionDatablock').scope    
-
-
-def test_build_exception_datatype():
-    exc = None
-    try:
-        dbx = datablocks.dbx.DBX(BuildExceptionDatablock, 'bexc')
-        dbx.build()
-    except BuildException as e:
-        exc = e
-    assert isinstance(exc, BuildException)
-
-
-def test_read_exception_datatype():
-    exc = None
-    try:
-        datablocks.dbx.DBX(ReadExceptionDatablock, 'rexc').read()
-    except ReadException as e:
-        exc = e
-    assert isinstance(exc, ReadException)

@@ -113,8 +113,6 @@ class Response:
 
     #TODO: Factor out into a Settings "mixin"
     def set(self, key, val):
-        #DEBUG
-        #pdb.set_trace()
         self.settings[key] = val
         return self
     
@@ -199,8 +197,6 @@ class Response:
             except KeyboardInterrupt as k:
                 raise(k)
             except Exception as e:
-                #DEBUG
-                #pdb.set_trace()
                 if self.request.get('throw', False):
                     raise(e)
                 _, exc_value, exc_traceback = utils.exc_info()
@@ -492,7 +488,7 @@ class Request:
     # Use .set()
     @DEPRECATED
     def with_settings(self, **settings):
-        request = copy.copy(self)
+        request = copy.deepcopy(self)
         request.settings.update(**settings)
         return request
 
@@ -597,7 +593,7 @@ class Request:
         if functor is None:
             return self
         request = self
-        a = functor.apply(request, *args, **kwargs)
+        a = functor.apply(request, *args, **kwargs).with_settings(**self.settings)
         return a
 
     def through(self, functor, *args, **kwargs):
@@ -659,7 +655,7 @@ class Proxy(Request):
         return _
     
     def apply(self, functor, *args, **kwargs):
-        request = self.request.apply(functor, *args, **kwargs)
+        request = self.request.apply(functor, *args, **kwargs).with_settings(**self.settings)
         wrapper = self.__class__(request)
         return wrapper
 
@@ -671,10 +667,6 @@ class Proxy(Request):
     def evaluate(self):
         _ = self.request.evaluate()
         return _
-
-
-
-            
 
 
 # TODO: make an extension of dict for easy serdes, including RPC
@@ -703,6 +695,7 @@ class Report:
         self.result = None
         self.exception = None
         self.traceback = None
+    
         if response.running:
             self.status = Report.STATUS.RUNNING
         else:
@@ -712,14 +705,16 @@ class Report:
                     try:
                         self.exception = response.exception()
                         self.traceback = response.traceback()
-                    except:
-                        pass
+                    except Exception as e:
+                        if self.request.get('throw'):
+                            raise e
                 else:
                     try:
                         self.result = response.result()
                         self.status = Report.STATUS.SUCCEEDED
-                    except:
-                        pass
+                    except Exception as e:
+                        if self.request.get('throw'):
+                            raise e
             else:
                 self.status = Report.STATUS.PENDING
         self.id = response.id
@@ -732,19 +727,20 @@ class Report:
             self.done_time = None
         self.args_reports = [self._arg_report(r) for r in response.args_responses] if response.args_responses is not None else []
         self.kwargs_reports = {k: self._arg_report(v) for k, v in response.kwargs_responses.items()} if response.kwargs_responses is not None else {}
-        self.settings = dict(result_use_summary=False)
-
+        self.settings = {}
+    
     def set(self, **settings):
         self.settings.update(**settings)
         return self
+    
+    def get(self, key):
+        return self.settings.get(key)
 
     def transcript(self):
         tagger = signature.Tagger()
         report = self
         args_transcripts = [report._arg_transcript(r) for r in report.args_reports]
         kwargs_transcripts = {k: report._arg_transcript(v) for k, v in report.kwargs_reports.items()}
-        #DEBUG
-        #pdb.set_trace()
         transcript = dict(id=f"id:{report.id}",
                        completed=(report.status in [Report.STATUS.SUCCEEDED, Report.STATUS.FAILED]),
                        success=(report.status in [Report.STATUS.SUCCEEDED]),
@@ -767,7 +763,7 @@ class Report:
         valid_logs = 0
         valid_logs += sum([s['logs_valid'] for s in args_transcripts if 'logs_valid' in s])
         valid_logs += sum([s['logs_valid'] for s in kwargs_transcripts.values() if 'logs_valid' in s])
-
+     
         if report.request.has('summary'):
             transcript['result'] = f"SUMMARY: {report.request.get('summary')(report.result)}"
         else:
@@ -777,7 +773,6 @@ class Report:
             transcript['logpath_status'] = 'VALID' if report.logspace.exists(transcript['logpath']) else 'MISSING'
             if transcript['logpath_status'] == 'VALID':
                 valid_logs += 1
-
         else:
             transcript['logpath_status'] = None
         transcript['logs_total'] = total_logs
@@ -826,16 +821,6 @@ class Report:
         validations_, valids, invalids = _transcript_validate_logs(transcript, _validations=[])
         validations = {i: v for i, v in enumerate(validations_)}
         return {"VALID_LOGS": valids, "INVALID_LOGS": invalids, "LOGS": validations}
-
-    def __repr__(self):
-        summary = self.set(reset_use_summary=False).summary()
-        summary_repr = repr(summary)
-        return summary_repr
-
-    def __str__(self):
-        summary = self.summary()
-        _ = str(summary)
-        return _
 
     def logfile(self):
         try:
@@ -1095,7 +1080,7 @@ class BLOCK:
 
         def apply(self, functor):
             requester = self.clone()
-            requester.functors.append(functor)
+            requester.functors.append(functor).with_settings(**self.settings)
             return requester
         
     class Response:

@@ -8,7 +8,7 @@ import hashlib
 import importlib
 import logging
 import os
-import pdb #DEBUG
+import pdb
 from typing import Any, TypeVar, Generic, Tuple, Union, List, Dict
 
 import fsspec
@@ -440,10 +440,6 @@ class Databuilder(Anchored, Scoped):
         return block_intent_scopebook
 
     def block_extent(self, **scope):
-        #DEBUG
-        #blockscope = self._blockscope_(**scope)
-        #tagscope = self._tagscope_(**blockscope)
-        #block_extent_book = self.block_extent_book(**tagscope)
         block_extent_book = self.block_extent_book(**scope)
         block_extent_scopebook = self._kvhbook_to_scopebook(block_extent_book)
         return block_extent_scopebook
@@ -637,33 +633,20 @@ class Databuilder(Anchored, Scoped):
         _shortfall_batch_requests = \
             [self._build_batch_request_(self._tagscope_(**shortfall_batchscope_list[i]), **shortfall_batchscope_list[i])
                             for i in range(len(shortfall_batchscope_list))]
-        #DEBUG
-        #pdb.set_trace()
-        shortfall_batch_requests_ = [_.set(throw=self.throw).apply(self.pool) for _ in _shortfall_batch_requests]
-        '''
-        #TODO: #REMOVE?
-        if self.throw is not None:
-            shortfall_batch_requests = [_.set(throw=self.throw) for _ in shortfall_batch_requests_]
-        else:
-            shortfall_batch_requests = shortfall_batch_requests_
-        '''
-        shortfall_batch_requests = shortfall_batch_requests_
+         
+        shortfall_batch_requests = [_.set(throw=self.throw).apply(self.pool) for _ in _shortfall_batch_requests]
 
         shortfall_batch_requests_tags = "[" + \
                                           ", ".join(tag(_) for _ in shortfall_batch_requests) + \
                                           "]"
         if self.verbose:
-            print(f"build_block_request: shortfall_batch_requests: " + shortfall_batch_requests_tags)
+            print(f"build_block_request: shortfall_batch_requests tags: " + shortfall_batch_requests_tags)
 
         tagscope = self._tagscope_(**blockscope)
         extent_request = Request(self.block_extent, **tagscope)
         requests = shortfall_batch_requests + [extent_request.set(throw=self.throw)]
         build_block_request = Request(ALL, *requests).set(throw=self.throw)
-        '''
-        #TODO: #REMOVE: #WARNING: 
-        if self.throw is not None:
-            build_block_request = build_block_request.set(throw=throw)
-        '''
+        
         #TODO: #FIX
         #build_block_request = LAST(*shortfall_batch_requests) if len(shortfall_batch_requests) > 0 else NONE()
         if len(shortfall_batchscope_list) > 0 and self.build_block_request_lifecycle_callback is not None:

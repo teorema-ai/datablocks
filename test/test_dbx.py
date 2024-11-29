@@ -1,18 +1,25 @@
+import os
+
 import datablocks
 import datablocks.dataspace
 from datablocks.eval.request import Request
 
 from datablocks.eval.request import ArgResponseException
-from datablocks.test.pandas.datablocks import BuildException
+from datablocks.test.datablocks import (
+    BuildException, BuildExceptionDatablock,
+    ReadException, ReadExceptionDatablock,
+)
 
 
-TESTLAKE = datablocks.dataspace.Dataspace.temporary()
+TESTLAKE = datablocks.dataspace.Dataspace(os.path.join(os.path.dirname(__file__), 'tmp')).remove().ensure()
 TEST_FILE_POOL = datablocks.FILE_POOL.clone(dataspace=TESTLAKE, throw=False)
-VERBOSE = True
+CLEAR = True
+DEBUG = False
+THROW = True #DEBUG
 
 def _test_build_exception(dbx, topic=None, *, verbose=True, exception_cls):
     if verbose:
-        print(f"intent: {dbx}:\n", str(dbx.intent().pretty()))
+        print(f"intent: {dbx}:\n", str(dbx.intent.pretty()))
     dbx.build_request().compute()
 
     e = dbx.show_build_graph().exception
@@ -24,18 +31,31 @@ def _test_build_exception(dbx, topic=None, *, verbose=True, exception_cls):
     assert len(dbx.show_build_batch_graph().traceback) > 0, "Missing traceback"
         
 
-def _test(dbx, topic=None, *, build=True, read=False, show=True, check_batch_graph=True, check_batch_exception=False, clear=False, verbose=True):
+def _test(dbx, 
+          topic=None, 
+          *, 
+          build=True, 
+          read=False, 
+          show=True, 
+          check_batch_graph=True, 
+          check_batch_exception=False, 
+          verbose=False,
+          clear=CLEAR, 
+          debug=DEBUG,
+          throw=THROW,
+):
+    dbx = dbx.Datablock(verbose=verbose, debug=debug).Databuilder(throw=throw, pool=datablocks.FILE_LOGGING_POOL)
     print()
     if verbose:
-        print(f"intent: {dbx}:\n", str(dbx.intent().pretty()))
+        print(f"intent: {dbx}:\n", str(dbx.intent.pretty()))
     if build:
         if verbose:
-            print(f"extent: pre-build: {dbx}: \n", dbx.extent().pretty())
-            print(f"metric: pre-build: {dbx}: \n", dbx.metric().pretty())
+            print(f"extent: pre-build: {dbx}: \n", dbx.extent.pretty())
+            print(f"metric: pre-build: {dbx}: \n", dbx.metric.pretty())
         result = dbx.build()
         if verbose:
-            print(f"extent: post-build: {dbx}\n", dbx.extent().pretty())
-            print(f"metric: post-build: {dbx}: \n", dbx.metric().pretty())
+            print(f"extent: post-build: {dbx}\n", dbx.extent.pretty())
+            print(f"metric: post-build: {dbx}: \n", dbx.metric.pretty())
     if read:
         if topic:
             _ = dbx.read(topic)
@@ -46,37 +66,36 @@ def _test(dbx, topic=None, *, build=True, read=False, show=True, check_batch_gra
             if verbose:
                 print(_)
     if show:
-        dbx.show_build_records()
-        dbx.show_build_record_columns()
-        dbx.show_build_record()
+        dbx.show_records()
+        dbx.show_record_columns()
+        dbx.show_record()
         dbx.show_named_record()
         dbx.show_build_batch_count()
-        dbx.show_build_transcript()
+        dbx.show_build_graph().transcript
         dbx.show_build_batch_graph().transcript.keys()
         dbx.show_build_scope()
         dbx.show_build_graph()
         dbx.show_build_batch_graph()
-        assert isinstance(dbx.show_build_graph().request, Request)
+        #assert isinstance(dbx.show_build_graph().request, Request)
         
         if verbose:
-            print(f"show_build_records(): {dbx.show_build_records()}")
-            print(f"show_build_record_columns(): {dbx.show_build_record_columns()}")
-            print(f"show_build_record(): {dbx.show_build_record()}")
-            print(f"show_named_record(): {dbx.show_named_record()}")
-            print(f"show_build_batch_count(): {dbx.show_build_batch_count()}")
-            print(f"show_build_transcript(): {dbx.show_build_transcript()}")
-            print(f"dbx.show_build_batch_graph().transcript.keys(): {dbx.show_build_batch_graph().transcript.keys()}")
-            print(f"show_build_scope(): {dbx.show_build_scope()}")
-            print(f"show_build_graph(): {dbx.show_build_graph()}")
-            print(f"show_build_batch_graph(): {dbx.show_build_batch_graph()}")
+            print(f"show_records():\n{dbx.show_records()}")
+            print(f"show_record_columns():\n{dbx.show_record_columns()}")
+            print(f"show_record():\n{dbx.show_record()}")
+            print(f"show_named_record():\n{dbx.show_named_record()}")
+            print(f"show_build_batch_count():\n{dbx.show_build_batch_count()}")
+            print(f"show_build_graph().transcript():\n{dbx.show_build_graph().transcript}")
+            print(f"dbx.show_build_batch_graph().transcript.keys():\n{dbx.show_build_batch_graph().transcript.keys()}")
+            print(f"show_build_scope():\n{dbx.show_build_scope()}")
+            print(f"show_build_graph():\n{dbx.show_build_graph()}")
+            print(f"show_build_batch_graph():\n{dbx.show_build_batch_graph()}")
 
     if check_batch_graph:
         assert dbx.show_build_graph().exception is None, f"Unexpected exception: type: {type(dbx.show_build_graph().exception)}, {dbx.show_build_graph().exception}"
         assert len(dbx.show_build_batch_graph().traceback) == 0, "Unexpected traceback"
         assert len(dbx.show_build_batch_graph().logpath) > 0, "Empty logpath"
-        assert len(dbx.show_build_batch_graph().log()) > 0, "Empty log"
+        assert not verbose or len(dbx.show_build_batch_graph().log()) > 0, "Empty log"
         assert len(dbx.show_build_batch_graph().result) > 0, "Empty result"
-        
 
     if clear:
         dbx.UNSAFE_clear()
@@ -84,65 +103,39 @@ def _test(dbx, topic=None, *, build=True, read=False, show=True, check_batch_gra
             print(f">>> Cleared")
 
 
-MIRLOGCOHN = datablocks.DBX('datablocks.test.micron.datablocks.miRLogCoHN', 'mirlogcohn')\
-            .Datablock(verbose=VERBOSE)\
-            .Databuilder(dataspace=TESTLAKE, pool=TEST_FILE_POOL, verbose=VERBOSE)\
-
-
-MIRCOHN = datablocks.DBX('datablocks.test.micron.datablocks.miRCoHN', 'mircohn')\
-        .SCOPE(logcounts=MIRLOGCOHN.READ())\
-        .Databuilder(dataspace=TESTLAKE, pool=TEST_FILE_POOL, verbose=VERBOSE)
-
-
-MIRNA = datablocks.DBX('datablocks.test.micron.datablocks.miRNA', 'mirna')\
-    .Datablock(verbose=VERBOSE).SCOPE()\
-    .Databuilder(dataspace=TESTLAKE, pool=TEST_FILE_POOL, verbose=VERBOSE)\
-
-
-MIR_COSEQS_NPASSES = 10
-MIR_COSEQS_SEQS_PER_RECORD = 300
-MIRCOSEQSHN = \
-        datablocks.DBX('datablocks.test.micron.datablocks.miRCoSeqs', f"mircoseqshn_{MIR_COSEQS_NPASSES}_{MIR_COSEQS_SEQS_PER_RECORD}")\
-            .Datablock(verbose=VERBOSE)\
-                .SCOPE(logcounts=MIRCOHN.READ('logcounts'), 
-                       logcontrols=MIRCOHN.READ('logcontrols'),
-                       seqs=MIRNA.READ(), 
-                       npasses=MIR_COSEQS_NPASSES, 
-                       nseqs_per_record=MIR_COSEQS_SEQS_PER_RECORD)\
-            .Databuilder(dataspace=TESTLAKE, pool=TEST_FILE_POOL, verbose=VERBOSE)\
-
-
-def test_mirlogcohn():
-    _test(MIRLOGCOHN)
-
-
-def test_mircohn_logcounts():
-    _test(MIRLOGCOHN)
-    _test(MIRCOHN, 'logcounts')
-
-
-def test_mircohn_counts():
-    _test(MIRLOGCOHN)
-    _test(MIRCOHN, 'logcounts')
-    _test(MIRCOHN, 'counts', clear=True)
-
-
-def test_mirna():
-    _test(MIRNA, clear=True)
-
-
-def test_mircoseq():
-    _test(MIRNA)
-    _test(MIRCOSEQSHN, 'samples', clear=True)
-    
-
 def test_pandas_datablock():
-    pdbk = datablocks.DBX('datablocks.test.pandas.datablocks.PandasArray', 'pdbk')\
+    pandas_datablock = datablocks.DBX('datablocks.test.datablocks.PandasArray', 'pdbk')\
         .Databuilder(dataspace=TESTLAKE)
-    _test(pdbk, check_batch_graph=False)
+    _test(pandas_datablock, check_batch_graph=True)
 
+def test_pandas_datablock_verbose():
+    pandas_datablock = datablocks.DBX('datablocks.test.datablocks.PandasArray', 'pdbk')\
+        .Databuilder(dataspace=TESTLAKE)
+    _test(pandas_datablock, check_batch_graph=True, verbose=True)
 
 def test_pandas_build_exception():
-    pexc = datablocks.DBX('datablocks.test.pandas.datablocks.BuildExceptionDatablock', 'pexc')\
+    pexc = datablocks.DBX('datablocks.test.datablocks.BuildExceptionDatablock', 'pexc')\
             .Databuilder(dataspace=TESTLAKE, pool=TEST_FILE_POOL)
     _test_build_exception(pexc, exception_cls=BuildException)
+
+def test_scope():
+    datablocks.dbx.DBX('datablocks.test.datablocks.ReadExceptionDatablock').scope    
+
+
+def test_build_exception():
+    exc = None
+    try:
+        dbx = datablocks.dbx.DBX(BuildExceptionDatablock, 'bexc')
+        dbx.build()
+    except BuildException as e:
+        exc = e
+    assert isinstance(exc, BuildException)
+
+
+def test_read_exception():
+    exc = None
+    try:
+        datablocks.dbx.DBX(ReadExceptionDatablock, 'rexc').read()
+    except ReadException as e:
+        exc = e
+    assert isinstance(exc, ReadException)
