@@ -764,7 +764,7 @@ class Report:
         valid_logs += sum([s['logs_valid'] for s in args_transcripts if 'logs_valid' in s])
         valid_logs += sum([s['logs_valid'] for s in kwargs_transcripts.values() if 'logs_valid' in s])
      
-        if report.request.has('summary'):
+        if report.result is not None and report.request.has('summary'):
             transcript['result'] = f"SUMMARY: {report.request.get('summary')(report.result)}"
         else:
             transcript['result'] = report.result

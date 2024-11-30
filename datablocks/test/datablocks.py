@@ -19,7 +19,7 @@ from datablocks.dbx import Datablock
 class PandasReadableDatablock(Datablock):
     PATHNAME = 'data.parquet'
   
-    def read(self, shardscope, shardroot, topic=None):
+    def read(self, shardscope, shardroot):
         dataset_path = self.path(shardscope, shardroot)
         table = pq.read_table(dataset_path, filesystem=self.filesystem)
         frame = table.to_pandas()
@@ -54,11 +54,13 @@ class PandasArray(PandasReadableDatablock):
         pq.write_table(table, datapath, filesystem=self.filesystem)
         self.print_verbose(f"Wrote dataframe to {datapath}")
         return frame
+
+    def valid(self, scope, root):
+        path = self.path(scope, root)
+        return self.filesystem.exists(path) and self.filesystem.isfile(path)
     
     @staticmethod
     def summary(frame):
-        if frame is None:
-            return None
         s = f"frame of len {len(frame)}"
         rs = repr(s)
         return rs

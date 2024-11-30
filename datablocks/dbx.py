@@ -145,7 +145,11 @@ class Datablock:
         return _            
     
     def metric(self, shardscope, shardroot, topic=None):
-        return int(self.valid(shardscope, shardroot, topic))
+        if topic is None:
+            metric = int(self.valid(shardscope, shardroot))
+        else:
+            metric = int(self.valid(shardscope, shardroot, topic))
+        return metric
 
     def path(self, shardscope, shardroots, topic=None):
         if topic is not None:
@@ -617,7 +621,7 @@ class DBX:
         if self.scope is None:
             raise ValueError(f"{self} has not been built yet")
         tagscope = self.databuilder._tagscope_(**self.scope)
-        page = self.databuilder.block_extent_page(topic, **tagscope)
+        page = self.databuilder._block_extent_page_(topic, **tagscope)
         if len(page) > 1:
             path = list(page.values())
         elif len(page) == 1:
@@ -671,7 +675,7 @@ class DBX:
     
     @property
     def metric(self):
-        _ = self.databuilder.block_extent_metric(**self.scope)
+        _ = self.databuilder._block_extent_metric_(**self.scope)
         return _
 
     @property
@@ -1112,6 +1116,35 @@ class DBX:
                 _ = self.datablock(filesystem=self.dataspace.filesystem).read(datablock_blockscope, datablock_blockroots, topic)
             return _
 
+        def _block_extent_page_(self, topic, **blockscope):
+            """
+                #TODO: move to Databuilder.block_extent_page. How to factor?  Through what overridable method?
+            """
+            if topic != DEFAULT_TOPIC and topic not in self.topics:
+                raise UnknownTopic(f"Unknown topic {repr(topic)} is not among {[repr(s) for s in self.topics]}")
+            block_intent_page = self.block_intent_page(topic, **blockscope)
+            tagblockscope = self.Tagscope(**blockscope)
+            datablock_cls = dbx.datablock_cls()
+            datablock_blockroots = self.datablock_blockroots(tagblockscope)
+            datablock_blockscope = datablock_cls.SCOPE(**blockscope)
+            if topic == DEFAULT_TOPIC:
+                _valid = self.datablock(filesystem=self.dataspace.filesystem).valid(datablock_blockscope, datablock_blockroots)
+            else:
+                _valid = self.datablock(filesystem=self.dataspace.filesystem).valid(datablock_blockscope, datablock_blockroots, topic)
+            if dbx.datablock_range_cls() is None:
+                valid = [_valid]
+            else:
+                valid = _valid
+            block_extent_page = {}
+            i = 0
+            for kvhandle, shard_pathset in block_intent_page.items():
+                shardscope = self._kvhandle_to_scope_(topic, kvhandle)
+                tagshardscope = self.Tagscope(**shardscope)
+                if valid[i]:
+                    block_extent_page[kvhandle] = shard_pathset
+                i += 1
+            return block_extent_page
+
         def _shard_extent_page_valid_(self, topic, tagshardscope, **shardscope):
             datablock_cls = dbx.datablock_cls()
             datablock_shardscope = datablock_cls.SCOPE(**shardscope)
@@ -1125,13 +1158,28 @@ class DBX:
                 _ = self.datablock(filesystem=self.dataspace.filesystem).valid(datablock_shardscope, datablock_shardroots, topic)
             return _
         
-        def _extent_shard_metric_(self, topic, tagshardscope, **shardscope):
+        def _block_extent_metric_(self, **scope):
+            blockscope = self._blockscope_(**scope)
+            extent = self.block_extent(**blockscope)
+            _extent_metric_book = {}
+            for topic, page in extent.items():
+                metric_page = []
+                for shardscope, _ in page:
+                    tagscope = self._tagscope_(**shardscope)
+                    shardmetric = self._shard_extent_metric_(topic, tagscope, **shardscope)
+                    #FIX: refactor via *_to_scopebook()
+                    metric_page.append((shardscope, shardmetric))
+                _extent_metric_book[topic] = Databuilder.Scopepage(metric_page)
+            extent_metric_book = Databuilder.Scopebook(_extent_metric_book)
+            return extent_metric_book
+
+        def _shard_extent_metric_(self, topic, tagshardscope, **shardscope):
             datablock_cls = dbx.datablock_cls()
             datablock_shardscope = datablock_cls.SCOPE(**shardscope)
             datablock_shardroots = self.datablock_shardroots(tagshardscope)
             if topic == None:
                 assert not hasattr(datablock_cls, 'TOPICS'), \
-                        f"__extent_shard_metric__: None topic when datablock_cls.TOPICS == {getattr(datablock_cls, 'TOPICS')} "
+                        f"_shard_extent_metric_: None topic when datablock_cls.TOPICS == {getattr(datablock_cls, 'TOPICS')} "
                 _ = self.datablock(filesystem=self.dataspace.filesystem).metric(datablock_shardscope, datablock_shardroots)
             else:
                 _ = self.datablock(filesystem=self.dataspace.filesystem).metric(datablock_shardscope, datablock_shardroots, topic)
@@ -1183,9 +1231,9 @@ class DBX:
         #if dbx.use_alias_dataspace:
         #    databuilder_classdict['_shardspace_'] = _alias_shardspace_
         if hasattr(datablock_cls, 'valid'):
-            databuilder_classdict['_shard_extent_page_valid_'] = _shard_extent_page_valid_
+            databuilder_classdict['_block_extent_page_'] = _block_extent_page_
         if hasattr(datablock_cls, 'metric'):
-            databuilder_classdict['_extent_shard_metric_'] = _extent_shard_metric_
+            databuilder_classdict['_shard_extent_metric_'] = _shard_extent_metric_
 
         databuilder_class = type(__cls_name, 
                                (Databuilder,), 

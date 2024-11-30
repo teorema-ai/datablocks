@@ -350,7 +350,8 @@ class Databuilder(Anchored, Scoped):
         block_intent_page = {kvhandle: pathshard for kvhandle, pathshard in kvhandle_pathshard_list}
         return block_intent_page
 
-    def block_extent_page(self, topic, **scope):
+    @OVERRIDE
+    def _block_extent_page_(self, topic, **scope):
         if topic != DEFAULT_TOPIC and topic not in self.topics:
             raise UnknownTopic(f"Unknown topic {repr(topic)} is not among {[repr(s) for s in self.topics]}")
         block_intent_page = self.block_intent_page(topic, **scope)
@@ -374,16 +375,9 @@ class Databuilder(Anchored, Scoped):
                 print(f"_shard_extent_page_valid_: INVALID shard with topic {repr(topic)} with scope with tag {tagscope}")
         return valid
 
-    #TODO: #REMOVE? Apply self.pool?
-    def block_extent_page_request(self, topic, **scope):
-        _ = Request(self.block_extent_page, topic, **scope)
-        if self.throw is not None:
-            _ = _.set(throw=self.throw)
-        return _
-
     def block_shortfall_page(self, topic, **scope):
         block_intent_page = self.block_intent_page(topic, **scope)
-        block_extent_page = self.block_extent_page(topic, **scope)
+        block_extent_page = self._block_extent_page_(topic, **scope)
         block_shortfall_page = {}
         for kvhandle, intent_pathshard in block_intent_page.items():
             if isinstance(intent_pathshard, str):
@@ -408,7 +402,7 @@ class Databuilder(Anchored, Scoped):
         #return self._page_book("intent", **scope) #REMOVE
 
     def block_extent_book(self, **scope):
-        return {topic: self.block_extent_page(topic, **scope) for topic in self.topics}
+        return {topic: self._block_extent_page_(topic, **scope) for topic in self.topics}
         #return self._page_book("extent", **scope) #REMOVE
 
     @staticmethod
@@ -451,11 +445,10 @@ class Databuilder(Anchored, Scoped):
         _block_shortfall_book = self._kvhbook_to_scopebook(block_shortfall_book)
         return _block_shortfall_book
 
-    #RENAME: -> _shard_extent_metric_
-    def _extent_shard_metric_(self, topic, tagscope, **shardscope):
-        block_extent_page = self.block_extent_page(topic, **shardscope)
+    def _shard_extent_metric_(self, topic, tagscope, **shardscope):
+        block_extent_page = self._block_extent_page_(topic, **shardscope)
         if self.debug:
-            print(f"_extent_shard_metric_: topic: {repr(topic)}: shardspace: {shardscope}: block_extent_page: {block_extent_page}")
+            print(f"_shard_extent_metric_: topic: {repr(topic)}: shardspace: {shardscope}: block_extent_page: {block_extent_page}")
         if len(block_extent_page) > 1:
             raise ValueError(f"Too many shards in block_extent_page: {block_extent_page}")
         if len(block_extent_page) == 0:
@@ -468,7 +461,8 @@ class Databuilder(Anchored, Scoped):
                 metric = len(pathset)
         return metric
     
-    def block_extent_metric(self, **scope):
+    @OVERRIDE
+    def _block_extent_metric_(self, **scope):
         blockscope = self._blockscope_(**scope)
         extent = self.block_extent(**blockscope)
         _extent_metric_book = {}
@@ -476,7 +470,7 @@ class Databuilder(Anchored, Scoped):
             metric_page = []
             for shardscope, _ in page:
                 tagscope = self._tagscope_(**shardscope)
-                shardmetric = self._extent_shard_metric_(topic, tagscope, **shardscope)
+                shardmetric = self._shard_extent_metric_(topic, tagscope, **shardscope)
                 #FIX: refactor via *_to_scopebook()
                 metric_page.append((shardscope, shardmetric))
             _extent_metric_book[topic] = Databuilder.Scopepage(metric_page)
@@ -598,17 +592,6 @@ class Databuilder(Anchored, Scoped):
         if self.lock_pages:
             hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
             self.revisionspace.subspace(*hivechain).release()
-
-    #REMOVE: unroll inplace where necessary
-    '''
-    def _page_book(self, domain, **kwargs):
-        # This book is computed by computing a page for each topic separately, 
-        # via a dedicated function call with topic as an arg, using a domain-specific
-        # method.  domain: 'intent'|'extent'|'shortfall'
-        _page = getattr(self, f"block_{domain}_page")
-        book = {topic: _page(topic, **kwargs) for topic in self.topics}
-        return book
-    '''
 
     @OVERRIDE
     def build_block_request(self, **scope):
