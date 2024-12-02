@@ -76,6 +76,7 @@ class Scoped:
     # TODO: implement support for multiple batch_to_shard_keys
     block_keys = []
     block_to_shard_keys = {}
+    #TODO: ELIMINATE: batch_to_shard_keys?
     batch_to_shard_keys = {}
     block_defaults = {} 
     block_pins = {}  
@@ -177,7 +178,7 @@ class Scoped:
             if key not in self.shard_keys and key not in self.block_to_shard_keys:
                 raise ValueError(f"Unknown key '{key}' is not in databuilder keys {list(self.shard_keys)} "
                                  f"or among the plurals of any known key {list(self.block_to_shard_keys.keys())}")
-            if key in self.block_to_shard_keys and not isinstance(scope[key], collections.Iterable):
+            if key in self.block_to_shard_keys and not isinstance(scope[key], collections.abc.Iterable):
                 raise ValueError(f"Value for plural key {key} is not iterable: {scope[key]}")
 
         # Normalize keyvals to plural, wherever possible
@@ -244,7 +245,7 @@ class Scoped:
                     batch_list.append(batch)
         return batch_list
 
-
+#TODO: to Scoped?
 class KVHandle(tuple):
     def __call__(self, *args, **kwargs) -> Any:
         return super().__call__(*args, **kwargs)
@@ -336,8 +337,8 @@ class Databuilder(Anchored, Scoped):
             self._tmpspace = self.revisionspace.temporary(self.revisionspace.subspace('tmp').ensure().root)
         return self._tmpspace
 
-    def block_intent_page(self, topic, **scope):
-        blockscope = self._blockscope_(**scope)
+    def block_intent_page(self, topic, **blockscope):
+        blockscope = self._blockscope_(**blockscope)
         tagblockscope = self._tagscope_(**blockscope)
         if topic != DEFAULT_TOPIC and topic not in self.topics:
             raise UnknownTopic(f"Unknown topic {repr(topic)} is not among {[repr(s) for s in self.topics]}")
@@ -351,60 +352,106 @@ class Databuilder(Anchored, Scoped):
         return block_intent_page
 
     @OVERRIDE
-    def _block_extent_page_(self, topic, **scope):
+    def _block_extent_page_(self, topic, **blockscope):
         if topic != DEFAULT_TOPIC and topic not in self.topics:
             raise UnknownTopic(f"Unknown topic {repr(topic)} is not among {[repr(s) for s in self.topics]}")
-        block_intent_page = self.block_intent_page(topic, **scope)
+        block_intent_page = self.block_intent_page(topic, **blockscope)
         block_extent_page = {}
         for kvhandle, shard_pathset in block_intent_page.items():
             shardscope = self._kvhandle_to_scope_(topic, kvhandle)
             tagscope = self._tagscope_(**shardscope)
-            valid = self._shard_extent_page_valid_(topic, tagscope, **shardscope)
+            shard_pathset = self._shardspace_(topic, **tagscope).root
+            valid = self.revisionspace.filesystem.isdir(shard_pathset)
             if valid:
                 block_extent_page[kvhandle] = shard_pathset
         return block_extent_page
 
-    @OVERRIDE
-    def _shard_extent_page_valid_(self, topic, tagscope, **shardscope):
-        pathset = self._shardspace_(topic, **tagscope).root
-        valid = self.revisionspace.filesystem.isdir(pathset)
-        if self.debug:
-            if valid:
-                print(f"_shard_extent_page_valid_: VALID: shard with topic {repr(topic)} with scope with tag {tagscope}")
-            else:
-                print(f"_shard_extent_page_valid_: INVALID shard with topic {repr(topic)} with scope with tag {tagscope}")
-        return valid
-
-    def block_shortfall_page(self, topic, **scope):
-        block_intent_page = self.block_intent_page(topic, **scope)
-        block_extent_page = self._block_extent_page_(topic, **scope)
+    def _block_shortfall_page_(self, topic, **blockscope):
+        '''
+            block_shortfall_page for a given topic is a page of all shards (their equivalent kvhandles)
+            that are present in intent, but absent in extent, 
+            or whose extent_shard_pathset differ from intent_shard_pathset.
+        '''
+        block_intent_page = self.block_intent_page(topic, **blockscope)
+        block_extent_page = self._block_extent_page_(topic, **blockscope)
         block_shortfall_page = {}
-        for kvhandle, intent_pathshard in block_intent_page.items():
-            if isinstance(intent_pathshard, str):
-                if kvhandle not in block_extent_page or block_extent_page[kvhandle] != intent_pathshard:
-                    shortfall_pathshard = intent_pathshard
+        for intent_kvhandle, intent_shard_pathset in block_intent_page.items():
+            if isinstance(intent_shard_pathset, str):
+                if intent_kvhandle not in block_extent_page or block_extent_page[kvhandle] != intent_shard_pathset:
+                    shortfall_shard_pathset = intent_shard_pathset
                 else:
-                    shortfall_pathshard = []
+                    shortfall_shard_pathset = []
             else:
                 if kvhandle not in block_extent_page:
-                    shortfall_pathshard = intent_pathshard
+                    shortfall_shard_pathset = intent_shard_pathset
                 else:
-                    extent_pathshard = block_extent_page[kvhandle]
-                    shortfall_pathshard = [intent_filepath for intent_filepath in intent_pathshard
-                                             if intent_filepath not in extent_pathshard]
-            if len(shortfall_pathshard) == 0:
-                continue
-            block_shortfall_page[kvhandle] = shortfall_pathshard
+                    extent_shard_pathset = block_extent_page[kvhandle]
+                    #TODO: factor through a set difference
+                    shortfall_shard_pathset = [intent_shard_path for intent_shard_path in intent_shard_pathset
+                                               if intent_shard_path not in extent_shard_set]
+            if len(shortfall_shard_pathset) > 0:
+                block_shortfall_page[intent_kvhandle] = shortfall_shard_pathset
         return block_shortfall_page
 
-    def block_intent_book(self, **scope):
-        return {topic: self.block_intent_page(topic, **scope) for topic in self.topics}
-        #return self._page_book("intent", **scope) #REMOVE
+    #REMOVE
+    '''
+    def _shard_extent_metric_(self, topic, tagscope, **shardscope):
+        block_extent_page = self._block_extent_page_(topic, **shardscope)
+        if self.debug:
+            print(f"_shard_extent_metric_: topic: {repr(topic)}: shardspace: {shardscope}: block_extent_page: {block_extent_page}")
+        if len(block_extent_page) > 1:
+            raise ValueError(f"Too many shards in block_extent_page: {block_extent_page}")
+        if len(block_extent_page) == 0:
+            metric = 0
+        else:
+            pathset = list(block_extent_page.values())[0]
+            if isinstance(pathset, str):
+                metric = 1
+            else:
+                metric = len(pathset)
+        return metric
+    '''
+    
+    @OVERRIDE
+    def _block_metric_page_(self, topic=None, **blockscope):
+        block_extent_page = self._block_extent_page(topic, **blockscope)
+        block_metric_page = {
+            kvhandle: len(self._shardspace_.ls(shart_pathset))
+            for kvhandle, shard_pathset in block_extent_page.items()
+        }
+        return extent_metric_book
 
-    def block_extent_book(self, **scope):
-        return {topic: self._block_extent_page_(topic, **scope) for topic in self.topics}
-        #return self._page_book("extent", **scope) #REMOVE
+    '''
+    #REMOVE
+    def block_shortfall_book(self, **scope):
+        blockscope = self._blockscope_(**scope)
+        pagekvhandles_list = [set(self.block_shortfall_page(topic, **blockscope).keys()) for topic in self.topics]
+        bookkvhandleset = set().union(*pagekvhandles_list)
+        block_shortfall_book = {}
+        for topic in self.topics:
+            block_shortfall_page = {}
+            for kvhandle in bookkvhandleset:
+                scope = {key: val for key, val in kvhandle}
+                filepathset = self._shardspace_(topic, **blockscope).root
+                block_shortfall_page[kvhandle] = filepathset
+            block_shortfall_book[topic] = block_shortfall_page
+        return block_shortfall_book
+    '''
 
+    def block_intent_book(self, **blockscope):
+        return {topic: self.block_intent_page(topic, **blockscope) for topic in self.topics}
+
+    def block_extent_book(self, **blockscope):
+        return {topic: self._block_extent_page_(topic, **blockscope) for topic in self.topics}
+
+    def block_shortfall_book(self, **blockscope):
+        return {topic: self._block_shortfall_page_(topic, **blockscope) for topic in self.topics}
+
+    def block_metric_book(self, **blockscope):
+        return {topic: self._block_metric_page_(topic, **blockscope) for topic in self.topics}
+
+    #REMOVE
+    '''
     @staticmethod
     def collate_pages(topic, *pages):
         # Each page is a dict {kvhandle -> filepathset}.
@@ -427,6 +474,7 @@ class Databuilder(Anchored, Scoped):
             {topic: Databuilder.collate_pages(topic, *pages) \
              for topic, pages in topic_pages.items()}
         return collated_book
+    '''
 
     def block_intent(self, **scope):
         block_intent_book = self.block_intent_book(**scope)
@@ -445,51 +493,10 @@ class Databuilder(Anchored, Scoped):
         _block_shortfall_book = self._kvhbook_to_scopebook(block_shortfall_book)
         return _block_shortfall_book
 
-    def _shard_extent_metric_(self, topic, tagscope, **shardscope):
-        block_extent_page = self._block_extent_page_(topic, **shardscope)
-        if self.debug:
-            print(f"_shard_extent_metric_: topic: {repr(topic)}: shardspace: {shardscope}: block_extent_page: {block_extent_page}")
-        if len(block_extent_page) > 1:
-            raise ValueError(f"Too many shards in block_extent_page: {block_extent_page}")
-        if len(block_extent_page) == 0:
-            metric = 0
-        else:
-            pathset = list(block_extent_page.values())[0]
-            if isinstance(pathset, str):
-                metric = 1
-            else:
-                metric = len(pathset)
-        return metric
-    
-    @OVERRIDE
-    def _block_extent_metric_(self, **scope):
-        blockscope = self._blockscope_(**scope)
-        extent = self.block_extent(**blockscope)
-        _extent_metric_book = {}
-        for topic, page in extent.items():
-            metric_page = []
-            for shardscope, _ in page:
-                tagscope = self._tagscope_(**shardscope)
-                shardmetric = self._shard_extent_metric_(topic, tagscope, **shardscope)
-                #FIX: refactor via *_to_scopebook()
-                metric_page.append((shardscope, shardmetric))
-            _extent_metric_book[topic] = Databuilder.Scopepage(metric_page)
-        extent_metric_book = Databuilder.Scopebook(_extent_metric_book)
-        return extent_metric_book
-
-    def block_shortfall_book(self, **scope):
-        blockscope = self._blockscope_(**scope)
-        pagekvhandles_list = [set(self.block_shortfall_page(topic, **blockscope).keys()) for topic in self.topics]
-        bookkvhandleset = set().union(*pagekvhandles_list)
-        block_shortfall_book = {}
-        for topic in self.topics:
-            block_shortfall_page = {}
-            for kvhandle in bookkvhandleset:
-                scope = {key: val for key, val in kvhandle}
-                filepathset = self._shardspace_(topic, **blockscope).root
-                block_shortfall_page[kvhandle] = filepathset
-            block_shortfall_book[topic] = block_shortfall_page
-        return block_shortfall_book
+    def block_metric(self, **scope):
+        block_metric_book = self.block_metric_book(**scope)
+        block_metric_scopebook = self._kvhbook_to_scopebook(block_metric_book)
+        return block_metric_scopebook
     
     @OVERRIDE
     def _shardspace_(self, topic, **shard):
@@ -505,6 +512,7 @@ class Databuilder(Anchored, Scoped):
             print(f"SHARDSPACE: formed for topic {repr(topic)} and shard with tag {tagshard}: {subspace}")
         return subspace
     
+    #TODO: to Scoped?
     class Scopebook(dict):
         def pretty(self):
             lines = []
@@ -516,7 +524,8 @@ class Databuilder(Anchored, Scoped):
             _ = '\n '.join(lines)
             return _
         
-    class Scopepage(list):
+    #TODO: to Scoped?
+    class Scopepage(list[tuple]):
         def pretty(self):
             lines = []
             for scope, val in self:
@@ -529,8 +538,9 @@ class Databuilder(Anchored, Scoped):
             else:
                 _ = "  [\n\t" + '\n\t'.join(lines) + "\n   ]"
             return _
-
-    class _scope_(dict):
+    
+    #TODO: to Scoped?
+    class Scope(dict):
         def pretty(self):
             lines = []
             for key, val in self.items():
@@ -538,6 +548,7 @@ class Databuilder(Anchored, Scoped):
             _ = "\t{\n\t" + '\n\t'.join(lines) + "\n\t}"
             return _
 
+    #TODO: to Scoped?
     def _scope_to_hvhandle_(self, topic, **shard):
         if topic is not None:
             shardhivechain = [topic]
@@ -547,47 +558,55 @@ class Databuilder(Anchored, Scoped):
             shardhivechain.append(f"{key}={shard[key]}")
         return shardhivechain
 
+    #TODO: to Scoped?
     def _scope_to_kvhandle_(self, topic, **scope):
         _kvhandle = tuple((key, scope[key]) for key in self.shard_keys)
         kvhandle = KVHandle(_kvhandle)
         return kvhandle
 
+    #TODO: to Scoped?
     def _kvhandle_to_scope_(self, topic, kvhandle):
         return {key: val for key, val in kvhandle}
 
+    #TODO: to Scoped?
     def _kvhandle_to_hvhandle_(self, topic, kvhandle):
         scope = self._kvhandle_to_scope_(topic, kvhandle)
         hivechain = self._scope_to_hvhandle_(topic, **scope)
         return hivechain
 
+    #TODO: to Scoped?
     def _kvhandle_to_filename(self, topic, kvhandle, extension=None):
         datachain = self._kvhandle_to_hvhandle_(topic, kvhandle)
         name = '.'.join(datachain)
         filename = name if extension is None else name+'.'+extension
         return filename
 
+    #TODO: to Scoped?
     def _kvhandle_to_dirpath(self, topic, kvhandle):
         datachain = self._kvhandle_to_hvhandle_(topic, kvhandle)
         subspace = self.revisionspace.subspace(*datachain)
         path = subspace.root
         return path
     
+    #TODO: to Scoped?
     def _kvhbook_to_scopebook(self, kvhbook):
         _scopebook = {}
         for topic, kvhpage in kvhbook.items():
             if not topic in _scopebook:
                 _scopebook[topic] = []
             for kvhandle, val in kvhpage.items():
-                scope = Databuilder._scope_(self._kvhandle_to_scope_(topic, kvhandle))
-                _scopebook[topic].append((Databuilder._scope_(scope), val))
+                scope = Databuilder.Scope(self._kvhandle_to_scope_(topic, kvhandle))
+                _scopebook[topic].append((Databuilder.Scope(scope), val))
         scopebook = Databuilder.Scopebook({topic: Databuilder.Scopepage(page) for topic, page in _scopebook.items()}) 
         return scopebook
 
+    #TODO: to Scoped?
     def _lock_kvhandle(self, topic, kvhandle):
         if self.lock_pages:
             hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
             self.revisionspace.subspace(*hivechain).acquire()
 
+    #TODO: to Scoped?
     def _unlock_kvhandle(self, topic, kvhandle):
         if self.lock_pages:
             hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
@@ -643,13 +662,19 @@ class Databuilder(Anchored, Scoped):
         return _
 
     @OVERRIDE
-    # tagscope is necessary since batchscope will be expanded before being passed to _build_batch_
     def _build_batch_request_(self, tagscope, **batchscope):
+        """
+            # tagscope is necessary since batchscope will be expanded before being passed to _build_batch_
+        """
         self.revisionspace.ensure()
         return Request(self._build_batch_, tagscope, **batchscope)
 
     @OVERRIDE
     def _build_batch_(self, tagscope, **batchscope):
+        raise NotImplementedError()
+
+    @OVERRIDE
+    def _read_block_(self, tagblockscope, **blockscope):
         raise NotImplementedError()
 
     @OVERRIDE

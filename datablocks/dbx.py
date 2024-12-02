@@ -42,7 +42,7 @@ from .dataspace import (
 )
 from .databuilder import Databuilder, UnknownTopic, DEFAULT_TOPIC
 
-from .utils import gitrepostate
+from .utils import gitrepostate, OVERRIDEN
 
 
 class DEFAULT_ARG:
@@ -58,7 +58,7 @@ class DBXEvalError(Exception):
 
 def dbx_eval(string):
     """
-        A version of __builtins__.eval() in the context of impoirted datablocks.datablock.
+        A version of __builtins__.eval() in the context of imported datablocks.datablock.
     """
     import datablocks.dbx
     _eval = __builtins__['eval']
@@ -88,8 +88,26 @@ DBX_PREFIX = 'DBX'
 
 class Datablock:
     """
-        Optional methods:
+        Optional members:
         ```
+            class RANGE(tuple):
+                singular: str = 'element'
+                ...
+
+            def check(self, result: Any, scope: SCOPE, [, topic: str]):
+                '''
+                    Validate if result could have been produced by sequence
+                        .build(scope, roots,),
+                        .read(scope, roots[, topic])
+                '''
+
+            def valid(self, blockscope, blockroots[, topic]) -> bool|list[bool]:
+                '''
+                    For a shardscope (blockscope with no ranges), return bool, indicating whether shard is valid.
+                    For a propery blockscope (with ranges), return a list of bool, indicating whether each shard
+                    within the block is valid.
+                '''
+
             @staticmethod
             def summary(result):
                 # Guard for None result, since summary may be applied at early stages of Request evaluation.
@@ -100,10 +118,6 @@ class Datablock:
     """
     REVISION = '0.0.1'
     PATHNAME = "data.ext" # define this or define TOPICS: dict
-
-    class RANGE(tuple):
-        singular: str = 'element'
-        ...
 
     @dataclass
     class SCOPE:
@@ -121,8 +135,8 @@ class Datablock:
             return self.__postinit__()
 
     @classmethod
-    def range_cls(cls):
-        rangecls = RANGE if not hasattr(cls, 'RANGE') else cls.RANGE
+    def range(cls):
+        rangecls = RANGE if not hasattr(cls.SCOPE, 'RANGE') else cls.SCOPE.RANGE
         SCOPE_fields = dataclasses.fields(cls.SCOPE)
         has_ranges = all(isinstance(field.type, rangecls) for field in SCOPE_fields)
         if not has_ranges:
@@ -135,7 +149,9 @@ class Datablock:
     def read(self, blockscope, blockroots, topic=None):
         raise NotImplementedError
 
-    def valid(self, shardscope, shardroots, topic=None):
+    def valid(self, blockscope, blockroots, topic=None):
+        if self.range() is not None:
+            raise ValueError("This basic version of 'valid()' can only handle shardscopes")
         if hasattr(self, 'TOPICS'):
             path = self.path(shardscope, shardroots, topic)
             _ = self.filesystem.exists(path)
@@ -144,14 +160,20 @@ class Datablock:
             _ = self.filesystem.exists(path)
         return _            
     
-    def metric(self, shardscope, shardroot, topic=None):
+    def metric(self, blockscope, blockroots, topic=None):
+        def valid_to_metric(valid):
+            if self.range() is None:
+                metric = int(valid)
+            else:
+                metric = [int(v) for v in valid]
+            return metric
         if topic is None:
-            metric = int(self.valid(shardscope, shardroot))
+            metric = valid_to_metric(self.valid(blockscope, blockroots))
         else:
-            metric = int(self.valid(shardscope, shardroot, topic))
+            metric = valid_to_metric(self.valid(blockscope, blockroots, topic))
         return metric
 
-    def path(self, shardscope, shardroots, topic=None):
+    def path(self, _, shardroots, topic=None):
         if topic is not None:
             if shardroots is None:
                 path = os.path.join(os.getcwd(), self.TOPICS[topic])
@@ -164,6 +186,13 @@ class Datablock:
             else:
                 path = os.path.join(shardroot, self.PATHNAME)
         return path
+
+    def paths(self, blockscope, blockroots, topic=None):
+        '''
+            Assume or check that there are as many blockroots as there are shards in blockscope,
+            then form [self.path(None, blockroot[, topic]) for blockroot in blockroots].
+        '''
+        ...
 
     def print_verbose(self, s):
         if self.verbose:
@@ -194,7 +223,6 @@ class DBX:
         def __repr__(self):
             return f"datablocks.dbx.DBX.Path({super().__repr__()})"
             
-
     class ProxyRequest(request.Proxy):
         @staticmethod
         def parse_url(url: str, **datablock_kwargs):
@@ -509,6 +537,7 @@ class DBX:
         except:
             return super().__getattribute__(attr)
 
+    @property
     def datablock_cls(self):
         if self._datablock_cls is None:
             with gitrepostate(self.repo, self.revision, verbose=self.verbose):
@@ -545,7 +574,11 @@ class DBX:
         return scope
 
     @property
-    def scope(self):
+    def scope(self) -> dict:
+        """
+            #TODO: -> datablock_cls.SCOPE
+            #TODO: can datablock_cls.SCOPE be serialized/deserialized in transcript?
+        """
         if self._scope is None:
             import datablocks #TODO: why the local import?
             # TODO: consistency check: sha256 alias must be unique for a given revision or match scope
@@ -559,7 +592,7 @@ class DBX:
             scope = None
             record_scope = self.record_scope()
             if len(self.scope_kwargs) > 0:
-                scope = asdict(self.datablock_cls().SCOPE(**self.scope_kwargs))
+                scope = asdict(self.datablock_cls.SCOPE(**self.scope_kwargs))
                 if self.verbose:
                     print(f"{self}: scope: constructed scope_kwargs:\n{self.scope_kwargs}")          
             elif record_scope is not None:
@@ -567,12 +600,12 @@ class DBX:
                 if self.verbose:
                     print(f"{self}: scope: using record scope: {scope}")
             else:
-                scope = asdict(self.datablock_cls().SCOPE())
+                scope = asdict(self.datablock_cls.SCOPE())
                 if self.verbose:
                     print(f"{self}: scope: default scope: {scope}")
             scope = self.databuilder._blockscope_(**scope)
             if scope is not None and record_scope is not None and not scopes_equal(scope, record_scope):
-                raise ValueError(f"Attempt to overwrite record scope {record_scope} with {scope} for {self.datablock_cls()} alias {self.alias}")
+                raise ValueError(f"Attempt to overwrite record scope {record_scope} with {scope} for {self.datablock_cls} alias {self.alias}")
             self._scope = scope
         return self._scope
     
@@ -583,11 +616,11 @@ class DBX:
 
     @property
     def topics(self):
-        if hasattr(self.datablock_cls(), 'TOPICS'):
-            if isinstance(self.datablock_cls().TOPICS, dict):
-                topics = list(self.datablock_cls().TOPICS.keys())
+        if hasattr(self.datablock_cls, 'TOPICS'):
+            if isinstance(self.datablock_cls.TOPICS, dict):
+                topics = list(self.datablock_cls.TOPICS.keys())
             else:
-                topics = self.datablock_cls().TOPICS
+                topics = self.datablock_cls.TOPICS
         else:
             topics = [DEFAULT_TOPIC]
         return topics
@@ -675,7 +708,7 @@ class DBX:
     
     @property
     def metric(self):
-        _ = self.databuilder._block_extent_metric_(**self.scope)
+        _ = self.databuilder.block_metric(**self.scope)
         return _
 
     @property
@@ -687,6 +720,11 @@ class DBX:
     def roots(self):
         tagscope = self.databuilder.Tagscope(**self.scope)
         return self.databuilder.datablock_blockroots(tagscope)
+
+    @property
+    def checker(self):
+        if hasattr(self.databuilder, 'check'):
+            return self.databuilder.check
 
     BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'revision', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
 
@@ -1010,10 +1048,12 @@ class DBX:
         return _write_record_lifecycle_callback
 
     def datablock_range_cls(self):
-        datablock_cls = self.datablock_cls()
-        rangecls = RANGE if not hasattr(datablock_cls, 'RANGE') else datablock_cls.RANGE
+        #DEBUG
+        #pdb.set_trace()
+        datablock_cls = self.datablock_cls
+        rangecls = RANGE if not hasattr(datablock_cls.SCOPE, 'RANGE') else datablock_cls.SCOPE.RANGE
         SCOPE_fields = dataclasses.fields(datablock_cls.SCOPE)
-        has_ranges = all(isinstance(field.type, rangecls) for field in SCOPE_fields)
+        has_ranges = any(issubclass(field.type, rangecls) for field in SCOPE_fields)
         if not has_ranges:
             rangecls = None
         return rangecls
@@ -1034,14 +1074,14 @@ class DBX:
             _ = f"{repr(dbx)}.databuilder"
             return _
 
-        def datablock(self, filesystem, scope=None):
-            datablock_cls = dbx.datablock_cls()
-            self._datablock = datablock_cls(filesystem, **dbx.datablock_kwargs_)
+        def datablock(self):
+            datablock_cls = dbx.datablock_cls
+            self._datablock = datablock_cls(self.dataspace.filesystem, **dbx.datablock_kwargs_)
             return self._datablock
 
-        @property
         def revisionspace(self):
-            return self.anchorspace.subspace(f"@{signature.tag(DBX.Path(self.revision))}",)
+            revision = signature.tag(DBX.Path(self.revision)) if self.revision is not None else ''
+            return self.anchorspace.subspace(f"@{revision}",)
 
         def _alias_shardspace_(self, topic, **shard):
             # ignore shard, label by alias, revision, topic only
@@ -1054,29 +1094,29 @@ class DBX:
             return _
 
         def datablock_shardroots(self, tagshardscope, ensure=False) -> Union[str, Dict[str, str]]:
-            
             def shardroot(topic):
                 shardspace = self._shardspace_(topic, **tagshardscope)
                 if ensure:
                     shardspace.ensure()
                 return shardspace.root
-
-            datablock_cls = dbx.datablock_cls()
+            datablock_cls = dbx.datablock_cls
             if not hasattr(datablock_cls, 'TOPICS'):
                 shardroots = shardroot(None)
             else:
-                shardroots = {topic: shardroot(topic)}
+                shardroots = {topic: shardroot(topic) for topic in datablock_cls.TOPICS}
+            if dbx.debug:
+                print(f"DEBUG: DBX.Databuilder: datablock_shardroots: {shardroots}")
             return shardroots
 
         def datablock_blockroots(self, tagblockscope, ensure=False) -> Union[str, Dict[str, str]]:
-            datablock_cls = dbx.datablock_cls()
+            datablock_cls = dbx.datablock_cls
             range_cls = dbx.datablock_range_cls()
             tagshardscopes = self.scope_to_shards(**tagblockscope)
             if range_cls is None:
                 assert len(tagshardscopes) <= 1, f"Multiple shards in blockscope for a datablock with no RANGE in SCOPE"
                 blockroots = self.datablock_shardroots(tagshardscopes[0], ensure=ensure)
             else:
-                if not hasattr(datablock_cls, TOPICS):
+                if not hasattr(datablock_cls, 'TOPICS'):
                     blockroots = [self.datablock_shardroots(tagshardscope, ensure=ensure)for tagshardscope in tagshardscopes]
                 else:
                     blockroots = None
@@ -1089,34 +1129,62 @@ class DBX:
                                 blockroots[topic].append(topicshardroot)
             return blockroots
 
+        @OVERRIDEN
         def _build_batch_(self, tagbatchscope, **batchscope):
-            datablock_batchscope = dbx.datablock_cls().SCOPE(**batchscope) # need to convert batchscope elements to RANGE wherever necessary
+            datablock_batchscope = dbx.datablock_cls.SCOPE(**batchscope) # need to convert batchscope elements to RANGE wherever necessary
             datablock_batchroots = self.datablock_blockroots(tagbatchscope, ensure=True)
-            datablock = self.datablock(filesystem=self.dataspace.filesystem)
             if self.verbose:
-                print(f"DBX: building batch for datablock {type(datablock)}: {datablock}")
-            return datablock.build(datablock_batchscope, datablock_batchroots)
+                print(f"DBX: building batch for datablock {type(self.datablock)}: {self.datablock}")
+            return self.datablock.build(datablock_batchscope, datablock_batchroots)
 
+        @OVERRIDEN
         def _build_batch_request_(self, tagbatchscope, **batchscope):
-            datablock_cls = dbx.datablock_cls()
+            datablock_cls = dbx.datablock_cls
             request = Databuilder._build_batch_request_(self, tagbatchscope, **batchscope)
             if hasattr(datablock_cls, 'summary'):
                 request = request.set(summary=datablock_cls.summary)
             return request
 
+        @OVERRIDEN
         def _read_block_(self, tagblockscope, topic, **blockscope):
-            datablock_cls = dbx.datablock_cls()
+            datablock_cls = dbx.datablock_cls
             # tagscope can be a list, opaque to the Request evaluation mechanism, but batchscope must be **-expanded to allow Request mechanism to evaluate the kwargs
             datablock_blockroots = self.datablock_blockroots(tagblockscope)
             datablock_blockscope = datablock_cls.SCOPE(**blockscope) # to ensure upconversion to RANGE wherever necessary
             if topic == None:
-                assert not hasattr(datablock_cls, 'TOPICS'), f"_read_block_: None topic when datablock.TOPICS == {datablock_cls.TOPICS} "
-                _ = self.datablock(filesystem=self.dataspace.filesystem).read(datablock_blockscope, datablock_blockroots)
+                assert not hasattr(datablock_cls, 'TOPICS'), f"_read_block_: None topic when datablock().TOPICS == {datablock_cls.TOPICS} "
+                _ = self.datablock.read(datablock_blockscope, datablock_blockroots)
             else:
-                _ = self.datablock(filesystem=self.dataspace.filesystem).read(datablock_blockscope, datablock_blockroots, topic)
+                _ = self.datablock.read(datablock_blockscope, datablock_blockroots, topic)
             return _
 
+        @OVERRIDEN
         def _block_extent_page_(self, topic, **blockscope):
+            valid = self._block_value_page_(self.datablock.valid, topic, **blockscope)
+            block_intent_page = self.block_intent_page(topic, **blockscope)
+            block_extent_page = {kvhandle: shard_pathset 
+                for i, (kvhandle, shard_pathset) in enumerate(block_intent_page.items())
+                if valid[i]
+            }
+            return block_extent_page
+
+        @OVERRIDEN
+        def _block_metric_page_(self, topic, **blockscope):
+            def callable(*args, **kwargs):
+                valid = self.datablock.valid(*args, **kwargs)
+                if dbx.datablock_range_cls() is None:
+                    metric = int(valid)
+                else:
+                    metric = [int(v) for v in valid]
+                return metric
+            metric = self._block_value_page_(callable, topic, **blockscope)
+            block_intent_page = self.block_intent_page(topic, **blockscope)
+            block_metric_page = {kvhandle: metric[i]
+                for i, kvhandle in enumerate(block_intent_page.keys())
+            }
+            return block_metric_page
+        
+        def _block_value_page_(self, callable, topic, **blockscope):
             """
                 #TODO: move to Databuilder.block_extent_page. How to factor?  Through what overridable method?
             """
@@ -1124,84 +1192,64 @@ class DBX:
                 raise UnknownTopic(f"Unknown topic {repr(topic)} is not among {[repr(s) for s in self.topics]}")
             block_intent_page = self.block_intent_page(topic, **blockscope)
             tagblockscope = self.Tagscope(**blockscope)
-            datablock_cls = dbx.datablock_cls()
+            datablock_cls = dbx.datablock_cls
             datablock_blockroots = self.datablock_blockroots(tagblockscope)
             datablock_blockscope = datablock_cls.SCOPE(**blockscope)
             if topic == DEFAULT_TOPIC:
-                _valid = self.datablock(filesystem=self.dataspace.filesystem).valid(datablock_blockscope, datablock_blockroots)
+                _value = callable(datablock_blockscope, datablock_blockroots)
             else:
-                _valid = self.datablock(filesystem=self.dataspace.filesystem).valid(datablock_blockscope, datablock_blockroots, topic)
+                _value = callable(datablock_blockscope, datablock_blockroots, topic)
+            #DEBUG
+            #pdb.set_trace()
             if dbx.datablock_range_cls() is None:
-                valid = [_valid]
+                value = [_value]
             else:
-                valid = _valid
-            block_extent_page = {}
-            i = 0
-            for kvhandle, shard_pathset in block_intent_page.items():
-                shardscope = self._kvhandle_to_scope_(topic, kvhandle)
-                tagshardscope = self.Tagscope(**shardscope)
-                if valid[i]:
-                    block_extent_page[kvhandle] = shard_pathset
-                i += 1
-            return block_extent_page
+                value = _value
+            return value
 
+        #REMOVE
+        '''
+        @OVERRIDEN
         def _shard_extent_page_valid_(self, topic, tagshardscope, **shardscope):
-            datablock_cls = dbx.datablock_cls()
+            datablock_cls = dbx.datablock_cls
             datablock_shardscope = datablock_cls.SCOPE(**shardscope)
             datablock_shardroots = self.datablock_shardroots(tagshardscope)
             if topic == None:
                 assert not hasattr(datablock_cls, 'TOPICS'), \
                     f"__shard_extent_page_valid__: None topic when datablock_cls.TOPICS == {getattr(datablock_cls, 'TOPICS')} "
                 
-                _ = self.datablock(filesystem=self.dataspace.filesystem,).valid(datablock_shardscope, datablock_shardroots)
+                _ = self.datablock.valid(datablock_shardscope, datablock_shardroots)
             else:
-                _ = self.datablock(filesystem=self.dataspace.filesystem).valid(datablock_shardscope, datablock_shardroots, topic)
+                _ = self.datablock.valid(datablock_shardscope, datablock_shardroots, topic)
             return _
+        '''
         
-        def _block_extent_metric_(self, **scope):
-            blockscope = self._blockscope_(**scope)
-            extent = self.block_extent(**blockscope)
-            _extent_metric_book = {}
-            for topic, page in extent.items():
-                metric_page = []
-                for shardscope, _ in page:
-                    tagscope = self._tagscope_(**shardscope)
-                    shardmetric = self._shard_extent_metric_(topic, tagscope, **shardscope)
-                    #FIX: refactor via *_to_scopebook()
-                    metric_page.append((shardscope, shardmetric))
-                _extent_metric_book[topic] = Databuilder.Scopepage(metric_page)
-            extent_metric_book = Databuilder.Scopebook(_extent_metric_book)
-            return extent_metric_book
-
-        def _shard_extent_metric_(self, topic, tagshardscope, **shardscope):
-            datablock_cls = dbx.datablock_cls()
-            datablock_shardscope = datablock_cls.SCOPE(**shardscope)
-            datablock_shardroots = self.datablock_shardroots(tagshardscope)
-            if topic == None:
-                assert not hasattr(datablock_cls, 'TOPICS'), \
-                        f"_shard_extent_metric_: None topic when datablock_cls.TOPICS == {getattr(datablock_cls, 'TOPICS')} "
-                _ = self.datablock(filesystem=self.dataspace.filesystem).metric(datablock_shardscope, datablock_shardroots)
+        def check(self, result, scope, topic=None):
+            datablock_scope = dbx.datablock_cls.SCOPE(**scope)
+            if hasattr(dbx.datablock_cls, 'TOPICS'):
+                return self.datablock.check(result, datablock_scope, topic)
             else:
-                _ = self.datablock(filesystem=self.dataspace.filesystem).metric(datablock_shardscope, datablock_shardroots, topic)
-            return _
+                return self.datablock.check(result, datablock_scope)
    
-        datablock_cls = dbx.datablock_cls()
+        datablock_cls = dbx.datablock_cls
         SCOPE_fields = dataclasses.fields(datablock_cls.SCOPE)
         block_keys = [field.name for field in SCOPE_fields]
         block_defaults = {field.name: field.default  for field in SCOPE_fields if field.default != dataclasses.MISSING}
         rangecls = dbx.datablock_range_cls()
+        #DEBUG
+        print(f"DEBUG: DBX: databuilder_cls: rangecls: {rangecls}")
         if rangecls is not None:
             batch_to_shard_keys = {
-                field.name: (rangecls.singular if hasattr(rangecls, singular) else field.name) 
-                for field in SCOPE_fields if isinstance(field.type, rangecls)
+                field.name: (field.type.singular if hasattr(field.type, 'singular') else field.name) 
+                for field in SCOPE_fields if issubclass(field.type, rangecls)
             }
         else:
             batch_to_shard_keys = {}
+        #TODO: ELIMINATE: batch_to_shard_keys?
+        block_to_shard_keys = batch_to_shard_keys
 
         __module__ = DBX_PREFIX + "." + dbx._datablock_module_name
         __cls_name = datablock_cls.__name__
-        #datablock_cls = dbx.datablock_cls 
-        #datablock_kwargs = dbx.datablock_kwargs_
         if hasattr(datablock_cls, 'TOPICS'):
             topics = datablock_cls.TOPICS
         else:
@@ -1212,29 +1260,30 @@ class DBX:
                     '__module__': __module__,
                     'block_keys': block_keys, 
                     'block_defaults': block_defaults,
+                    'block_to_shard_keys': block_to_shard_keys,
                     'batch_to_shard_keys': batch_to_shard_keys,
                     '__init__': __init__,
                     '__repr__': __repr__,
                     'revision': __revision,
                     'topics': topics,
-                    #'datablock_cls': datablock_cls,
-                    #'datablock_kwargs': datablock_kwargs,
-                    'datablock': datablock,
+                    'datablock': property(datablock),
                     'datablock_blockroots': datablock_blockroots,
                     'datablock_shardroots': datablock_shardroots,
                     '_build_batch_': _build_batch_,
                     '_build_batch_request_': _build_batch_request_,
                     '_read_block_':  _read_block_,
+                    '_block_value_page_': _block_value_page_,
         }
-        databuilder_classdict['revisionspace'] = revisionspace
-        #TODO: enable
+        databuilder_classdict['revisionspace'] = property(revisionspace)
+        #TODO: #REMOVE
         #if dbx.use_alias_dataspace:
         #    databuilder_classdict['_shardspace_'] = _alias_shardspace_
         if hasattr(datablock_cls, 'valid'):
             databuilder_classdict['_block_extent_page_'] = _block_extent_page_
         if hasattr(datablock_cls, 'metric'):
-            databuilder_classdict['_shard_extent_metric_'] = _shard_extent_metric_
-
+            databuilder_classdict['_block_metric_page_'] = _block_metric_page_
+        if hasattr(datablock_cls, 'check'):
+            databuilder_classdict['check'] = check
         databuilder_class = type(__cls_name, 
                                (Databuilder,), 
                                databuilder_classdict,)
@@ -1339,7 +1388,7 @@ class DBX:
             for key, val in __kwargs.items():
                 _kwargs += f"{key}={val},\n"
             
-            build += f"{_datablock} = " + Tagger().ctor_name(dbx.datablock_cls()) + "(\n"     + \
+            build += f"{_datablock} = " + Tagger().ctor_name(dbx.datablock_cls) + "(\n"     + \
                             (f"\troots={_shardroots},\n" if len(_shardroots) > 0 else "")      + \
                             (f"\tfilesystem={_filesystem},\n" if len(_filesystem) > 0 else "") + \
                             (f"\tscope={_blockscope},\n" if len(_blockscope) > 0 else "")      + \

@@ -13,9 +13,13 @@ from datablocks.test.datablocks import (
 
 TESTLAKE = datablocks.dataspace.Dataspace(os.path.join(os.path.dirname(__file__), 'tmp')).remove().ensure()
 TEST_FILE_POOL = datablocks.FILE_POOL.clone(dataspace=TESTLAKE, throw=False)
+BASE_ACTIONS = ('build', 'read', 'show')
+CHECK = ('batch_graph', 'batch_exception')
 CLEAR = True
-DEBUG = False
+DEBUG = True
+VERBOSE = True #DEBUG
 THROW = True #DEBUG
+
 
 def _test_build_exception(dbx, topic=None, *, verbose=True, exception_cls):
     if verbose:
@@ -31,20 +35,24 @@ def _test_build_exception(dbx, topic=None, *, verbose=True, exception_cls):
     assert len(dbx.show_build_batch_graph().traceback) > 0, "Missing traceback"
         
 
-def _test(dbx, 
-          topic=None, 
+def _test(dbx,  
           *, 
-          build=True, 
-          read=False, 
-          show=True, 
+          actions=BASE_ACTIONS,
           check_batch_graph=True, 
           check_batch_exception=False, 
-          verbose=False,
+          check=CHECK,
+          verbose=VERBOSE,
           clear=CLEAR, 
           debug=DEBUG,
           throw=THROW,
 ):
-    dbx = dbx.Datablock(verbose=verbose, debug=debug).Databuilder(throw=throw, pool=datablocks.FILE_LOGGING_POOL)
+    build = 'build' in actions
+    read = 'read' in actions
+    show = 'show' in actions
+    check_batch_graph = 'batch_graph' in check
+    check_batch_exception = 'batch_exception' in check
+    
+    dbx = dbx.DBX(verbose=verbose, debug=debug,).Datablock(verbose=verbose, debug=debug).Databuilder(throw=throw, pool=datablocks.FILE_LOGGING_POOL, verbose=verbose, debug=debug)
     print()
     if verbose:
         print(f"intent: {dbx}:\n", str(dbx.intent.pretty()))
@@ -57,14 +65,23 @@ def _test(dbx,
             print(f"extent: post-build: {dbx}\n", dbx.extent.pretty())
             print(f"metric: post-build: {dbx}: \n", dbx.metric.pretty())
     if read:
-        if topic:
-            _ = dbx.read(topic)
-            if verbose:
-                print(_)
+        if debug:
+            print(f"DEBUG: dbx.checker: {dbx.checker}")
+        if debug:
+            print(f"DEBUG: dbx.datablock_cls: {dbx.datablock_cls}")
+        if hasattr(dbx.datablock_cls, 'TOPICS'):
+            for topic in dbx.topics:
+                r = dbx.read(topic)
+                if verbose:
+                    print(r)
+                if dbx.checker is not None:
+                    dbx.checker(r, dbx.scope, topic)
         else:
-            _ = dbx.read()
+            r = dbx.read()
+            if dbx.checker is not None:
+                dbx.checker(r, dbx.scope)
             if verbose:
-                print(_)
+                print(r)
     if show:
         dbx.show_records()
         dbx.show_record_columns()
@@ -103,20 +120,28 @@ def _test(dbx,
             print(f">>> Cleared")
 
 
-def test_pandas_datablock():
-    pandas_datablock = datablocks.DBX('datablocks.test.datablocks.PandasArray', 'pdbk')\
+def test_pandas_array():
+    pandas_datablock = datablocks.DBX('datablocks.test.datablocks.PandasArray', 'pandas_array')\
+        .Databuilder(dataspace=TESTLAKE,)
+    _test(pandas_datablock, check_batch_graph=True)
+
+def test_pandas_array_block():
+    pandas_datablock = datablocks.DBX('datablocks.test.datablocks.PandasArrayBlock', 'pandas_array_block')\
+        .Databuilder(dataspace=TESTLAKE,)
+    _test(pandas_datablock, check_batch_graph=True)
+
+
+def test_pandas_array_book():
+    pandas_datablock = datablocks.DBX('datablocks.test.datablocks.PandasArrayBook', 'pandas_array_book')\
         .Databuilder(dataspace=TESTLAKE)
     _test(pandas_datablock, check_batch_graph=True)
 
-def test_pandas_datablock_verbose():
-    pandas_datablock = datablocks.DBX('datablocks.test.datablocks.PandasArray', 'pdbk')\
-        .Databuilder(dataspace=TESTLAKE)
-    _test(pandas_datablock, check_batch_graph=True, verbose=True)
 
 def test_pandas_build_exception():
     pexc = datablocks.DBX('datablocks.test.datablocks.BuildExceptionDatablock', 'pexc')\
             .Databuilder(dataspace=TESTLAKE, pool=TEST_FILE_POOL)
     _test_build_exception(pexc, exception_cls=BuildException)
+
 
 def test_scope():
     datablocks.dbx.DBX('datablocks.test.datablocks.ReadExceptionDatablock').scope    
