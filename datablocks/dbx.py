@@ -94,11 +94,14 @@ class Datablock:
                 singular: str = 'element'
                 ...
 
-            def check(self, result: Any, scope: SCOPE, [, topic: str]):
+            def check_read_result(self, scope, *, result):
                 '''
-                    Validate if result could have been produced by sequence
-                        .build(scope, roots,),
-                        .read(scope, roots[, topic])
+                    Validate if result could have been produced by build.
+                '''
+            
+            def check_extent_scopes(self, scope, extent_scopes):
+                '''
+                    Validate if result could have been produced by build.
                 '''
 
             def valid(self, blockscope, blockroots[, topic]) -> bool|list[bool]:
@@ -138,7 +141,8 @@ class Datablock:
     def range(cls):
         rangecls = RANGE if not hasattr(cls.SCOPE, 'RANGE') else cls.SCOPE.RANGE
         SCOPE_fields = dataclasses.fields(cls.SCOPE)
-        has_ranges = all(isinstance(field.type, rangecls) for field in SCOPE_fields)
+        has_ranges_dict = {field: isinstance(field.type, rangecls) for field in SCOPE_fields}
+        has_ranges = any(has_ranges_dict.values())
         if not has_ranges:
             rangecls = None
         return rangecls
@@ -149,6 +153,15 @@ class Datablock:
     def read(self, blockscope, blockroots, topic=None):
         raise NotImplementedError
 
+    def summary(self, result):
+        '''
+            Ensure that build() returns None or something serializable, 
+            if no summary() is defined.  Otherwise, post mortem analysis
+            via show_build_graph() etc. will be highly difficult or 
+            impossible.
+        '''
+        raise NotImplemented
+
     def valid(self, blockscope, blockroots, topic=None):
         if self.range() is not None:
             raise ValueError("This basic version of 'valid()' can only handle shardscopes")
@@ -156,7 +169,7 @@ class Datablock:
             path = self.path(shardscope, shardroots, topic)
             _ = self.filesystem.exists(path)
         else:
-            path = self.path(shardscope, shardroots)
+            path = self.path(blockscope, blockroots)
             _ = self.filesystem.exists(path)
         return _            
     
@@ -192,7 +205,7 @@ class Datablock:
             Assume or check that there are as many blockroots as there are shards in blockscope,
             then form [self.path(None, blockroot[, topic]) for blockroot in blockroots].
         '''
-        ...
+        raise NotImplementedError
 
     def print_verbose(self, s):
         if self.verbose:
@@ -377,6 +390,16 @@ class DBX:
             if self.datablock_scope_kwargs_ is None:
                 self.datablock_scope_kwargs_ = {}
 
+    @staticmethod
+    def scopes_equal(s1, s2):
+        # TODO: consistency check: sha256 alias must be unique for a given revision or match scope
+        if set(s1.keys()) != (s2.keys()):
+            return False
+        for key in s1.keys():
+            if s1[key] != s2[key]:
+                return False
+        return True
+
     def __init__(self, 
                 spec: Optional[Union[type, str]] = None, #Datablock cls or clstr
                 alias=None,
@@ -448,6 +471,8 @@ class DBX:
         self._datablock_clstr = None
         self._datablock_clsname = None
         self._datablock_cls = None
+        self._datablock = None
+        self._databuilder = None
 
         if self.spec is not None:
             if isinstance(self.spec, str):
@@ -495,7 +520,6 @@ class DBX:
 
     def clone(self, *args, **kwargs):
         return self.DBX(*args, **kwargs)
-
 
     def with_pic(self, pic=True):
         _ = self.clone(pic=pic)
@@ -547,14 +571,21 @@ class DBX:
 
     @property
     def databuilder(self):
-        databuilder_cls = self.databuilder_cls()
-        databuilder_kwargs = copy.copy(self.databuilder_kwargs_)
-        if 'dataspace' in databuilder_kwargs:
-            databuilder_kwargs['dataspace'] = databuilder_kwargs['dataspace'].with_pic(True) #TODO: why with_pick(True)?
-        databuilder = databuilder_cls(self.alias, 
-                                      build_block_request_lifecycle_callback=self._build_block_request_lifecycle_callback_,
-                                      **databuilder_kwargs)
-        return databuilder
+        if self._databuilder is None:
+            databuilder_cls = self.databuilder_cls()
+            databuilder_kwargs = copy.copy(self.databuilder_kwargs_)
+            if 'dataspace' in databuilder_kwargs:
+                databuilder_kwargs['dataspace'] = databuilder_kwargs['dataspace'].with_pic(True) #TODO: why with_pick(True)?
+            self._databuilder = databuilder_cls(self.alias, 
+                                        build_block_request_lifecycle_callback=self._build_block_request_lifecycle_callback_,
+                                        **databuilder_kwargs)
+        return self._databuilder
+
+    @property
+    def datablock(self):
+        if self._datablock is None:
+            self._datablock = self.databuilder.datablock
+        return self._datablock
 
     @property
     def scope_kwargs(self):
@@ -576,19 +607,11 @@ class DBX:
     @property
     def scope(self) -> dict:
         """
-            #TODO: -> datablock_cls.SCOPE
-            #TODO: can datablock_cls.SCOPE be serialized/deserialized in transcript?
+            #TODO: DBX.datablock_scope -> DBX.SCOPE, DBX.SCOPE -> DBX.scope, DBX.scope -> DBX.SCOPE.asdict()
         """
         if self._scope is None:
             import datablocks #TODO: why the local import?
-            # TODO: consistency check: sha256 alias must be unique for a given revision or match scope
-            def scopes_equal(s1, s2):
-                if set(s1.keys()) != (s2.keys()):
-                    return False
-                for key in s1.keys():
-                    if s1[key] != s2[key]:
-                        return False
-                return True
+            
             scope = None
             record_scope = self.record_scope()
             if len(self.scope_kwargs) > 0:
@@ -604,10 +627,15 @@ class DBX:
                 if self.verbose:
                     print(f"{self}: scope: default scope: {scope}")
             scope = self.databuilder._blockscope_(**scope)
-            if scope is not None and record_scope is not None and not scopes_equal(scope, record_scope):
+            if scope is not None and record_scope is not None and not self.scopes_equal(scope, record_scope):
                 raise ValueError(f"Attempt to overwrite record scope {record_scope} with {scope} for {self.datablock_cls} alias {self.alias}")
             self._scope = scope
         return self._scope
+
+    @property
+    def datablock_scope(self):
+        #TODO: make this primary and def scope() derived using asdict()
+        return self.datablock_cls.SCOPE(**self.scope)
     
     @property
     def tagscope(self):
@@ -716,15 +744,44 @@ class DBX:
         _ = self.extent
         return _
 
+    def extent_scopes(self):
+        tagscope = self.databuilder.Tagscope(**self.scope)
+        return self.databuilder.extent_scope(**tagscope)
+
+    def shortfall_scopes(self):
+        tagscope = self.databuilder.Tagscope(**self.scope)
+        return self.databuilder.shortfall_scope(**tagscope)
+
+    def scope_roots(self, topic=None, **scope):
+        tagscope = self.databuilder.Tagscope(**scope)
+        roots = self.databuilder.datablock_blockroots(tagscope)
+        if topic is not None:
+            roots = roots[topic]
+        return roots
+
     @property
     def roots(self):
         tagscope = self.databuilder.Tagscope(**self.scope)
         return self.databuilder.datablock_blockroots(tagscope)
 
     @property
-    def checker(self):
-        if hasattr(self.databuilder, 'check'):
-            return self.databuilder.check
+    def check_extent_scopes(self,):
+        if hasattr(self.datablock, 'check_extent_scopes'):
+            def check_extent_scopes(scope, extent_scopes):
+                return self.datablock.check_extent_scopes(scope, extent_scopes,)
+            return check_extent_scopes
+
+    @property
+    def check_read_result(self,):
+        # This could be done exclusively on the Datablock side, but we are putting all the boilerlate stuff here,
+        # reducing the Datablock-specific code.
+        if hasattr(self.datablock, 'check_read_result'):
+            def check_read_result(topic=None, *, result):
+                if hasattr(self.datablock, 'TOPICS'):
+                    return self.datablock.check_read_result(self.datablock_scope, topic, result=result)
+                else:
+                    return self.datablock.check_read_result(self.datablock_scope, result=result)
+            return check_read_result
 
     BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'revision', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
 
@@ -1074,9 +1131,12 @@ class DBX:
             _ = f"{repr(dbx)}.databuilder"
             return _
 
-        def datablock(self):
-            datablock_cls = dbx.datablock_cls
-            self._datablock = datablock_cls(self.dataspace.filesystem, **dbx.datablock_kwargs_)
+        def datablock(self): # will be wrapped in property()
+            if self._datablock is None:
+                #DEBUG
+                #pdb.set_trace()
+                datablock_cls = dbx.datablock_cls
+                self._datablock = datablock_cls(self.dataspace.filesystem, **dbx.datablock_kwargs_)
             return self._datablock
 
         def revisionspace(self):
@@ -1152,7 +1212,7 @@ class DBX:
             datablock_blockroots = self.datablock_blockroots(tagblockscope)
             datablock_blockscope = datablock_cls.SCOPE(**blockscope) # to ensure upconversion to RANGE wherever necessary
             if topic == None:
-                assert not hasattr(datablock_cls, 'TOPICS'), f"_read_block_: None topic when datablock().TOPICS == {datablock_cls.TOPICS} "
+                assert not hasattr(datablock_cls, 'TOPICS'), f"_read_block_: None topic when datablock.TOPICS == {datablock_cls.TOPICS} "
                 _ = self.datablock.read(datablock_blockscope, datablock_blockroots)
             else:
                 _ = self.datablock.read(datablock_blockscope, datablock_blockroots, topic)
@@ -1206,47 +1266,26 @@ class DBX:
             else:
                 value = _value
             return value
-
-        #REMOVE
-        '''
-        @OVERRIDEN
-        def _shard_extent_page_valid_(self, topic, tagshardscope, **shardscope):
-            datablock_cls = dbx.datablock_cls
-            datablock_shardscope = datablock_cls.SCOPE(**shardscope)
-            datablock_shardroots = self.datablock_shardroots(tagshardscope)
-            if topic == None:
-                assert not hasattr(datablock_cls, 'TOPICS'), \
-                    f"__shard_extent_page_valid__: None topic when datablock_cls.TOPICS == {getattr(datablock_cls, 'TOPICS')} "
-                
-                _ = self.datablock.valid(datablock_shardscope, datablock_shardroots)
-            else:
-                _ = self.datablock.valid(datablock_shardscope, datablock_shardroots, topic)
-            return _
-        '''
         
-        def check(self, result, scope, topic=None):
-            datablock_scope = dbx.datablock_cls.SCOPE(**scope)
-            if hasattr(dbx.datablock_cls, 'TOPICS'):
-                return self.datablock.check(result, datablock_scope, topic)
-            else:
-                return self.datablock.check(result, datablock_scope)
-   
         datablock_cls = dbx.datablock_cls
         SCOPE_fields = dataclasses.fields(datablock_cls.SCOPE)
         block_keys = [field.name for field in SCOPE_fields]
         block_defaults = {field.name: field.default  for field in SCOPE_fields if field.default != dataclasses.MISSING}
         rangecls = dbx.datablock_range_cls()
         #DEBUG
-        print(f"DEBUG: DBX: databuilder_cls: rangecls: {rangecls}")
+        #print(f"DEBUG: DBX: databuilder_cls: rangecls: {rangecls}")
         if rangecls is not None:
-            batch_to_shard_keys = {
+            block_to_shard_keys = {
                 field.name: (field.type.singular if hasattr(field.type, 'singular') else field.name) 
                 for field in SCOPE_fields if issubclass(field.type, rangecls)
             }
         else:
+            block_to_shard_keys = {}
+        if len(block_to_shard_keys) > 0:
+            key = next(iter(block_to_shard_keys.keys()))
+            batch_to_shard_keys = {key: block_to_shard_keys[key]}
+        else:
             batch_to_shard_keys = {}
-        #TODO: ELIMINATE: batch_to_shard_keys?
-        block_to_shard_keys = batch_to_shard_keys
 
         __module__ = DBX_PREFIX + "." + dbx._datablock_module_name
         __cls_name = datablock_cls.__name__
@@ -1282,8 +1321,6 @@ class DBX:
             databuilder_classdict['_block_extent_page_'] = _block_extent_page_
         if hasattr(datablock_cls, 'metric'):
             databuilder_classdict['_block_metric_page_'] = _block_metric_page_
-        if hasattr(datablock_cls, 'check'):
-            databuilder_classdict['check'] = check
         databuilder_class = type(__cls_name, 
                                (Databuilder,), 
                                databuilder_classdict,)
