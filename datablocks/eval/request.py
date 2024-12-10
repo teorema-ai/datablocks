@@ -488,7 +488,7 @@ class Request:
     # Use .set()
     @DEPRECATED
     def with_settings(self, **settings):
-        request = copy.deepcopy(self)
+        request = copy.copy(self)
         request.settings.update(**settings)
         return request
 
@@ -745,7 +745,7 @@ class Report:
                        completed=(report.status in [Report.STATUS.SUCCEEDED, Report.STATUS.FAILED]),
                        success=(report.status in [Report.STATUS.SUCCEEDED]),
                        status=str(report.status),
-                       exception=str(report.exception),
+                       exception=repr(report.exception),
                        traceback=utils.exc_traceback_string(report.traceback),
                        start_time=str(report.start_time),
                        done_time=str(report.done_time),
@@ -754,9 +754,8 @@ class Report:
                        logspace=str(report.logspace),
                        args_transcripts=args_transcripts,
                        kwargs_transcripts=kwargs_transcripts,
-                       #request=tagger.str_object(report.request),
                        request=tagger.repr_object(report.request),
-                       )
+        )
         total_logs = 0
         total_logs += sum([s['logs_total'] for s in args_transcripts if 'logs_total' in s])
         total_logs += sum([s['logs_total'] for s in kwargs_transcripts.values() if 'logs_total' in s])
@@ -1075,7 +1074,7 @@ class BLOCK:
 
         def clone(self):
             requester = BLOCK.Request(self.func, *self.args, **self.kwargs)
-            requester.functors = copy.deepcopy(self.functors)
+            requester.functors = copy.copy(self.functors)
             return requester
 
         def apply(self, functor):
@@ -1134,7 +1133,10 @@ class Graph:
             transcript = report_or_transcript
         self.transcript = transcript
         if isinstance(self.transcript, str):
-            self.transcript = _eval(self.transcript)
+            try:
+                self.transcript = _eval(self.transcript)
+            except Exception as e:
+                raise(e)
         self.indent = indent
         self.request_max_len = request_max_len
         self.result_max_len = result_max_len
