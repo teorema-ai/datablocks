@@ -47,10 +47,8 @@ class UnknownTopic(DatabuilderException):
     ...
 
 
-T = TypeVar('T')
-class RANGE(Generic[T], tuple):
-    def __init__(self, *args):
-        tuple.__init__(args)
+class RANGE(tuple):
+    ...
         
     
 class Anchored:
@@ -377,7 +375,7 @@ class Databuilder(Anchored, Scoped):
         block_shortfall_page = {}
         for intent_kvhandle, intent_shard_pathset in block_intent_page.items():
             if isinstance(intent_shard_pathset, str):
-                if intent_kvhandle not in block_extent_page or block_extent_page[kvhandle] != intent_shard_pathset:
+                if intent_kvhandle not in block_extent_page or block_extent_page[intent_kvhandle] != intent_shard_pathset:
                     shortfall_shard_pathset = intent_shard_pathset
                 else:
                     shortfall_shard_pathset = []
@@ -612,9 +610,8 @@ class Databuilder(Anchored, Scoped):
             hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
             self.revisionspace.subspace(*hivechain).release()
 
-    @OVERRIDE
-    def build_block_request(self, **scope):
-        blockscope = self._blockscope_(**scope)
+    def shortfall_scopes(self, **tagscope):
+        blockscope = self._blockscope_(**tagscope)
         if self.rebuild:
             block_shortfall_book = self.block_intent_book(**blockscope)
         else:
@@ -622,11 +619,34 @@ class Databuilder(Anchored, Scoped):
         block_shortfall_book_kvhandles_lists = [list(block_shortfall_book[topic].keys()) for topic in self.topics]
         block_shortfall_book_kvhandles_list = [_ for __ in block_shortfall_book_kvhandles_lists for _ in __]
         block_shortfall_book_kvhandles = list(set(block_shortfall_book_kvhandles_list))
-
-        shortfall_batchscope_list = \
+        #
+        _shortfall_batchscope_list = \
             self._kvhandles_to_batches_(*block_shortfall_book_kvhandles)
         shortfall_batchscope_list = \
-            [{k: blockscope[k] for k in tscope.keys()} for tscope in shortfall_batchscope_list]
+            [{k: blockscope[k] for k in tscope.keys()} for tscope in _shortfall_batchscope_list]
+        return shortfall_batchscope_list
+
+    def extent_scopes(self, **tagscope):
+        blockscope = self._blockscope_(**tagscope)
+        if self.rebuild:
+            return []
+        else:
+            block_extent_book = self.block_extent_book(**blockscope)
+        block_extent_book_kvhandles_lists = [list(block_extent_book[topic].keys()) for topic in self.topics]
+        block_extent_book_kvhandles_list = [_ for __ in block_extent_book_kvhandles_lists for _ in __]
+        block_extent_book_kvhandles = list(set(block_extent_book_kvhandles_list))
+        #
+        _extent_batchscope_list = \
+            self._kvhandles_to_batches_(*block_extent_book_kvhandles)
+        extent_batchscope_list = \
+            [{k: blockscope[k] for k in tscope.keys()} for tscope in _extent_batchscope_list]
+        return extent_batchscope_list
+
+    @OVERRIDE
+    def build_block_request(self, **scope):
+        #TODO: scope -> tagscope?
+        blockscope = self._blockscope_(**scope)
+        shortfall_batchscope_list = self.shortfall_scopes(**scope)
         if self.verbose:
             if len(shortfall_batchscope_list) == 0:
                 print(f"Databuilder: build_block_request: no shortfalls found: returning extent")
