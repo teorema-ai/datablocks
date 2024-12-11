@@ -5,6 +5,7 @@ from dataclasses import dataclass, asdict, replace, field
 import functools
 import hashlib
 import importlib
+from importlib import reload
 import logging
 import os
 import pdb
@@ -148,10 +149,10 @@ class Datablock:
         return rangecls
 
     def build(self, blockscope, blockroots):
-        raise NotImplementedError
+        raise NotImplementedError()
 
     def read(self, blockscope, blockroots, topic=None):
-        raise NotImplementedError
+        raise NotImplementedError()
 
     def summary(self, result):
         '''
@@ -160,13 +161,13 @@ class Datablock:
             via show_build_graph() etc. will be highly difficult or 
             impossible.
         '''
-        raise NotImplemented
+        raise NotImplemented()
 
     def valid(self, blockscope, blockroots, topic=None):
         if self.range() is not None:
             raise ValueError("This basic version of 'valid()' can only handle shardscopes")
         if hasattr(self, 'TOPICS'):
-            path = self.path(shardscope, shardroots, topic)
+            path = self.path(blockscope, blockroots, topic)
             _ = self.filesystem.exists(path)
         else:
             path = self.path(blockscope, blockroots)
@@ -186,7 +187,7 @@ class Datablock:
             metric = valid_to_metric(self.valid(blockscope, blockroots, topic))
         return metric
 
-    def path(self, _, shardroots, topic=None):
+    def path(self, scope_unused, shardroots, topic=None):
         if topic is not None:
             if shardroots is None:
                 path = os.path.join(os.getcwd(), self.TOPICS[topic])
@@ -560,6 +561,10 @@ class DBX:
                 super().__getattribute__(attr)
         except:
             return super().__getattribute__(attr)
+
+    def reload(self):
+        self._datablock_cls = None
+        return self
 
     @property
     def datablock_cls(self):
