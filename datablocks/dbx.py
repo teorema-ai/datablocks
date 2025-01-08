@@ -231,7 +231,7 @@ class DBX:
 
     class Path(str):
         def __tag__(self):
-            return self.replace('/', ':')
+            return self.replace('/', '|')
         def __str__(self):
             return self.__tag__()
         def __repr__(self):
