@@ -963,7 +963,6 @@ class DBX:
 
     def UNSAFE_clear(self):
         request = self.UNSAFE_clear_request()
-        self.UNSAFE_clear_records()
         _ = request.compute()
         return _
 
