@@ -599,7 +599,7 @@ class DBX:
     def record_scope(self):
         scope = None
         if self.databuilder.alias is not None:
-            record = self.show_named_record(alias=self.databuilder.alias, revision=self.revision, stage='BUILD_END') 
+            record = self.show_named_exec_record(alias=self.databuilder.alias, revision=self.revision, stage='BUILD_END') 
             if record is not None:
                 try:
                     scope = dbx_eval(record['scope'])
@@ -658,17 +658,9 @@ class DBX:
             topics = [DEFAULT_TOPIC]
         return topics
 
-    def build(self):
-        try:
-            request = self.build_request()
-            response = request.evaluate() # need .evaluate() for its response rather than just .compute to examine status later
-            _ = response.result() # extract result to force computation
-        except UnknownTopic as e:
-            raise ValueError(f"Unknown topic error: wrong/stale scope?") from e
-        if self.verbose and not response.succeeded:
-            print(f"Build failed.  Try running with .Datablock(throw=True) or examine the build using these methods:\n"
-                  f"\t.show_records()\n"
-                  f"\t.show_record()\n"
+    __build_failure_doc__ = """Try running with .Datablock(throw=True) or examine the build using these methods:\n"
+                  f"\t.show_exec_records()\n"
+                  f"\t.show_exec_record()\n"
                   f"\t.show_build_graph()\n"
                   f"\t.show_build_batch_graph()\n"
                   f"\t.show_build_batch_graph().log()\n"
@@ -676,7 +668,18 @@ class DBX:
                   
                   f"If the last build record has status 'STATUS.RUNNING', then the build failed and exception was not captured, indicating a DBX bug.\n"
                   f"In this case .Datablock(throw=True) or .Datablock(pool=FILE_LOGGING_POOL) followed by .show_build_batch_graph().log() may be the only useful debugging methods."
-            )
+    """
+    def build(self):
+        """In case of failure: 
+        """ + __build_failure_doc__
+        try:
+            request = self.build_request()
+            response = request.evaluate() # need .evaluate() for its response rather than just .compute to examine status later
+            _ = response.result() # extract result to force computation
+        except UnknownTopic as e:
+            raise ValueError(f"Unknown topic error: wrong/stale scope?") from e
+        if self.verbose and not response.succeeded:
+            print(f"Build failed.  {__build_failure_doc__}")
         return f"SUCCESS: {response.succeeded}"
 
     def build_request(self):
@@ -790,9 +793,9 @@ class DBX:
 
     BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'revision', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
 
-    def show_records(self, *, stage='ALL', full=False, columns=None, all=False, tail=5):
+    def show_exec_records(self, *, stage='ALL', full=False, columns=None, all=False, tail=5):
         """
-        All build records for a given Databuilder class, irrespective of revision (see `show_record()` for retrieval of more specific information).
+        All build records for a given Databuilder class, irrespective of revision (see `show_exec_record()` for retrieval of more specific information).
         'all=True' forces 'tail=None'
         """
         short = not full
@@ -850,15 +853,15 @@ class DBX:
             __frame_ = __frame
         return __frame_
 
-    def show_record_columns(self, *, full=True, **ignored):
-        frame = self.show_records(full=full)
+    def show_exec_record_columns(self, *, full=True, **ignored):
+        frame = self.show_exec_records(full=full)
         columns = frame.columns
         return columns
 
-    def show_record(self, record=None, *, full=False, stage='ALL'):
+    def show_exec_record(self, record=None, *, full=False, stage='ALL'):
         import datablocks
         try:
-            records = self.show_records(full=full, stage=stage)
+            records = self.show_exec_records(full=full, stage=stage)
         except:
             return None
         if len(records) == 0:
@@ -871,9 +874,9 @@ class DBX:
             _record = None
         return _record
 
-    def show_named_record(self, *, alias=None, revision=None, full=False, stage=None):
+    def show_named_exec_record(self, *, alias=None, revision=None, full=False, stage=None):
         import datablocks # needed for `eval`
-        records = self.show_records(full=full, stage=stage)
+        records = self.show_exec_records(full=full, stage=stage)
         if self.debug:
             print(f"show_name_record: databuilder {self}: revision: {repr(revision)}, alias: {repr(alias)}: retrieved records: len: {len(records)}:\n{records}")
         if len(records) == 0:
@@ -896,14 +899,46 @@ class DBX:
         else:
             record = None
         return record
+
+    def show_build_batch_graph(self, record=None, *, batch=0, **graph_kwargs):
+        g = self.show_build_graph(record=record, node=(batch,), **graph_kwargs) # argument number `batch` to the outermost Request AND
+        return g
     
-    def show_build_graph(self, record=None, *, node=tuple(), show_=('logpath', 'logpath_status', 'exception'), show=tuple(), **kwargs):
+    def show_build_batch_count(self, record=None):
+        g = self.show_build_graph(record=record) 
+        if g is None:
+            nbatches = None
+        else:
+            nbatches = len(g.args)-1 # number of arguments less one to the outermost Request AND(batch_request[, batch_request, ...], extent_request)
+        return nbatches
+    
+    def show_exec_transcript(self, record=None, **ignored):
+        _record = self.show_exec_record(record=record, full=True)
+        if _record is None:
+            summary = None
+        else:
+            summary = _record['report_transcript']
+        return summary
+
+    def show_exec_scope(self, record=None, **ignored):
+        _record = self.show_exec_record(record=record, full=True)
+        if _record is not None:
+            scopestr = _record['scope']
+            try:
+                scope = dbx_eval(scopestr)
+            except DBXEvalError as ee:
+                raise ValueError(f"Failed to parse build scope {scopestr}") from ee
+        else:
+            scope = None
+        return scope
+
+    def show_exec_graph(self, record=None, *, stage='ALL', node=tuple(), show_=('logpath', 'logpath_status', 'exception'), show=tuple(), **kwargs):
         if not isinstance(node, Iterable):
             node = (node,)
-        _record = self.show_record(record=record, full=True, stage='BUILD_END')
+        _record = self.show_exec_record(record=record, full=True, stage=stage)
         if _record is None:
             if self.verbose:
-                print(f"WARNING: show_build_graph(): unable to retrieve a build record, returning None")
+                print(f"WARNING: show_exec_graph(): unable to retrieve an exec record, returning None")
             return None
         _transcript = _record['report_transcript']
         if _transcript is None:
@@ -920,38 +955,9 @@ class DBX:
             graph = _graph
         return graph
 
-    def show_build_batch_graph(self, record=None, *, batch=0, **graph_kwargs):
-        g = self.show_build_graph(record=record, node=(batch,), **graph_kwargs) # argument number `batch` to the outermost Request AND
-        return g
-    
-    def show_build_batch_count(self, record=None):
-        g = self.show_build_graph(record=record) 
-        if g is None:
-            nbatches = None
-        else:
-            nbatches = len(g.args)-1 # number of arguments less one to the outermost Request AND(batch_request[, batch_request, ...], extent_request)
-        return nbatches
-    
-    def show_build_transcript(self, record=None, **ignored):
-        _record = self.show_record(record=record, full=True)
-        if _record is None:
-            summary = None
-        else:
-            summary = _record['report_transcript']
-        return summary
+    def show_build_graph(self, record=None, *, node=tuple(), show_=('logpath', 'logpath_status', 'exception'), show=tuple(), **kwargs):
+        return show_exec_graph(record, node=node, stage='BUILD_END', show_=show_, show=tuple(), **kwargs)
 
-    def show_build_scope(self, record=None, **ignored):
-        _record = self.show_record(record=record, full=True)
-        if _record is not None:
-            scopestr = _record['scope']
-            try:
-                scope = dbx_eval(scopestr)
-            except DBXEvalError as ee:
-                raise ValueError(f"Failed to parse build scope {scopestr}") from ee
-        else:
-            scope = None
-        return scope
-    
     def UNSAFE_clear_records(self):
         self._recordspace_().remove()
     
