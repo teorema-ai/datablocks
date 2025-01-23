@@ -552,11 +552,39 @@ def gitrepostate(path, revision, *, verbose=False):
                     print(f"Restored git repo {path} to branch '{branch}'")
 
 
-
 class RepoMixin:
     def setup_repo(self):
         verbose = False if not getattr(self, 'revision') else self.revision
         setup_repo(self.repo, self.revision)
-    
+
+
+def sprint(x, indent=0, *, max_list_len=0):
+    prefix = "".join(['\t']*indent)
+    if isinstance(x, dict):
+        s = ""
+        for k, v in x.items():
+            s += f"{prefix}{k}: "
+            if isinstance(v, dict) or isinstance(v, list):
+                s += "\n" + sprint(v, indent=indent+1, max_list_len=max_list_len)
+            else:
+                s += f"{sprint(v, indent=indent+1, max_list_len=max_list_len)}"
+            s += "\n"
+    elif isinstance(x, list) and len(x) > max_list_len:
+        s  = f"{prefix}[\n"
+        for i in x:
+            s += f"{sprint(i, indent+1, max_list_len=max_list_len)},\n"
+        s += f"{prefix}]"
+    else:
+        s = f"{prefix}{x}"
+    return s
+
+
+def pprint(x, indent=0):
+    if x is not None:
+        print(sprint(x, indent=indent))
+
+
+
+
 
 

@@ -282,8 +282,6 @@ class Databuilder(Anchored, Scoped):
         self.alias = alias
         self.dataspace = dataspace
         self._tmpspace = tmpspace
-        self.anchorspace = dataspace.subspace(*self.anchorchain)
-        #self.revisionspace = self.anchorspace.subspace(f"revision={str(self.revision)}",)
         self.lock_pages = lock_pages
         self.throw = throw
         self.rebuild = rebuild
@@ -325,14 +323,17 @@ class Databuilder(Anchored, Scoped):
         else:
             repr = tag.Tagger().tag_ctor(self.__class__, [], {})
 
+    def get_anchorspace(self):
+        return self.dataspace.subspace(*self.anchorchain).subspace(f"@{str(self.revision)}",)
+
     @property
-    def revisionspace(self):
-        return self.anchorspace.subspace(f"revision={str(self.revision)}",)
+    def anchorspace(self):
+        return self.get_anchorspace()
 
     @property
     def tmpspace(self):
         if self._tmpspace is None:
-            self._tmpspace = self.revisionspace.temporary(self.revisionspace.subspace('tmp').ensure().root)
+            self._tmpspace = self.anchorspace.temporary(self.anchorspace.subspace('tmp').ensure().root)
         return self._tmpspace
 
     def block_intent_page(self, topic, **blockscope):
@@ -359,7 +360,7 @@ class Databuilder(Anchored, Scoped):
             shardscope = self._kvhandle_to_scope_(topic, kvhandle)
             tagscope = self._tagscope_(**shardscope)
             shard_pathset = self._shardspace_(topic, **tagscope).root
-            valid = self.revisionspace.filesystem.isdir(shard_pathset)
+            valid = self.anchorspace.filesystem.isdir(shard_pathset)
             if valid:
                 block_extent_page[kvhandle] = shard_pathset
         return block_extent_page
@@ -505,7 +506,7 @@ class Databuilder(Anchored, Scoped):
         #TODO: `scope_to_hvhandle` with topic==None must generate an hvhandle with no topic head
         tagshard = self._tagscope_(**shard) #TODO: #REMOVE?: redundant, since the input shard is part of a tagscope
         hvhandle = self._scope_to_hvhandle_(topic, **tagshard)
-        subspace = self.revisionspace.subspace(*hvhandle)
+        subspace = self.anchorspace.subspace(*hvhandle)
         if self.debug:
             print(f"SHARDSPACE: formed for topic {repr(topic)} and shard with tag {tagshard}: {subspace}")
         return subspace
@@ -582,7 +583,7 @@ class Databuilder(Anchored, Scoped):
     #TODO: to Scoped?
     def _kvhandle_to_dirpath(self, topic, kvhandle):
         datachain = self._kvhandle_to_hvhandle_(topic, kvhandle)
-        subspace = self.revisionspace.subspace(*datachain)
+        subspace = self.anchorspace.subspace(*datachain)
         path = subspace.root
         return path
     
@@ -602,13 +603,13 @@ class Databuilder(Anchored, Scoped):
     def _lock_kvhandle(self, topic, kvhandle):
         if self.lock_pages:
             hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
-            self.revisionspace.subspace(*hivechain).acquire()
+            self.anchorspace.subspace(*hivechain).acquire()
 
     #TODO: to Scoped?
     def _unlock_kvhandle(self, topic, kvhandle):
         if self.lock_pages:
             hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
-            self.revisionspace.subspace(*hivechain).release()
+            self.anchorspace.subspace(*hivechain).release()
 
     def shortfall_scopes(self, **tagscope):
         blockscope = self._blockscope_(**tagscope)
@@ -686,7 +687,7 @@ class Databuilder(Anchored, Scoped):
         """
             # tagscope is necessary since batchscope will be expanded before being passed to _build_batch_
         """
-        self.revisionspace.ensure()
+        self.anchorspace.ensure()
         return Request(self._build_batch_, tagscope, **batchscope)
 
     @OVERRIDE

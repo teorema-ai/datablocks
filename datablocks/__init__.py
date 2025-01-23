@@ -15,25 +15,7 @@ logging.basicConfig(level=DATABLOCKS_LOG_LEVEL)
 from .dataspace import Dataspace, DATABLOCKS_DATALAKE, DATABLOCKS_HOMELAKE
 from .dbx import *
 
-
-def sprint(x, indent=0):
-    prefix = "".join(['\t']*indent)
-    if isinstance(x, dict):
-        s = ""
-        for k, v in x.items():
-            s += f"{prefix}{k}: "
-            if isinstance(v, dict):
-                s += "\n" + sprint(v, indent=indent+1)
-            else:
-                s += f"{v}"
-            s += "\n"
-    else:
-        s = f"{prefix}{x}"
-    return s
-
-
-def pprint(x, indent=0):
-    print(sprint(x, indent=indent))
+_eval_ = __builtins__['eval']
 
 
 def print_usage(*, console=True):
@@ -56,14 +38,40 @@ def debug_print(argstr=None):
     pprint(debug(argstr))
 
 
+def import_mod(path, globals, locals):
+    path_parts = path.split('.')
+    for i in range(1, len(path_parts)+1):
+        _path = '.'.join(path_parts[:i])
+        module = __import__(_path, globals, locals)
+        globals[_path] = module
+
+
+def export(string):
+    ss = [s for s in [s.strip() for s in string.split('export ')] if len(s) > 0]
+    for s in ss:
+        key, val = s.split('=')
+        os.environ[key] = _eval_(expand_strings(val))
+
+
+def expand_strings(s):
+    #DEBUG
+    #pdb.set_trace()
+    stringex = re.compile("""\$\{[^\{\}\$]*\}""")
+    while not done:
+        #!
+        ms = list(stringex.finditer(s))
+        for m in ms:
+            key = m.group()[2:-1]
+            shead = s[:m.start()]
+            smid = os.environ[key]
+            stail = s[m.end():]
+            s = shead + smid + stail
+    return s
+
+
 def exec(argstr=None, *, debug=False):
     import datablocks.dbx
-    def import_mod(path):
-        path_parts = path.split('.')
-        for i in range(1, len(path_parts)+1):
-            _path = '.'.join(path_parts[:i])
-            module = __import__(_path, globals(), locals())
-            globals()[_path] = module
+    
     if argstr is None:
         console = True
         if len(sys.argv) > 2:
@@ -83,7 +91,6 @@ def exec(argstr=None, *, debug=False):
         else:
             return
 
-    _eval = __builtins__['eval']
     istr = argstr.strip()
     if istr.startswith('['):
         imports_start = 1
@@ -93,40 +100,13 @@ def exec(argstr=None, *, debug=False):
         imports = istr[imports_start:imports_end]
         module_names = [i.strip() for i in imports.split(',')]
         for module_name in module_names:
-            import_mod(module_name)
+            import_mod(module_name, globals(), locals())
         s = istr[imports_end+1:].strip()
     else:
         s = istr
 
-    """
-    match = regex.match("([a-zA-Z0-9_.]*)\((.*)\)\.([a-zA-Z0-9_]*)\((.*)\)", s)
-    class_path = match.group(1)
-    init_kwargs_ = match.group(2)
-    _init_kwargs = regex_kv_pairs(init_kwargs_)
-    init_kwargs = {key: _eval(val) for key, val in _init_kwargs.items()}
-    method_name = match.group(3)
-    method_kwargs_ = match.group(4)
-    _method_kwargs = regex_kv_pairs(method_kwargs_)
-    method_kwargs = {key: _eval(val) for key, val in _method_kwargs.items()}
-    
-    class_parts = class_path.split('.')
-    class_name = class_parts[-1]
-    module_name = '.'.join(class_parts[:-1])
-    
-    import_mod(module_name)
-    mod = import_module(module_name)
-   
-    cls = getattr(mod, class_name)
-    obj = cls(**init_kwargs)
-    mth = getattr(obj, method_name)
-    r = mth(**method_kwargs)
-    if isinstance(r, Request):
-        _ = r.compute()
-    else:
-        _ = r
-    """
     if debug:
         print(f"dbx: exec: {s}")
-    _ = _eval(s)
+    _ = _eval_(s)
     return _    
 

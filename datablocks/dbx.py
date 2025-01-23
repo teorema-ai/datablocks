@@ -43,7 +43,7 @@ from .dataspace import (
 )
 from .databuilder import Databuilder, UnknownTopic, DEFAULT_TOPIC
 
-from .utils import gitrepostate, OVERRIDEN
+from .utils import gitrepostate, OVERRIDEN, sprint, pprint
 
 
 class DEFAULT_ARG:
@@ -121,7 +121,7 @@ class Datablock:
 
     """
     REVISION = '0.0.1'
-    PATHNAME = "data.ext" # define this or define TOPICS: dict
+    TOPIC = None # replace this or define TOPICS: dict: topic -> filename
 
     @dataclass
     class SCOPE:
@@ -196,9 +196,9 @@ class Datablock:
         else:
             shardroot = shardroots
             if shardroot is None:
-                path = os.join(os.getcwd(), self.PATHNAME)
+                path = os.join(os.getcwd(), self.TOPIC)
             else:
-                path = os.path.join(shardroot, self.PATHNAME)
+                path = os.path.join(shardroot, self.TOPIC)
         return path
 
     def paths(self, blockscope, blockroots, topic=None):
@@ -315,7 +315,7 @@ class DBX:
 
         def __tag__(self):
             tag___ = f"{DBX_PREFIX}.{self.dbx._datablock_clstr}"
-            tag__ = tag___+f"@{self.dbx.databuilder.revision}"
+            tag__ = tag___+f"@{self.dbx.databuilder.revision if self.dbx.databuilder.revision is not None else ''}"
             tag_ = tag__ + f"#{self.dbx.databuilder.alias if self.dbx.databuilder.alias else ''}"
             tag = tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else tag_+""
             return tag
@@ -329,44 +329,82 @@ class DBX:
             super().__init__('PATH', spec, pic=pic)
 
     @staticmethod
-    def show_datablocks(*, dataspace=DATALAKE, pretty_print=True, debug=False):
+    def show_datablocks(*, dataspace=DATALAKE, print=True, debug=False):
         def _chase_anchors(_dataspace, _anchorchain=()):
-            pathnames = _dataspace.list()
+            pathnames = [path for path in _dataspace.list() if _dataspace.isdir(path, relative=True)]
+            if debug:
+                print(f"DEBUG: _chase_anchors: pathnames: {pathnames}")
             anchorchains = []
+            if debug:
+                print(f"DEBUG: _chase_anchors: pathnames: {pathnames}")
+            if len(pathnames) == 0:
+                if debug:
+                    print(f"DEBUG: _chase_anchors: returning root of dataspace with no subdirectories: {_dataspace}")
+                anchorchains.append(_dataspace.root)
             for pathname in pathnames:
+                if debug:
+                    print(f"DEBUG: _chase_anchors: processing pathname: '{pathname}'")
                 if pathname.startswith('.'):
+                    if debug:
+                        print(f"DEBUG: _chase_anchors: skipping '{pathname}': starts with '.'")
                     continue
                 elif _dataspace.isfile(pathname, relative=True):
-                    continue
+                    raise ValueError(f"_chase_anchors: encountered a file '{pathname}'. Run with debug=True to investigate.")
                 elif pathname.startswith('revision='):
                     anchorchain = _anchorchain + (pathname,)
                     anchorchains.append(anchorchain)
                     if debug:
-                        print(f"DEBUG: show_datablocks(): chase_anchors(): addded anchorchain {anchorchain} with terminal pathname {pathname}")
+                        print(f"DEBUG: show_datablocks(): chase_anchors(): added anchorchain {anchorchain} with terminal pathname {pathname}")
                 else:
                     dataspace_ = _dataspace.subspace(pathname)
                     anchorchain_ = _anchorchain+(pathname,)
+                    if debug:
+                        print(f"DEBUG: _chase_anchors: recursive call into dataspace_ {dataspace_}")
                     _anchorchains = _chase_anchors(dataspace_, anchorchain_)
                     anchorchains.extend(_anchorchains)
             return anchorchains
         
         datablock_dataspace = dataspace.subspace(DBX_PREFIX).ensure()
-
-        anchorchains = _chase_anchors(datablock_dataspace)
         if debug:
-            print(f"DEBUG: show_datablocks(): anchorchains: {anchorchains}")
+            print(f"DEBUG: chasing anchors in datablock_dataspace: {datablock_dataspace}")
+        anchorpaths = _chase_anchors(datablock_dataspace)
+        if debug:
+            print(f"DEBUG: show_datablocks(): anchorpaths: {anchorpaths}")
 
         datablocks = {}
-        for anchorchain in anchorchains:
-            path = '.'.join(anchorchain[:-1])
-            revision = anchorchain[-1]
-            if path in datablocks:
-                datablocks[path].append(revision)
+        for anchorpath in anchorpaths:
+            anchorchain = anchorpath.split('/')
+            if debug:
+                print(f"DEBUG: _chase_anchors: anchorpath: {anchorpath}")
+                print(f"DEBUG: _chase_anchors: anchorchain: {anchorchain}")
+            # drop all '{key}={val}' to find the first .../topic/...
+            achain = [link for link in anchorchain if link.find('=') == -1]
+            apath = '/'.join(achain)
+            revision, alias = None, None
+            if apath.find('/#') != -1:
+                apath_, alias = apath.split('/#')
             else:
-                datablocks[path] = [revision]
-        if pretty_print:
-                for key, value in datablocks.items():
-                    print(f"{key}: {value}")
+                apath_ = apath
+            if debug:
+                print(f"DEBUG: _chase_anchors: apath_: {apath_}, alias: {alias}")
+            if apath_.find('/@') != -1:
+                apath__, revision = apath_.split('/@')
+            else:
+                apath__ = apath_
+            if debug:
+                print(f"DEBUG: _chase_anchors: apath__: {apath__}, revision: {revision}")
+            _apath__ = apath__.split('DBX/')[1]
+            if debug:
+                print(f"DEBUG: _chase_anchors: _apath__: '{_apath__}'")
+            _achain__ = _apath__.split('/')
+            modpath = '.'.join(_achain__)
+            revision_alias = f"@{revision}/#{alias}"
+            if modpath in datablocks:
+                datablocks[modpath].append(revision_alias)
+            else:
+                datablocks[modpath] = [revision_alias]
+        if print:
+                pprint(datablocks)
         else:
             return datablocks
     @dataclass
@@ -537,12 +575,7 @@ class DBX:
         return _
 
     def __tag__(self):
-        #TODO: add pic?
-        _tag = f"{DBX_PREFIX}.{self.spec}"
-        if self.alias is not None:
-            _tag += f"#{self.alias}"
-        tag = f"'{_tag}'"
-        return tag
+        return f"{DBX_PREFIX}.{self.spec}#{self.alias if self.alias is not None else ''}"
 
     def __hash__(self):
         #TODO think this through
@@ -552,6 +585,8 @@ class DBX:
         _ =  int(hashlib.sha1(hashstr.encode()).hexdigest(), 16)
         return _
 
+    '''
+    #TODO: #REMOVE?
     def __getattr__(self, attr):
         try:
             datablock_clsname = super().__getattribute__('_datablock_clsname')
@@ -561,6 +596,25 @@ class DBX:
                 super().__getattribute__(attr)
         except:
             return super().__getattribute__(attr)
+    '''
+
+    @property
+    def anchorspace(self):
+        return self.databuilder.anchorspace
+
+    @property
+    def TOPICS(self):
+        if hasattr(self.datablock_cls, 'TOPICS'):
+            return self.datablock_cls.TOPICS
+        else:
+            raise AttributeError(f"Class {self.datablock_cls} does not have attribute 'TOPICS'")
+
+    @property
+    def TOPIC(self):
+        if hasattr(self.datablock_cls, 'TOPIC'):
+            return self.datablock_cls.TOPIC
+        else:
+            raise AttributeError(f"Class {self.datablock_cls} does not have attribute 'TOPIC'")
 
     def reload(self):
         self._datablock_cls = None
@@ -671,7 +725,7 @@ class DBX:
     """
     def build(self):
         """In case of failure: 
-        """ + __build_failure_doc__
+        """ + DBX.__build_failure_doc__
         try:
             request = self.build_request()
             response = request.evaluate() # need .evaluate() for its response rather than just .compute to examine status later
@@ -736,6 +790,18 @@ class DBX:
     def extent(self):
         _ = self.databuilder.block_extent(**self.scope)
         return _
+
+    def extentls(self, topic=None):
+        paths = self.databuilder.block_extent(**self.scope)
+        if topic is not None:
+            paths = paths[topic]
+        if isinstance(paths, dict):
+            raise ValueError(f"No topic selected")
+        for path in paths:
+            files = self.databuilder.dataspace.filesystem.ls(path)
+            print(f"{path}:")
+            for f in files:
+                print(f"\t{f}")
     
     @property
     def shortfall(self):
@@ -899,6 +965,12 @@ class DBX:
         else:
             record = None
         return record
+
+    def show_build_records(self, *, full=False, columns=None, all=False, tail=5):
+        return self.show_exec_records(stage="BUILD_END", full=full, columns=columns, all=all, tail=tail)
+
+    def show_build_record(self, record=None, *, full=False,):
+        return self.show_exec_record(record, full=full, stage="BUILD_END")
 
     def show_build_batch_graph(self, record=None, *, batch=0, **graph_kwargs):
         g = self.show_build_graph(record=record, node=(batch,), **graph_kwargs) # argument number `batch` to the outermost Request AND
@@ -1149,19 +1221,9 @@ class DBX:
                 self._datablock = datablock_cls(self.dataspace.filesystem, **dbx.datablock_kwargs_)
             return self._datablock
 
-        def revisionspace(self):
+        def get_anchorspace(self):
             revision = signature.tag(DBX.Path(self.revision)) if self.revision is not None else ''
-            return self.anchorspace.subspace(f"@{revision}",)
-
-        def _alias_shardspace_(self, topic, **shard):
-            # ignore shard, label by alias, revision, topic only
-            if topic is None:
-                _ = self.revisionspace
-            else:
-                _ = self.revisionspace.subspace(topic)
-            if self.debug:
-                print(f"ALIAS SHARDSPACE: formed for topic {repr(topic)}: {_}")
-            return _
+            return self.dataspace.subspace(*self.anchorchain).subspace(f"@{revision}",)
 
         def datablock_shardroots(self, tagshardscope, ensure=False) -> Union[str, Dict[str, str]]:
             def shardroot(topic):
@@ -1323,10 +1385,7 @@ class DBX:
                     '_read_block_':  _read_block_,
                     '_block_value_page_': _block_value_page_,
         }
-        databuilder_classdict['revisionspace'] = property(revisionspace)
-        #TODO: #REMOVE
-        #if dbx.use_alias_dataspace:
-        #    databuilder_classdict['_shardspace_'] = _alias_shardspace_
+        databuilder_classdict['get_anchorspace'] = get_anchorspace
         if hasattr(datablock_cls, 'valid'):
             databuilder_classdict['_block_extent_page_'] = _block_extent_page_
         if hasattr(datablock_cls, 'metric'):
