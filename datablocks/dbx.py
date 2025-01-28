@@ -233,14 +233,15 @@ class DBX:
         def __tag__(self):
             return self.replace('/', '|')
         def __str__(self):
-            return self.__tag__()
+            return self.replace(':', '/').replace('|', '/')
         def __repr__(self):
-            return f"datablocks.dbx.DBX.Path({super().__repr__()})"
+            s = str(self.replace('|', '/').replace(':', '/'))
+            return f"datablocks.dbx.DBX.Path({repr(s)})"
             
     class ProxyRequest(request.Proxy):
         @staticmethod
         def parse_url(url: str, **datablock_kwargs):
-            #url = {classtr}@{revision}[#alias]:{topic}
+            #url = {datablock.path.to.cls}@{revision}#{alias}:[{topic}]
             tail = url
             try:
                 datablock_clstr, tail  = tail.split("@")
@@ -249,16 +250,15 @@ class DBX:
             try:
                 revision_alias, topic   = tail.split(":")
                 if revision_alias.find('#') == -1:
-                    revision = revision_alias
-                    alias = None
+                    raise ValueError(f"Cannot forward a proxy request to a DBX without alias")
                 else:
                     revision, alias = revision_alias.split('#')
-                if revision == 'None':
-                    revision = None
+                if len(revision) == 0:
+                    raise ValueError(f"Malformed ProxyRequest url: no revision: {url}")
+                if len(alias) == 0:
+                    raise ValueError(f"Malformed ProxyRequest url: no alias: {url}")
             except:
                 raise ValueError(f"Malformed url: {url}")
-            if len(alias) == 0:
-                alias = None
             if len(topic) == 0:
                 topic = DEFAULT_TOPIC
             dbx = DBX(datablock_clstr, alias, revision=revision, **datablock_kwargs)
@@ -314,9 +314,7 @@ class DBX:
             return _
 
         def __tag__(self):
-            tag___ = f"{DBX_PREFIX}.{self.dbx._datablock_clstr}"
-            tag__ = tag___+f"@{self.dbx.databuilder.revision if self.dbx.databuilder.revision is not None else ''}"
-            tag_ = tag__ + f"#{self.dbx.databuilder.alias if self.dbx.databuilder.alias else ''}"
+            tag_ = f"{DBX_PREFIX}.{self.dbx._datablock_clstr}@{self.dbx.databuilder.revision}#{self.dbx.databuilder.alias}"
             tag = tag_ + f":{self.topic}" if self.topic != DEFAULT_TOPIC else tag_+""
             return tag
         
@@ -328,19 +326,18 @@ class DBX:
         def __init__(str, spec: Union[str, tuple], pic=False):
             super().__init__('PATH', spec, pic=pic)
 
+    def show_exec_aliases(self):
+        records = self.show_exec_records()
+        #! dedup and return record aliases
+        return records
+
     @staticmethod
-    def show_datablocks(*, dataspace=DATALAKE, print=True, debug=False):
+    def show_datablocks(*, dataspace=DATALAKE, pretty_print=True, debug=False):
         def _chase_anchors(_dataspace, _anchorchain=()):
             pathnames = [path for path in _dataspace.list() if _dataspace.isdir(path, relative=True)]
             if debug:
                 print(f"DEBUG: _chase_anchors: pathnames: {pathnames}")
             anchorchains = []
-            if debug:
-                print(f"DEBUG: _chase_anchors: pathnames: {pathnames}")
-            if len(pathnames) == 0:
-                if debug:
-                    print(f"DEBUG: _chase_anchors: returning root of dataspace with no subdirectories: {_dataspace}")
-                anchorchains.append(_dataspace.root)
             for pathname in pathnames:
                 if debug:
                     print(f"DEBUG: _chase_anchors: processing pathname: '{pathname}'")
@@ -350,60 +347,39 @@ class DBX:
                     continue
                 elif _dataspace.isfile(pathname, relative=True):
                     raise ValueError(f"_chase_anchors: encountered a file '{pathname}'. Run with debug=True to investigate.")
-                elif pathname.startswith('revision='):
+                elif pathname.startswith('@'):
                     anchorchain = _anchorchain + (pathname,)
-                    anchorchains.append(anchorchain)
                     if debug:
-                        print(f"DEBUG: show_datablocks(): chase_anchors(): added anchorchain {anchorchain} with terminal pathname {pathname}")
+                        print(f"DEBUG: show_datablocks(): chase_anchors(): adding anchorchain {anchorchain} to the collection after reaching a terminal pathname {pathname}")
+                    anchorchains.append(anchorchain)
                 else:
                     dataspace_ = _dataspace.subspace(pathname)
                     anchorchain_ = _anchorchain+(pathname,)
                     if debug:
                         print(f"DEBUG: _chase_anchors: recursive call into dataspace_ {dataspace_}")
-                    _anchorchains = _chase_anchors(dataspace_, anchorchain_)
-                    anchorchains.extend(_anchorchains)
+                    anchorchains_ = _chase_anchors(dataspace_, anchorchain_)
+                    anchorchains.extend(anchorchains_)
+            if debug:
+                    print(f"DEBUG: _chase_anchors: returning: reached dataspace with no subdirectories: {_dataspace}")
             return anchorchains
         
         datablock_dataspace = dataspace.subspace(DBX_PREFIX).ensure()
         if debug:
             print(f"DEBUG: chasing anchors in datablock_dataspace: {datablock_dataspace}")
-        anchorpaths = _chase_anchors(datablock_dataspace)
+        anchorchains = _chase_anchors(datablock_dataspace)
         if debug:
-            print(f"DEBUG: show_datablocks(): anchorpaths: {anchorpaths}")
+            print(f"DEBUG: show_datablocks(): anchorchains: {anchorchains}")
 
-        datablocks = {}
-        for anchorpath in anchorpaths:
-            anchorchain = anchorpath.split('/')
-            if debug:
-                print(f"DEBUG: _chase_anchors: anchorpath: {anchorpath}")
-                print(f"DEBUG: _chase_anchors: anchorchain: {anchorchain}")
-            # drop all '{key}={val}' to find the first .../topic/...
-            achain = [link for link in anchorchain if link.find('=') == -1]
-            apath = '/'.join(achain)
-            revision, alias = None, None
-            if apath.find('/#') != -1:
-                apath_, alias = apath.split('/#')
+        _datablocks = {}
+        for anchorchain in anchorchains:
+            modpath = '.'.join(anchorchain[:-1])
+            revision = str(DBX.Path(anchorchain[-1]))
+            if modpath in _datablocks:
+                _datablocks[modpath].append(revision)
             else:
-                apath_ = apath
-            if debug:
-                print(f"DEBUG: _chase_anchors: apath_: {apath_}, alias: {alias}")
-            if apath_.find('/@') != -1:
-                apath__, revision = apath_.split('/@')
-            else:
-                apath__ = apath_
-            if debug:
-                print(f"DEBUG: _chase_anchors: apath__: {apath__}, revision: {revision}")
-            _apath__ = apath__.split('DBX/')[1]
-            if debug:
-                print(f"DEBUG: _chase_anchors: _apath__: '{_apath__}'")
-            _achain__ = _apath__.split('/')
-            modpath = '.'.join(_achain__)
-            revision_alias = f"@{revision}/#{alias}"
-            if modpath in datablocks:
-                datablocks[modpath].append(revision_alias)
-            else:
-                datablocks[modpath] = [revision_alias]
-        if print:
+                _datablocks[modpath] = [revision]
+        datablocks = {key: list(set(val)) for key, val in _datablocks.items()}
+        if pretty_print:
                 pprint(datablocks)
         else:
             return datablocks
@@ -712,16 +688,16 @@ class DBX:
             topics = [DEFAULT_TOPIC]
         return topics
 
-    __build_failure_doc__ = """Try running with .Datablock(throw=True) or examine the build using these methods:\n"
-                  f"\t.show_exec_records()\n"
-                  f"\t.show_exec_record()\n"
-                  f"\t.show_build_graph()\n"
-                  f"\t.show_build_batch_graph()\n"
-                  f"\t.show_build_batch_graph().log()\n"
-                  f"\t.show_build_batch_graph().traceback\n"
-                  
-                  f"If the last build record has status 'STATUS.RUNNING', then the build failed and exception was not captured, indicating a DBX bug.\n"
-                  f"In this case .Datablock(throw=True) or .Datablock(pool=FILE_LOGGING_POOL) followed by .show_build_batch_graph().log() may be the only useful debugging methods."
+    __build_failure_doc__ = """Try running with .Datablock(throw=True) or examine the build using these methods:
+    .show_exec_records()
+    .show_exec_record()
+    .show_build_graph()
+    .show_build_batch_graph()
+    .show_build_batch_graph().log()
+    .show_build_batch_graph().traceback
+    
+    If the last build record has status 'STATUS.RUNNING', then the build failed and exception was not captured, indicating a DBX bug.
+    In this case .Datablock(throw=True) or .Datablock(pool=FILE_LOGGING_POOL) followed by .show_build_batch_graph().log() may be the only useful debugging methods.
     """
     def build(self):
         """In case of failure: 
@@ -733,7 +709,7 @@ class DBX:
         except UnknownTopic as e:
             raise ValueError(f"Unknown topic error: wrong/stale scope?") from e
         if self.verbose and not response.succeeded:
-            print(f"Build failed.  {__build_failure_doc__}")
+            print(f"Build failed.  {DBX.__build_failure_doc__}")
         return f"SUCCESS: {response.succeeded}"
 
     def build_request(self):
@@ -859,7 +835,7 @@ class DBX:
 
     BUILD_RECORDS_COLUMNS_SHORT = ['stage', 'revision', 'scope', 'alias', 'task_id', 'metric', 'status', 'date', 'timestamp', 'runtime_secs']
 
-    def show_exec_records(self, *, stage='ALL', full=False, columns=None, all=False, tail=5):
+    def show_exec_records(self, *, stage='ALL', full=False, columns=None, all=False, tail=5, debug: bool = False):
         """
         All build records for a given Databuilder class, irrespective of revision (see `show_exec_record()` for retrieval of more specific information).
         'all=True' forces 'tail=None'
@@ -869,6 +845,8 @@ class DBX:
 
         frame = None
         try:
+            if debug:
+                print(f"DEBUG: show_exec_records(): looking for records in recordspace {recordspace}")
             filepaths = [recordspace.join(recordspace.root, filename) for filename in recordspace.list()]
             
             frames = {}
@@ -1030,7 +1008,7 @@ class DBX:
     def show_build_graph(self, record=None, *, node=tuple(), show_=('logpath', 'logpath_status', 'exception'), show=tuple(), **kwargs):
         return show_exec_graph(record, node=node, stage='BUILD_END', show_=show_, show=tuple(), **kwargs)
 
-    def UNSAFE_clear_records(self):
+    def UNSAFE_clear_exec_records(self):
         self._recordspace_().remove()
     
     def UNSAFE_clear_request(self):
@@ -1156,6 +1134,7 @@ class DBX:
                 report = response.report() # snapshot of report at this stage in lifecycle
                 task_id = response.id
                 report_transcript = report.transcript() 
+                #TODO: #REMOVE
                 #args_reports = report.args_reports
                 #kwargs_reports = report.kwargs_reports
                 #args_results = [arg_report.result if isinstance(arg_report, Report) else arg_report for arg_report in args_reports]
