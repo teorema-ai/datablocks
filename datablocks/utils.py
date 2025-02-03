@@ -5,12 +5,13 @@ import hashlib
 import io
 import logging
 import os
-from time import perf_counter
-
+import re
 import subprocess
 import sys
 import time
+from time import perf_counter
 import traceback
+from typing import Optional
 
 import git 
 
@@ -583,6 +584,40 @@ def pprint(x, indent=0):
     if x is not None:
         print(sprint(x, indent=indent))
 
+
+def bash_eval(string, globals: Optional[dict] = None):
+    _eval_ = __builtins__['eval']
+    ss = [s.removeprefix('export').strip() for s in [s.strip() for s in string.split('\n')] if len(s) > 0]
+    for s in ss:
+        f = s.find('=')
+        if f == -1:
+            continue
+        key = s[:f] 
+        _val_ = s[f+1:]
+        val = _eval_(bash_expand(_val_))
+        os.environ[key] = val
+        if globals is not None:
+            globals[key] = val
+
+
+def bash_expand(s):
+    #DEBUG
+    #pdb.set_trace()
+    if not isinstance(s, str):
+        return s
+    stringex = re.compile("""\$\{[^\{\}\$]*\}""")
+    done = False
+    while not done:
+        done = True
+        ms = list(stringex.finditer(s))
+        for m in ms:
+            key = m.group()[2:-1]
+            shead = s[:m.start()]
+            smid = os.environ[key]
+            stail = s[m.end():]
+            s = shead + smid + stail
+            done = False
+    return s
 
 
 

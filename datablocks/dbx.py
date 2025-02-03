@@ -26,7 +26,15 @@ from .signature import (
     tag, 
     Tagger,
 )
-from .utils import OVERRIDE, optional, serializable, microseconds_since_epoch, datetime_to_microsecond_str
+from .utils import (
+    OVERRIDE, 
+    optional, 
+    serializable, 
+    microseconds_since_epoch, 
+    datetime_to_microsecond_str,
+    bash_eval,
+    bash_expand,
+)
 from .eval import request, pool
 from .eval.request import Request, ALL, LAST, NONE, Graph
 from .eval.pool import (
@@ -62,9 +70,9 @@ def dbx_eval(string):
         A version of __builtins__.eval() in the context of imported datablocks.datablock.
     """
     import datablocks.dbx
-    _eval = __builtins__['eval']
+    _eval_ = __builtins__['eval']
     try:
-        _ = _eval(string)
+        _ = _eval_(string)
     except Exception as e:
         raise DBXEvalError(string) from e
     return _
@@ -231,11 +239,11 @@ class DBX:
 
     class Path(str):
         def __tag__(self):
-            return self.replace('/', '|')
+            return bash_expand(self).replace('/', '|')
         def __str__(self):
-            return self.replace(':', '/').replace('|', '/')
+            return bash_expand(self).replace(':', '/').replace('|', '/')
         def __repr__(self):
-            s = str(self.replace('|', '/').replace(':', '/'))
+            s = expland_str(self).replace('|', '/').replace(':', '/')
             return f"datablocks.dbx.DBX.Path({repr(s)})"
             
     class ProxyRequest(request.Proxy):
@@ -388,7 +396,6 @@ class DBX:
         spec: Union[Datablock, str]
         alias: Optional[str] = None
         pic: bool = False
-        use_alias_dataspace:bool = False
         repo: Optional[str] = None
         revision: Optional[str] = None
         verbose: Optional[str] = False
@@ -420,7 +427,6 @@ class DBX:
                 alias=None,
                 *,
                 pic=False,
-                use_alias_dataspace=True,
                 repo=None,
                 revision=None,
                 verbose=False,
@@ -429,7 +435,6 @@ class DBX:
         self.__setstate__(DBX.State(spec=spec,
                                 alias=alias,
                                 pic=pic,
-                                use_alias_dataspace=use_alias_dataspace,
                                 repo=repo,
                                 revision=revision,
                                 verbose=verbose,
@@ -440,7 +445,6 @@ class DBX:
         return DBX.State(spec=self.spec,
                          alias=self.alias,
                          pic=self.pic,
-                         use_alias_dataspace=self.use_alias_dataspace,
                          repo=self.repo,
                          revision=self.revision,
                          verbose=self.verbose,
@@ -454,7 +458,7 @@ class DBX:
                      state: State, 
     ):
         for key, val in asdict(state).items():
-            setattr(self, key, val)
+            setattr(self, key, bash_expand(val))
 
         if self.datablock_kwargs_ is None:
             self.datablock_kwargs_ = {}
@@ -469,7 +473,8 @@ class DBX:
             if isinstance(val, DBX.ProxyRequest):
                 self.datablock_scope_kwargs_[key] = val.with_pic(state.pic)
         def update_scope(**kwargs):
-            self.datablock_scope_kwargs_.update(**kwargs)
+            _kwargs = {key: bash_expand(val) for key, val in kwargs.items()}
+            self.datablock_scope_kwargs_.update(**_kwargs)
             return self
         self.SCOPE = update_scope
 
@@ -512,7 +517,6 @@ class DBX:
               pic=DEFAULT,
               repo=DEFAULT,
               revision=DEFAULT,
-              use_alias_dataspace=DEFAULT,
     ):
         state = self.__getstate__()
         kwargs = {}
@@ -526,8 +530,6 @@ class DBX:
             kwargs['repo'] = repo
         if revision != DEFAULT:
             kwargs['revision'] = revision
-        if use_alias_dataspace != DEFAULT:
-            kwargs['use_alias_dataspace'] = use_alias_dataspace
         state = replace(state, **kwargs)
 
         clone = DBX().__setstate__(state)
@@ -611,6 +613,8 @@ class DBX:
             databuilder_kwargs = copy.copy(self.databuilder_kwargs_)
             if 'dataspace' in databuilder_kwargs:
                 databuilder_kwargs['dataspace'] = databuilder_kwargs['dataspace'].with_pic(True) #TODO: why with_pick(True)?
+            #DEBUG
+            #pdb.set_trace()
             self._databuilder = databuilder_cls(self.alias, 
                                         build_block_request_lifecycle_callback=self._build_block_request_lifecycle_callback_,
                                         **databuilder_kwargs)
@@ -626,7 +630,7 @@ class DBX:
     def scope_kwargs(self):
         return self.datablock_scope_kwargs_
 
-    def record_scope(self):
+    def show_exec_record_scope(self):
         scope = None
         if self.databuilder.alias is not None:
             record = self.show_named_exec_record(alias=self.databuilder.alias, revision=self.revision, stage='BUILD_END') 
@@ -639,6 +643,9 @@ class DBX:
                     raise ValueError(f"Failed to parse build scope {record['scope']}") from ee
         return scope
 
+    def show_dataspace_batches(self):
+        return self.databuilder.dataspace_batch_scopes()
+
     @property
     def scope(self) -> dict:
         """
@@ -648,7 +655,7 @@ class DBX:
             import datablocks #TODO: why the local import?
             
             scope = None
-            record_scope = self.record_scope()
+            record_scope = self.show_exec_record_scope()
             if len(self.scope_kwargs) > 0:
                 scope = asdict(self.datablock_cls.SCOPE(**self.scope_kwargs))
                 if self.verbose:
@@ -950,6 +957,32 @@ class DBX:
     def show_build_record(self, record=None, *, full=False,):
         return self.show_exec_record(record, full=full, stage="BUILD_END")
 
+    @staticmethod
+    def exec_records(datablock_cls_or_str, *, full: bool = False, all: bool = False):
+        dbx = DBX(datablock_cls_or_str)
+        return dbx.show_exec_records(full=full, all=all,)
+
+    @staticmethod
+    def exec_scopes(datablock_cls_or_str, *, anonymous: bool = False) -> Union[Dict, List]:
+        dbx = DBX(datablock_cls_or_str)
+        records = dbx.show_build_records(full=True, all=True,)
+        if not anonymous: 
+            scopes = {
+                self.exec_record_alias(record): self.exec_record_scope(record)
+                for record in records
+                if self.exec_record_alias(record) is not None
+            }
+        else:
+            scopes = [
+                self.exec_record_scope(record)
+                for record in records
+                if self.exec_record_alias(record) is None
+            ]
+        return scopes
+
+    def show_exec_scopes(self, *, anonymous: bool = False):
+        return self.exec_scopes(self.datablock_cls, anonymous=anonymous)
+
     def show_build_batch_graph(self, record=None, *, batch=0, **graph_kwargs):
         g = self.show_build_graph(record=record, node=(batch,), **graph_kwargs) # argument number `batch` to the outermost Request AND
         return g
@@ -970,10 +1003,10 @@ class DBX:
             summary = _record['report_transcript']
         return summary
 
-    def show_exec_scope(self, record=None, **ignored):
-        _record = self.show_exec_record(record=record, full=True)
-        if _record is not None:
-            scopestr = _record['scope']
+    @staticmethod
+    def exec_record_scope(record):
+        if record is not None:
+            scopestr = record['scope']
             try:
                 scope = dbx_eval(scopestr)
             except DBXEvalError as ee:
@@ -981,6 +1014,14 @@ class DBX:
         else:
             scope = None
         return scope
+
+    @staticmethod
+    def exec_record_alias(record):
+        return record['alias']
+
+    def show_exec_scope(self, record=None, **ignored):
+        _record = self.show_exec_record(record=record, full=True)
+        return DBX._exec_record_scope(_record)
 
     def show_exec_graph(self, record=None, *, stage='ALL', node=tuple(), show_=('logpath', 'logpath_status', 'exception'), show=tuple(), **kwargs):
         if not isinstance(node, Iterable):
@@ -1340,10 +1381,6 @@ class DBX:
 
         __module__ = DBX_PREFIX + "." + dbx._datablock_module_name
         __cls_name = datablock_cls.__name__
-        if hasattr(datablock_cls, 'TOPICS'):
-            topics = datablock_cls.TOPICS
-        else:
-            topics = [DEFAULT_TOPIC]
 
         __revision = dbx.revision
         databuilder_classdict = {
@@ -1355,7 +1392,7 @@ class DBX:
                     '__init__': __init__,
                     '__repr__': __repr__,
                     'revision': __revision,
-                    'topics': topics,
+                    'topics': dbx.topics,
                     'datablock': property(datablock),
                     'datablock_blockroots': datablock_blockroots,
                     'datablock_shardroots': datablock_shardroots,
@@ -1502,7 +1539,7 @@ class DBX:
 
 PICLAKE = DATALAKE.clone("{DATALAKE}")
 def TRANSCRIBE(dbx, piclake=PICLAKE):
-    print(dbx.clone(dataspace=piclake, use_alias_dataspace=True, pic=True, verbose=False).Datablock(verbose=True).transcribe(with_build=True))
+    print(dbx.clone(dataspace=piclake, pic=True, verbose=False).Datablock(verbose=True).transcribe(with_build=True))
             
             
 

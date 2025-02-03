@@ -79,7 +79,9 @@ class Scoped:
     block_defaults = {} 
     block_pins = {}  
 
-    def __init__(self):
+    def __init__(self, *, verbose: bool = False, debug: bool = False):
+        self.verbose = verbose
+        self.debug = debug
         if hasattr(self, 'block_to_shard_keys'):
             self.shard_to_block_keys = {val: key for key, val in self.block_to_shard_keys.items()}
         elif hasattr(self, 'shard_to_block_keys'):
@@ -211,6 +213,117 @@ class Scoped:
                 carry = True
         return kwargs_list
 
+    #TODO: to Scoped?
+    class KVHandle(tuple):
+        def __call__(self, *args, **kwargs) -> Any:
+            return super().__call__(*args, **kwargs)
+        
+        def __str__(self):
+            dict_ = {key: val for key, val in self}
+            str_ = f"{dict_}"
+            return str_
+
+    #TODO: to Scoped?
+    class Scopebook(dict):
+        def pretty(self):
+            lines = []
+            for topic, page in self.items():
+                if topic is None:
+                    lines.append(page.pretty())
+                else:
+                    lines.append(repr(topic) + ":\n" + page.pretty())
+            _ = '\n '.join(lines)
+            return _
+        
+    #TODO: to Scoped?
+    class Scopepage(list[tuple]):
+        def pretty(self):
+            lines = []
+            for scope, val in self:
+                if len(scope) == 0:
+                    lines.append(repr(val))
+                else:
+                    lines.append(scope.pretty() + ": " + repr(val))
+            if len(lines) == 0:
+                _ = "  [\n   ]"
+            else:
+                _ = "  [\n\t" + '\n\t'.join(lines) + "\n   ]"
+            return _
+    
+    #TODO: to Scoped?
+    class Scope(dict):
+        def pretty(self):
+            lines = []
+            for key, val in self.items():
+                lines.append(f"{repr(key)}: {repr(val)}")
+            _ = "\t{\n\t" + '\n\t'.join(lines) + "\n\t}"
+            return _
+
+    #TODO: to Scoped?
+    def _scope_to_hvhandle_(self, topic, **shard):
+        if topic is not None:
+            shardhivechain = [topic]
+        else:
+            shardhivechain = []
+        for key in self.shard_keys:
+            shardhivechain.append(f"{key}={shard[key]}")
+        return shardhivechain
+
+    #TODO: to Scoped?
+    def _scope_to_kvhandle_(self, topic, **scope):
+        _kvhandle = tuple((key, scope[key]) for key in self.shard_keys)
+        kvhandle = Scoped.KVHandle(_kvhandle)
+        return kvhandle
+
+    #TODO: to Scoped?
+    def _kvhandle_to_scope_(self, topic, kvhandle):
+        return {key: val for key, val in kvhandle}
+
+    #TODO: to Scoped?
+    def _kvhandle_to_hvhandle_(self, topic, kvhandle):
+        scope = self._kvhandle_to_scope_(topic, kvhandle)
+        hivechain = self._scope_to_hvhandle_(topic, **scope)
+        return hivechain
+
+    #TODO: to Scoped?
+    def _kvhandle_to_filename(self, topic, kvhandle, extension=None):
+        datachain = self._kvhandle_to_hvhandle_(topic, kvhandle)
+        name = '.'.join(datachain)
+        filename = name if extension is None else name+'.'+extension
+        return filename
+
+    #TODO: to Scoped?
+    def _kvhandle_to_dirpath(self, topic, kvhandle):
+        datachain = self._kvhandle_to_hvhandle_(topic, kvhandle)
+        subspace = self.anchorspace.subspace(*datachain)
+        path = subspace.root
+        return path
+    
+    #TODO: to Scoped?
+    def _kvhbook_to_scopebook(self, kvhbook):
+        _scopebook = {}
+        for topic, kvhpage in kvhbook.items():
+            if not topic in _scopebook:
+                _scopebook[topic] = []
+            for kvhandle, val in kvhpage.items():
+                scope = Scoped.Scope(self._kvhandle_to_scope_(topic, kvhandle))
+                _scopebook[topic].append((Scoped.Scope(scope), val))
+        scopebook = Scoped.Scopebook({topic: Scoped.Scopepage(page) for topic, page in _scopebook.items()}) 
+        return scopebook
+
+    #TODO: to Scoped?
+    def _lock_kvhandle(self, topic, kvhandle):
+        if self.lock_pages:
+            hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
+            self.anchorspace.subspace(*hivechain).acquire()
+
+    #TODO: to Scoped?
+    def _unlock_kvhandle(self, topic, kvhandle):
+        if self.lock_pages:
+            hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
+            self.anchorspace.subspace(*hivechain).release()
+
+
     # TODO: --> _handles_to_batches_?
     def _kvhandles_to_batches_(self, *kvhandles):
         # We assume that all keys are always the same -- equal to self.keys
@@ -243,15 +356,63 @@ class Scoped:
                     batch_list.append(batch)
         return batch_list
 
-#TODO: to Scoped?
-class KVHandle(tuple):
-    def __call__(self, *args, **kwargs) -> Any:
-        return super().__call__(*args, **kwargs)
-    
-    def __str__(self):
-        dict_ = {key: val for key, val in self}
-        str_ = f"{dict_}"
-        return str_
+    def dataspace_batch_scopes(self):
+        def append_nonempty_kvhandle(kvhandles, _kvhandle):
+            if len(_kvhandle) > 0:
+                kvhandle = Scoped.KVHandle(_kvhandle)
+                if self.debug:
+                    print(f"DEBUG: chase_anchors(): appending kvhandle {kvhandle} to the collection")
+                kvhandles.append(kvhandle)
+            else:
+                if self.debug:
+                    print(f"DEBUG: chase_anchors(): not appending an empty kvhandle to the collection")
+
+        def chase_kvhandles(_dataspace, _kvhandle=tuple()):
+            if self.debug:
+                print(f"DEBUG: chase_kvhandles: _dataspace: {_dataspace}: >>>>>>>>>>>>>>>> _kvhandle: {_kvhandle}")
+            pathnames = [path for path in _dataspace.list() if _dataspace.isdir(path, relative=True)]
+            if self.debug:
+                print(f"DEBUG: chase_kvhandles: pathnames: {pathnames}")
+            kvhandles = []
+            if len(pathnames) > 0:
+                for pathname in pathnames:
+                    if self.debug:
+                        print(f"DEBUG: chase_kvhandles: processing pathname: '{pathname}'")
+                    if pathname.find('=') != -1 and not _dataspace.isfile(pathname, relative=True):
+                        key, val = pathname.split('=')
+                        if self.debug: 
+                            print(f"DEBUG: chase_handles: appending {(key, val)} to _kvhandle {_kvhandle}")
+                        dataspace_ = _dataspace.subspace(pathname)
+                        kvhandle_ = _kvhandle+((key, val),)
+                        if self.debug:
+                            print(f"DEBUG: chase_kvhandles: recursive call into dataspace_ {dataspace_} with kvhandle_ {kvhandle_}")
+                        kvhandles_ = chase_kvhandles(dataspace_, kvhandle_)
+                        kvhandles.extend(kvhandles_)
+                    else:
+                        if self.debug:
+                            print(f"DEBUG: chase_anchors(): found a non kv pathname {pathname}")
+                        append_nonempty_kvhandle(kvhandles, _kvhandle)
+                        break
+            else:
+                append_nonempty_kvhandle(kvhandles, _kvhandle)
+            
+            if self.debug:
+                    print(f"DEBUG: chase_kvhandles: returning:  {kvhandles} <<<<<<<<<<<<<<<<<< from a terminal dataspace {_dataspace}")
+            return kvhandles
+        topic_kvhandles = {}
+        for topic in self.topics:
+            #DEBUG
+            #pdb.set_trace()
+            topicspace = self.anchorspace.subspace(topic)
+            if self.debug:
+                print(f"dataspace_batch_scopes: extracting kvhandles for topic {topic} from topicspace {topicspace}")
+            kvhandles = chase_kvhandles(topicspace)
+            topic_kvhandles[topic] = kvhandles
+        kvhandles0 = topic_kvhandles[self.topics[0]]
+        assert all(set(kvhandles0) == set(topic_kvhandles[topic]) for i, topic in enumerate(self.topics) if i > 0),\
+            f"dataspace_batch_scopes: kvhandles sets mismatch between topics: {topic_kvhandles}"
+        batches = self._kvhandles_to_batches_(*kvhandles0)
+        return batches
 
 
 DEFAULT_TOPIC = None
@@ -278,7 +439,7 @@ class Databuilder(Anchored, Scoped):
                  debug=False,          
     ):
         Anchored.__init__(self)
-        Scoped.__init__(self)
+        Scoped.__init__(self, verbose=verbose, debug=debug)
         self.alias = alias
         self.dataspace = dataspace
         self._tmpspace = tmpspace
@@ -415,7 +576,7 @@ class Databuilder(Anchored, Scoped):
     def _block_metric_page_(self, topic=None, **blockscope):
         block_extent_page = self._block_extent_page(topic, **blockscope)
         block_metric_page = {
-            kvhandle: len(self._shardspace_.ls(shart_pathset))
+            kvhandle: len(self._shardspace_.ls(shard_pathset))
             for kvhandle, shard_pathset in block_extent_page.items()
         }
         return extent_metric_book
@@ -511,106 +672,6 @@ class Databuilder(Anchored, Scoped):
             print(f"SHARDSPACE: formed for topic {repr(topic)} and shard with tag {tagshard}: {subspace}")
         return subspace
     
-    #TODO: to Scoped?
-    class Scopebook(dict):
-        def pretty(self):
-            lines = []
-            for topic, page in self.items():
-                if topic is None:
-                    lines.append(page.pretty())
-                else:
-                    lines.append(repr(topic) + ":\n" + page.pretty())
-            _ = '\n '.join(lines)
-            return _
-        
-    #TODO: to Scoped?
-    class Scopepage(list[tuple]):
-        def pretty(self):
-            lines = []
-            for scope, val in self:
-                if len(scope) == 0:
-                    lines.append(repr(val))
-                else:
-                    lines.append(scope.pretty() + ": " + repr(val))
-            if len(lines) == 0:
-                _ = "  [\n   ]"
-            else:
-                _ = "  [\n\t" + '\n\t'.join(lines) + "\n   ]"
-            return _
-    
-    #TODO: to Scoped?
-    class Scope(dict):
-        def pretty(self):
-            lines = []
-            for key, val in self.items():
-                lines.append(f"{repr(key)}: {repr(val)}")
-            _ = "\t{\n\t" + '\n\t'.join(lines) + "\n\t}"
-            return _
-
-    #TODO: to Scoped?
-    def _scope_to_hvhandle_(self, topic, **shard):
-        if topic is not None:
-            shardhivechain = [topic]
-        else:
-            shardhivechain = []
-        for key in self.shard_keys:
-            shardhivechain.append(f"{key}={shard[key]}")
-        return shardhivechain
-
-    #TODO: to Scoped?
-    def _scope_to_kvhandle_(self, topic, **scope):
-        _kvhandle = tuple((key, scope[key]) for key in self.shard_keys)
-        kvhandle = KVHandle(_kvhandle)
-        return kvhandle
-
-    #TODO: to Scoped?
-    def _kvhandle_to_scope_(self, topic, kvhandle):
-        return {key: val for key, val in kvhandle}
-
-    #TODO: to Scoped?
-    def _kvhandle_to_hvhandle_(self, topic, kvhandle):
-        scope = self._kvhandle_to_scope_(topic, kvhandle)
-        hivechain = self._scope_to_hvhandle_(topic, **scope)
-        return hivechain
-
-    #TODO: to Scoped?
-    def _kvhandle_to_filename(self, topic, kvhandle, extension=None):
-        datachain = self._kvhandle_to_hvhandle_(topic, kvhandle)
-        name = '.'.join(datachain)
-        filename = name if extension is None else name+'.'+extension
-        return filename
-
-    #TODO: to Scoped?
-    def _kvhandle_to_dirpath(self, topic, kvhandle):
-        datachain = self._kvhandle_to_hvhandle_(topic, kvhandle)
-        subspace = self.anchorspace.subspace(*datachain)
-        path = subspace.root
-        return path
-    
-    #TODO: to Scoped?
-    def _kvhbook_to_scopebook(self, kvhbook):
-        _scopebook = {}
-        for topic, kvhpage in kvhbook.items():
-            if not topic in _scopebook:
-                _scopebook[topic] = []
-            for kvhandle, val in kvhpage.items():
-                scope = Databuilder.Scope(self._kvhandle_to_scope_(topic, kvhandle))
-                _scopebook[topic].append((Databuilder.Scope(scope), val))
-        scopebook = Databuilder.Scopebook({topic: Databuilder.Scopepage(page) for topic, page in _scopebook.items()}) 
-        return scopebook
-
-    #TODO: to Scoped?
-    def _lock_kvhandle(self, topic, kvhandle):
-        if self.lock_pages:
-            hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
-            self.anchorspace.subspace(*hivechain).acquire()
-
-    #TODO: to Scoped?
-    def _unlock_kvhandle(self, topic, kvhandle):
-        if self.lock_pages:
-            hivechain = self._kvhandle_to_hvhandle_(topic, kvhandle)
-            self.anchorspace.subspace(*hivechain).release()
-
     def shortfall_scopes(self, **tagscope):
         blockscope = self._blockscope_(**tagscope)
         if self.rebuild:

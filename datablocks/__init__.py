@@ -46,29 +46,6 @@ def import_mod(path, globals, locals):
         globals[_path] = module
 
 
-def export(string):
-    ss = [s for s in [s.strip() for s in string.split('export ')] if len(s) > 0]
-    for s in ss:
-        key, val = s.split('=')
-        os.environ[key] = _eval_(expand_strings(val))
-
-
-def expand_strings(s):
-    #DEBUG
-    #pdb.set_trace()
-    stringex = re.compile("""\$\{[^\{\}\$]*\}""")
-    while not done:
-        #!
-        ms = list(stringex.finditer(s))
-        for m in ms:
-            key = m.group()[2:-1]
-            shead = s[:m.start()]
-            smid = os.environ[key]
-            stail = s[m.end():]
-            s = shead + smid + stail
-    return s
-
-
 def exec(argstr=None, *, debug=False):
     import datablocks.dbx
     
